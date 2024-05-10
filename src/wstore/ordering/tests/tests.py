@@ -22,7 +22,7 @@
 from copy import deepcopy
 from datetime import datetime
 from urllib.parse import urlparse
-
+from datetime import datetime
 from bson.objectid import ObjectId
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
@@ -919,7 +919,13 @@ class OrderTestCase(TestCase):
 @override_settings(INVENTORY="http://localhost:8080")
 class InventoryClientTestCase(TestCase):
     tags = ("inventory",)
-
+    
+    build_char_return = {
+            "id": "testing_uuid",
+            "name": "testing_name",
+            "valueType": "testing_type",
+            "value": "testing_value"
+            }
     def setUp(self):
         # Mock requests
         inventory_client.requests = MagicMock()
@@ -930,12 +936,16 @@ class InventoryClientTestCase(TestCase):
 
         inventory_client.settings.LOCAL_SITE = "http://localhost:8004/"
 
-        from datetime import datetime
-
         now = datetime(2016, 1, 22, 4, 10, 25, 176751)
         inventory_client.datetime = MagicMock()
+        inventory_client.datetime.return_value.now.isoformat = MagicMock()
         inventory_client.datetime.utcnow.return_value = now
-
+        inventory_client.settings.RESOURCE_INVENTORY = "http://testing-resource-inventory:8080"
+        inventory_client.settings.SERVICE_INVENTORY = "http://testing-service-inventory:8080"
+        inventory_client.settings.RESOURCE_CATALOG = "http://testing-resource-catalog:8080"
+        inventory_client.settings.SERVICE_CATALOG = "http://testing-service-catalog:8080"
+        inventory_client.settings.VERIFY_REQUESTS = True
+        
     @parameterized.expand(
         [
             ("basic", [{"callback": "http://site.com/event"}]),
@@ -1054,3 +1064,86 @@ class InventoryClientTestCase(TestCase):
         inventory_client.requests.get().raise_for_status.assert_called_once_with()
 
         self.assertEquals(inventory_client.requests.get().json(), products)
+    
+    @parameterized.expand([("32", None, {
+        "name": "resource",
+        "description": "testing",
+        "resourceSpecCharacteristic": [{
+            "resourceSpecCharacteristicValue": [{
+                "value": "testing_value"
+            }]
+        }]
+        
+    })])
+    def test_create_resource(self, spec_id, party, spec_res):
+        inventory_client.urlparse = MagicMock()
+        inventory_client.urlparse.return_value.scheme = "scheme"
+        inventory_client.urlparse.return_value.netloc = "netloc"
+        inventory_client.urlparse.return_value.path = "path"   
+        inventory_client.datetime.now.return_value = MagicMock()
+        inventory_client.datetime.now.return_value.isoformat.return_value = "2024-03-19T11:49:50"
+        client = inventory_client.InventoryClient()
+        client.download_spec = MagicMock()
+        client.download_spec.return_value = spec_res
+        client.build_inventory_char = MagicMock()
+        client.build_inventory_char.return_value = self.build_char_return
+        client.create_resource(spec_id, party)
+        self.assertEquals(1, inventory_client.urlparse.call_count)
+        expected_calls_urlparse = [
+            call(inventory_client.settings.RESOURCE_INVENTORY),  
+            ]
+        inventory_client.urlparse.assert_has_calls(expected_calls_urlparse, any_order=True)
+        expected_calls_post = [call("scheme://netlocpath/resource", json={
+            "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
+            "relatedParty": [party],
+            "resourceStatus": "reserved",
+            "startOperatingDate": "2024-03-19T11:49:50Z",
+            "name": spec_res["name"],
+            "description": spec_res["description"]
+            
+            }, verify = inventory_client.settings.VERIFY_REQUESTS)]
+        client.build_inventory_char.assert_called_once()
+        inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
+
+        
+    @parameterized.expand([("32", None, {
+        "name": "service",
+        "description": "testing",
+        "specCharacteristic": [{
+            "characteristicValueSpecification": [{
+                "value": "testing_value"
+            }]
+        }]
+        
+    })])
+    def test_create_service(self, spec_id, party, spec_serv):
+        inventory_client.urlparse = MagicMock()
+        inventory_client.urlparse.return_value.scheme = "scheme"
+        inventory_client.urlparse.return_value.netloc = "netloc"
+        inventory_client.urlparse.return_value.path = "path"   
+        inventory_client.datetime.now.return_value = MagicMock()
+        inventory_client.datetime.now.return_value.isoformat.return_value = "2024-03-19T11:49:50"
+        client = inventory_client.InventoryClient()
+        client.download_spec = MagicMock()
+        client.download_spec.return_value = spec_serv
+        client.build_inventory_char = MagicMock()
+        client.build_inventory_char.return_value = self.build_char_return
+        client.create_service(spec_id, party)
+        self.assertEquals(1, inventory_client.urlparse.call_count)
+        expected_calls_urlparse = [
+            call(inventory_client.settings.SERVICE_INVENTORY),  
+            ]
+        inventory_client.urlparse.assert_has_calls(expected_calls_urlparse, any_order=True)
+        expected_calls_post = [call("scheme://netlocpath/service", json={
+            "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
+            "relatedParty": [party],
+            "state": "reserved",
+            "startDate": "2024-03-19T11:49:50Z",
+            "name": spec_serv["name"],
+            "description": spec_serv["description"]
+            
+            }, verify = inventory_client.settings.VERIFY_REQUESTS)]
+        client.build_inventory_char.assert_called_once()
+        inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
+        
+        
