@@ -42,7 +42,10 @@ from wstore.store_commons.resource import Resource
 from wstore.store_commons.utils.http import authentication_required, build_response, supported_request_mime_types
 
 logger = getLogger("wstore.default_logger")
+<<<<<<< HEAD
 
+=======
+>>>>>>> 0c12b85c (Update ordering process and inventory (#80))
 
 class OrderingCollection(Resource):
     @authentication_required

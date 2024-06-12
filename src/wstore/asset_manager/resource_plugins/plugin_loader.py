@@ -32,6 +32,7 @@ from wstore.asset_manager.resource_plugins.plugin_rollback import installPluginR
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.models import Resource, ResourcePlugin
 from wstore.store_commons.utils.version import is_lower_version
+from wstore.asset_manager import service_category_manager
 
 logger = getLogger("wstore.default_logger")
 
@@ -62,6 +63,7 @@ class PluginLoader:
 
     def _update_model_data_from_json(self, model, module, json_info):
         # Create or update plugin model data
+        model.category_id = json_info["category_id"]
         model.name = json_info["name"]
         model.version = json_info["version"]
         model.author = json_info["author"]
@@ -154,6 +156,18 @@ class PluginLoader:
         if pull_accounting_errors:
             logger.error("Error in implementation for pull accounting")
             raise PluginError(pull_accounting_errors)
+        
+        #####################
+        # service category
+        logger.debug("Creating API entry")
+        s_cat = service_category_manager.ServiceCategoryManager()
+        created_cat = s_cat.create_service_cat(json_info)
+        logger.debug("Antes del rb_log")
+        rb_log.log_action("API", created_cat["name"])
+        logger.debug("Antes de crear el cateogy_id en el json")
+        json_info["category_id"] = created_cat["id"]
+        logger.debug("Tras crearlo en el API")
+        #####################
 
         self._update_model_data_from_json(plugin_model, module, json_info)
         rb_log.log_action("MODEL", plugin_model)
@@ -218,6 +232,13 @@ class PluginLoader:
         while plugin_model.version != version:
             self._downgrade_plugin_to_last_version(plugin_id, plugin_model)
 
+        ###############
+        # En la base de datos del api solo se guardará la versión acctual
+        # service category
+        s_cat = service_category_manager.ServiceCategoryManager()
+        s_cat.update_service_cat(plugin_model)
+        ###############
+
         logger.info(f"Plugin {plugin_id} successfully downgraded")
 
     def uninstall_plugin(self, plugin_id):
@@ -250,6 +271,14 @@ class PluginLoader:
         # Remove plugin files
         plugin_path = os.path.join(self._plugins_path, plugin_id)
         rmtree(plugin_path)
+
+        ###############
+        # service category
+        # Hai que mirar o tema dos nomes dos plugins porque non podo buscalos ou borralos
+        # por id porque non vou ter o id da BD
+        s_cat = service_category_manager.ServiceCategoryManager()
+        s_cat.remove_service_cat(plugin_model)
+        ###############
 
         # Remove model
         plugin_model.delete()

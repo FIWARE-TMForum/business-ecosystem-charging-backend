@@ -53,6 +53,13 @@ urlpatterns = [
         r"^charging/api/assetManagement/assets/validateJob/?$",
         offering_views.ValidateCollection(permitted_methods=("POST",)),
     ),
+    #######################################################
+    #No va a funcionar, no necesitamos validar esto, la creación del asset se hace bien. No hay que hacer ninguna validación.
+    url(
+        r"^charging/api/assetManagement/assets/validateJobSpecification/?$",
+        offering_views.ValidateCollection(permitted_methods=("POST",)),
+    ),
+    #######################################################
     url(
         r"^charging/api/assetManagement/assets/offeringJob/?$",
         offering_views.ValidateOfferingCollection(permitted_methods=("POST",)),
@@ -141,4 +148,24 @@ urlpatterns = [
         r"^charging/api/revenueSharing/cdrs/?$",
         rss_views.CDRs(permitted_methods=("GET",)),
     ),
+    url(
+        r"^charging/api/revenueSharing/models/?$",
+        rss_views.RevenueSharingModels(permitted_methods=("GET", "POST", "PUT")),
+    ),
+    url(
+        r"^charging/api/revenueSharing/algorithms/?$",
+        rss_views.RevenueSharingAlgorithms(permitted_methods=("GET",)),
+    ),
+    # url(
+    #     r"^charging/api/revenueSharing/settlement/?$",
+    #     rss_views.Settlements(permitted_methods=("GET",)),
+    # ),
+    # url(
+    #     r"^charging/api/revenueSharing/settlement/reports/?$",
+    #     rss_views.SettlementReports(permitted_methods=("GET",)),
+    # ),
+    # url(
+    #     r"^charging/api/revenueSharing/cdrs/?$",
+    #     rss_views.CDRs(permitted_methods=("GET",)),
+    # ),
 ]

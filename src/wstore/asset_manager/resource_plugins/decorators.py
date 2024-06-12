@@ -201,3 +201,33 @@ def on_product_suspended(order, contract):
 
 def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
+
+##################################################
+
+def on_service_spec_validation(func):
+    @wraps(func)
+    def wrapper(self, provider, asset_t, media_type, url):
+    #def wrapper(self, provider, asset_t, media_type, url, asset_id):
+        print("Entra en los decorators")
+        plugin_module = load_plugin_module(asset_t)
+        print("Tras el load_plugin_module")
+
+        # On pre validation
+        plugin_module.on_pre_product_spec_validation(provider, asset_t, media_type, url)
+        print("On pre validation")
+
+        # Call method
+        #asset = func(self, provider, asset_t, media_type, url, asset_id)
+        asset = func(self, provider, asset_t, media_type, url)
+        print("Call method")
+
+        # On post validation
+        plugin_module.on_post_product_spec_validation(provider, asset)
+
+        print("Sale de los decorators")
+
+        return asset
+
+    return wrapper
+
+##################################################

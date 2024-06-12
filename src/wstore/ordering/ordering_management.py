@@ -299,12 +299,21 @@ class OrderingManager:
             if contactMedium["mediumType"] == "PostalAddress"
         ]
 
-        if len(postal_addresses) != 1:
-            logger.error("Provided Billing Account does not contain a Postal Address")
-            raise OrderingError("Provided Billing Account does not contain a Postal Address")
+        # if len(postal_addresses) != 1:
+        #     logger.error("Provided Billing Account does not contain a Postal Address")
+        #     raise OrderingError("Provided Billing Account does not contain a Postal Address")
 
         postal_address = postal_addresses[0]["characteristic"]
 
+        # return {
+        #     "street": postal_address["streetOne"] + "\n" + postal_address.get("streetTwo", ""),
+        #     "postal": postal_address["postcode"],
+        #     "city": postal_address["city"],
+        #     "province": postal_address["stateOrProvince"],
+        #     "country": postal_address["country"],
+        # }
+
+        # TODO: Add billing address
         return {
             "street": postal_address["street1"] + "\n" + postal_address.get("street2", ""),
             "postal": postal_address["postCode"],

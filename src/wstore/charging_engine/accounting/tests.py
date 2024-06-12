@@ -535,5 +535,9 @@ class SDRCollectionTestCase(TestCase):
                 views.UsageClient().update_usage_state.assert_called_once_with("1", "guided")
                 self._manager_inst.update_usage.assert_called_once_with()
             else:
+<<<<<<< HEAD
                 views.UsageClient().update_usage_state.assert_called_once_with("1", "rejected")
+=======
+                views.UsageClient().update_usage_state.assert_called_once_with("1",  "rejected")
+>>>>>>> c3379cf5 (Integration with new Usage API (#77))
                 self.assertEquals(0, self._manager_inst.update_usage.call_count)
