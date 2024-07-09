@@ -21,9 +21,11 @@
 from functools import wraps
 from logging import getLogger
 from shutil import rmtree
+from wstore.asset_manager import service_category_imp
 
 logger = getLogger("wstore.default_logger")
 
+#Fijarse
 
 def installPluginRollback(func):
     class Logger:
@@ -41,6 +43,14 @@ def installPluginRollback(func):
             rb_log = Logger()
             result = func(self, path, rb_log=rb_log)
         except Exception as e:
+
+            ##############################
+            # Remove plugin from API if existing
+            if "API" in rb_log.get_state():
+                s_cat = service_category_imp.ServiceCategory()
+                s_cat.get_service_category(rb_log.get_state()["API"])
+            ##############################
+
             # Remove directory if existing
             if "PATH" in rb_log.get_state():
                 logger.debug("Removing path")

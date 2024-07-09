@@ -65,7 +65,7 @@ class ResourceRetrievingTestCase(TestCase):
 
         asset_manager.Resource.objects.filter.return_value = [self._mock_resource(r, self.org) for r in EXISTING_INFO]
         asset_manager.Resource.objects.get.return_value = self._mock_resource(EXISTING_INFO[0], self.org)
-
+    
     @classmethod
     def tearDownClass(cls):
         # Restore resource model

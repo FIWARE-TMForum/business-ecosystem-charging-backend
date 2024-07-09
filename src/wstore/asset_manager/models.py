@@ -46,8 +46,9 @@ class ResourceVersion(models.Model):
 
 
 class Resource(models.Model):
-    _id = models.ObjectIdField()
-    product_id = models.CharField(max_length=100, blank=True, null=True)
+    _id = models.ObjectIdField() # necesita ser accesible, pode poser un método get_id
+    #product_id = models.CharField(max_length=100, blank=True, null=True)
+    service_id = models.CharField(max_length=100, blank=True, null=True) #este es el id del service spec del api
     version = models.CharField(max_length=20)  # This field maps the Product Spec version
     provider = models.ForeignKey(Organization, on_delete=models.DO_NOTHING)
     content_type = models.CharField(max_length=100)
@@ -70,6 +71,9 @@ class Resource(models.Model):
 
         return urljoin(base_uri, "charging/api/assetManagement/assets/" + str(self.pk))
 
+    #def get_id(self):
+    #    return self._id
+
     class Meta:
         app_label = "wstore"
 
@@ -77,6 +81,7 @@ class Resource(models.Model):
 class ResourcePlugin(models.Model):
     _id = models.ObjectIdField()
     plugin_id = models.CharField(max_length=100)
+    category_id = models.CharField(max_length=100) # Id del category en el API
     name = models.CharField(max_length=100)
     version = models.CharField(max_length=50)
     version_history = models.JSONField(default=[])

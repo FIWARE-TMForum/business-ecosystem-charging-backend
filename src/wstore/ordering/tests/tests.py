@@ -527,6 +527,8 @@ class OrderingManagementTestCase(TestCase):
         err_msg=None,
         terms_accepted=True,
     ):
+        # if name == 'free_add':
+        #    import ipdb; ipdb.sset_trace()
 
         # Mock requests results
         self._response.json.side_effect = [

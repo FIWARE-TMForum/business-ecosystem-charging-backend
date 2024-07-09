@@ -24,6 +24,8 @@ import os
 from logging import getLogger
 
 from django.conf import settings
+from wstore.asset_manager import service_specification_imp
+
 
 logger = getLogger("wstore.default_logger")
 
@@ -46,6 +48,12 @@ def downgrade_asset(asset):
     asset.content_type = prev_version.content_type
     asset.state = "attached"
     asset.save()
+
+
+    ################
+    # Teño que facer comprobación si hace falta actualizarlo a una versión anterio
+    # o borrarlo de la base de datos
+    ################
 
     logger.debug(f"Downgraded asset {asset} OK")
 
