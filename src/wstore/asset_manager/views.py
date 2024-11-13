@@ -39,6 +39,11 @@ from wstore.store_commons.utils.http import (
     supported_request_mime_types,
 )
 
+##########################################
+from wstore.asset_manager import service_specification_manager
+from wstore.asset_manager.service_validator import ServiceValidator
+##########################################
+
 
 class AssetCollection(Resource):
     def read(self, request):
@@ -189,6 +194,14 @@ class UploadCollection(Resource):
         def upload_asset(req, user, content_type):
             asset_manager = AssetManager()
 
+            ##########################
+            # APIs TMForums
+            # En el body de la request iría json con la info bien ordenada
+            # Si falla xa tería que ir dar o error e parar a execución
+            #mspecification = service_specification_manager.ServiceSpecificationManager()
+            #mspecification.create_service_spec_cand(req.body)
+            ##########################
+
             if content_type == "application/json":
                 data = json.loads(req.body)
                 resource = asset_manager.upload_asset(user, data)
@@ -229,7 +242,12 @@ class UpgradeCollection(Resource):
         return _manage_digital_asset(request, upgrade_asset)
 
 
+
+#Vai dar problemas fijo polo tema do data, revisalo
 def _validate_catalog_element(request, element, validator):
+
+    print("Entra en _validate_catalog_element")
+
     # Validate user permissions
     user = request.user
     if "provider" not in user.userprofile.get_current_roles() and not user.is_staff:
@@ -274,8 +292,11 @@ class ValidateCollection(Resource):
         :param request:
         :return:
         """
-        product_validator = ProductValidator()
-        return _validate_catalog_element(request, "product", product_validator)
+
+        #product_validator = ProductValidator()
+        #return _validate_catalog_element(request, "product", product_validator)
+        service_validator = ServiceValidator()
+        return _validate_catalog_element(request, "service", service_validator)
 
 
 class ValidateOfferingCollection(Resource):

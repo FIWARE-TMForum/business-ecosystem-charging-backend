@@ -31,8 +31,18 @@ class CatalogValidator:
             raise ProductError(f"The characteristic {characteristic['name']} must not contain multiple values")
 
         return characteristic["productSpecCharacteristicValue"][0]["value"]
+    
+    def _get_spec_characteristic_value(self, characteristic): #Preguntar para que sirve esto e para que o vamos necesitar                              
+        #print("Entra en _get_spec_characteristic_value")
+        if len(characteristic["characteristicValueSpecification"]) > 1:
+            raise ProductError(f"The characteristic {characteristic['name']} must not contain multiple values")
+
+        return characteristic["characteristicValueSpecification"][0]["value"]
+    
+    ###############################################
 
     def parse_characteristics(self, product_spec):
+
         expected_chars = {
             "asset type": [],
             "media type": [],
@@ -81,6 +91,88 @@ class CatalogValidator:
                 asset_id = expected_chars["asset"][0]
 
         return asset_type, media_type, location, asset_id
+    
+    ############################################
+
+    def parse_spec_characteristics(self, product_spec):
+
+        #print("Entra en parse_spec_characteristics")
+
+        expected_chars = {
+            "asset type": [],
+            "media type": [],
+            "location": [],
+            #"asset": [],
+        }
+
+        asset_type = None
+        media_type = None
+        location = None
+        #asset_id = None
+
+        if "specCharacteristic" in product_spec:
+
+            #print("Entra if specCharacteristic")
+            #print(product_spec["specCharacteristic"])
+
+            terms = []
+
+            # Extract the needed characteristics for processing digital assets
+            is_digital = False
+            for char in product_spec["specCharacteristic"]:
+                #print(char["name"])
+                if char["name"].lower() in expected_chars:
+                    is_digital = True
+                    #print("Tras el True")
+                    expected_chars[char["name"].lower()].append(self._get_spec_characteristic_value(char)) #Falla aquí
+                    #print("if char[name].lower() in expected_chars")
+
+                if char["name"].lower() == "license":
+                    terms.append(self._get_characteristic_value(char))
+                    #print("char[name].lower() == license")
+
+            #print("Segundo if")
+
+            #print(expected_chars)
+
+            
+            for char_name in expected_chars:
+
+                #print(char_name)
+                # Validate the existence of the characteristic
+                if not len(expected_chars[char_name]) and is_digital:
+                    raise ProductError("Digital product specifications must contain a " + char_name + " characteristic")
+                
+                #print("Segundo if primeiro if")
+
+                # Validate that only a value has been provided
+                if len(expected_chars[char_name]) > 1:
+                    raise ProductError(
+                        "The product specification must not contain more than one " + char_name + " characteristic"
+                    )
+                
+                #print("Segundo if segundo if")
+            
+            
+
+            #print("Tercer if")
+
+            if len(terms) > 1:
+                raise ProductError("The product specification must not contain more than one license characteristic")
+
+            self._has_terms = len(terms) > 0
+
+            if is_digital:
+                asset_type = expected_chars["asset type"][0]
+                media_type = expected_chars["media type"][0]
+                location = expected_chars["location"][0]
+                #asset_id = expected_chars["asset"][0]
+
+        #print("Antes del return")
+
+        return asset_type, media_type, location#, asset_id
+    
+    ############################################
 
     def validate_creation(self, provider, catalog_element):
         pass
@@ -107,6 +199,9 @@ class CatalogValidator:
         pass
 
     def validate(self, action, provider, catalog_element):
+
+        #print("Entra en validate en catalog validator")
+
         validators = {
             "create": self.validate_creation,
             "attach": self.attach_info,
