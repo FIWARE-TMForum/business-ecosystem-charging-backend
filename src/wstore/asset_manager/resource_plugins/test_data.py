@@ -26,6 +26,7 @@ PLUGIN_INFO = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "category_id": "cat_2",
     "media_types": [
         "application/x-widget+mashable-application-component",
         "application/x-mashup+mashable-application-component",
@@ -72,9 +73,20 @@ PLUGIN_INFO = {
 PLUGIN_INFO2 = {
     "name": "test plugin 5",
     "author": "test author",
+    "category_id": "cat2",
     "version": "1.0",
     "module": "test.TestPlugin",
     "formats": ["FILE"],
+}
+
+PLUGIN_INFO3 = {
+    "name": "test plugin 8",
+    "author": "test author",
+    "category_id": "cat2",
+    "version": "1.0",
+    "module": "test.TestPlugin",
+    "formats": ["FILE"],
+    "pull_accounting": True
 }
 
 PLUGIN_INFO_ACCOUNTING = {
@@ -118,6 +130,7 @@ PLUGIN_INFO_DOWNGRADE = {
     "version": "0.2",
     "module": "test.TestPluginDg",
     "formats": ["FILE", "URL"],
+    "category_id": "cat_2"
 }
 
 PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
@@ -127,6 +140,7 @@ PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
     "module": "test.TestPluginDg",
     "formats": ["FILE", "URL"],
     "pull_accounting": True,
+    "category_id": "cat_2"
 }
 
 MISSING_NAME = {

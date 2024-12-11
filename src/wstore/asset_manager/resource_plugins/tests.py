@@ -23,6 +23,7 @@ import os
 from importlib import reload
 from json import dump as jsondump
 from shutil import rmtree
+from urllib.parse import urljoin
 
 from bson.objectid import ObjectId
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
@@ -30,6 +31,7 @@ from django.test import TestCase
 from mock import MagicMock, call
 from parameterized import parameterized
 from requests.exceptions import HTTPError
+from wstore.asset_manager import service_category_imp
 from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loader
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
@@ -50,14 +52,19 @@ class PluginLoaderTestCase(TestCase):
 
     _to_remove = None
 
+
     def setUp(self):
+        reload(service_category_imp)
+        reload(plugin_loader)
         # Create PluginManager mock
         plugin_loader.PluginValidator = MagicMock(name="PluginManager")
         self.manager_mock = MagicMock()
         self.manager_mock.validate_plugin_info.return_value = None
         self.manager_mock.validate_pull_accounting.return_value = None
-
+        plugin_loader.settings.SERVICE_CATALOG = "http://testlocation.org/"
+        service_category_imp.settings.SITE = "http://testlocation2.org/"
         plugin_loader.PluginValidator.return_value = self.manager_mock
+        
 
     def _clean_plugin_dir(self):
         plugin_dir = os.path.join("wstore", "test")
@@ -104,7 +111,7 @@ class PluginLoaderTestCase(TestCase):
             (
                 "pull_accounting",
                 "test_plugin_8.zip",
-                None,
+                PLUGIN_INFO3,
                 None,
                 Exception,
                 "Call to configure expecs",
@@ -184,6 +191,18 @@ class PluginLoaderTestCase(TestCase):
         err_type=None,
         err_msg=None,
     ):
+        # Mocking service category api
+        resp = MagicMock()
+        if expected is not None:
+            resp.json.return_value = {
+                "id":expected["category_id"],
+                "name": expected["name"]
+                }
+        else:
+            resp.json.return_value = None
+        resp.status_code = 200
+        service_category_imp.requests= MagicMock()
+        service_category_imp.requests.post.return_value = resp
         # Build plugin loader
         plugin_l = plugin_loader.PluginLoader()
 
@@ -209,7 +228,7 @@ class PluginLoaderTestCase(TestCase):
         except Exception as e:
             error = e
 
-        if err_type is None:
+        if err_type is None and expected is not None:
             self.assertEquals(error, None)
             # Check calls
             self.manager_mock.validate_plugin_info.assert_called_once_with(expected)
@@ -221,6 +240,7 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(plugin_model.author, expected["author"])
             self.assertEquals(plugin_model.version, expected["version"])
             self.assertEquals(plugin_model.formats, expected["formats"])
+            self.assertEquals(plugin_model.category_id, expected["category_id"])
 
             plugin_dir_name = f"{plugin_model.plugin_id}-{plugin_model.version.replace('.', '-')}"
             self.assertEquals(
@@ -236,7 +256,7 @@ class PluginLoaderTestCase(TestCase):
             self.assertTrue(os.path.isfile(os.path.join(test_plugin_dir, "package.json")))
             self.assertTrue(os.path.isfile(os.path.join(test_plugin_dir, "test.py")))
 
-        else:
+        elif err_type is not None:
             self.assertIsInstance(error, err_type)
             self.assertEquals(str(error), err_msg)
 
@@ -257,6 +277,7 @@ class PluginLoaderTestCase(TestCase):
         return ResourcePlugin.objects.create(
             name="test plugin",
             plugin_id="test-plugin",
+            category_id= downgrade_plugin_info["category_id"],
             version=last_version,
             version_history=versions[:-1],
             author="test author",
@@ -301,6 +322,12 @@ class PluginLoaderTestCase(TestCase):
         err_type=None,
         err_msg=None,
     ):
+        # Mocking service category api
+        resp = MagicMock()
+        resp.json.return_value = None
+        resp.status_code = 200
+        service_category_imp.requests= MagicMock()
+        service_category_imp.requests.patch.return_value = resp
         # Build plugin loader
         plugin_l = plugin_loader.PluginLoader()
 
@@ -324,7 +351,7 @@ class PluginLoaderTestCase(TestCase):
         except Exception as e:
             error = e
 
-        if err_type is None:
+        if err_type is None and downgrade_plugin_info is not None:
             self.assertEquals(error, None)
 
             # Check plugin model
@@ -339,8 +366,10 @@ class PluginLoaderTestCase(TestCase):
             test_plugin_dir = os.path.join(self.plugin_dir, plugin_dir_name)
             self.assertTrue(os.path.isdir(test_plugin_dir))
             self.assertTrue(os.path.isfile(os.path.join(test_plugin_dir, "package.json")))
-
-        else:
+            service_category_imp.requests.patch.assert_called_once_with(
+                urljoin(plugin_loader.settings.SERVICE_CATALOG, f"serviceCategory/{downgrade_plugin_info['category_id']}"),
+                json={"name": downgrade_plugin_info["name"], "version": downgrade_plugin_info["version"]})
+        elif err_type is not None:
             self.assertIsInstance(error, err_type)
             self.assertEquals(str(error), err_msg)
 
@@ -384,6 +413,13 @@ class PluginLoaderTestCase(TestCase):
     def test_plugin_removal(self, name, pull=False, side_effect=None, err_type=None, err_msg=None):
         plugin_name = "Test Plugin"
 
+        # Mocking service category api
+        resp = MagicMock()
+        resp.json.return_value = None
+        resp.status_code = 200
+        service_category_imp.requests= MagicMock()
+        service_category_imp.requests.delete.return_value = resp
+
         # Mock libraries
         plugin_loader.Resource = MagicMock(name="Resource")
 
@@ -399,11 +435,14 @@ class PluginLoaderTestCase(TestCase):
         plugin_mock.pull_accounting = pull
         plugin_mock.module = "wstore.asset_manager.resource_plugins.tests.TestPlugin"
         plugin_mock.usage_called = False
+        plugin_mock.category_id = "id"
 
         plugin_loader.ResourcePlugin.objects.get.return_value = plugin_mock
 
         plugin_loader.rmtree = MagicMock(name="rmtree")
-
+        plugin_loader.os.listdir = MagicMock(name="listdir")
+        plugin_loader.os.listdir.return_value = ["test_plugin-123","no_re","no_re2"]
+        
         if side_effect is not None:
             if name == "two_versions":
                 side_effect(self, plugin_mock)
@@ -424,9 +463,9 @@ class PluginLoaderTestCase(TestCase):
             # Check calls
             plugin_loader.ResourcePlugin.objects.get.assert_called_once_with(plugin_id="test_plugin")
             plugin_loader.Resource.objects.filter.assert_called_once_with(resource_type=plugin_name)
-            plugin_loader.rmtree.assert_called_once_with(os.path.join(plugin_l._plugins_path, "test_plugin"))
+            plugin_loader.rmtree.assert_called_once_with(os.path.join(plugin_l._plugins_path, "test_plugin-123"))
             plugin_mock.delete.assert_called_once_with()
-
+            service_category_imp.requests.delete.assert_called_once_with(urljoin(plugin_loader.settings.SERVICE_CATALOG, "serviceCategory/id"),)
             self.assertEquals(pull, plugin_mock.usage_called)
         else:
             self.assertIsInstance(error, err_type)
@@ -887,7 +926,7 @@ class DecoratorsTestCase(TestCase):
 
     def setUp(self):
         self._module = MagicMock()
-        decorators.load_plugin_module = MagicMock(return_value=self._module)
+        decorators.load_plugin_module = MagicMock(return_value=(self._module, MagicMock()))
         self._order = MagicMock()
         self._contract = MagicMock()
 

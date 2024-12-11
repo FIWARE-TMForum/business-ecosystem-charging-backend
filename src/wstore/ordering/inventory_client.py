@@ -32,6 +32,7 @@ from django.core.exceptions import ImproperlyConfigured
 class InventoryClient:
     def __init__(self):
         self._inventory_api = settings.INVENTORY
+        self._service_inventory_api = settings.SERVICE_INVENTORY
 
     def _build_callback_url(self):
         # Use the local site for registering the callback
@@ -202,9 +203,9 @@ class InventoryClient:
 
         return inv_resource["id"]
 
-    def create_service(self, service_id, customer_party):
+    def create_service(self, service_spec_id, customer_party):
         # Get service specification
-        service_spec = self.download_spec(settings.SERVICE_CATALOG, '/serviceSpecification', service_id)
+        service_spec = self.download_spec(settings.SERVICE_CATALOG, '/serviceSpecification', service_spec_id)
         service = {
             "serviceCharacteristic": [self.build_inventory_char(char, "characteristicValueSpecification") for char in service_spec["specCharacteristic"]],
             "relatedParty": [customer_party],
@@ -218,8 +219,40 @@ class InventoryClient:
             service["description"] = service_spec["description"]
         inventory = urlparse(settings.SERVICE_INVENTORY)
         resource_url = "{}://{}{}".format(inventory.scheme, inventory.netloc, inventory.path + '/service')
-
         inv_response = requests.post(resource_url, json=service, verify=settings.VERIFY_REQUESTS)
         inv_service = inv_response.json()
         return inv_service["id"]
+
+
+    def get_services(self, query={}):
+        """
+        Retrieves a set of services that can be filtered providing a query dict
+        :param query: Dict containing the query used to filter the services
+        :return: List of resulting services
+        """
+
+        qs = "?"
+        for k, v in query.items():
+            qs += "{}={}&".format(k, v)
+
+        url = self._service_inventory_api + "/service" + qs[:-1]
+
+        r = requests.get(url)
+        r.raise_for_status()
+
+        return r.json()
+
+    def patch_service(self, service_id, patch_body):
+        """
+        Patch a given service according to the provided patch values
+        :param service_id: Id of the service to be patched
+        :param patch_body: New values for the service fields to be patched
+        """
+        # Build product url
+        url = self._service_inventory_api + "/service/" + str(service_id)
+
+        response = requests.patch(url, json=patch_body)
+        response.raise_for_status()
+
+        return response.json()
     

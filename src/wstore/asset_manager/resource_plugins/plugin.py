@@ -40,16 +40,22 @@ class Plugin:
     def on_post_product_spec_validation(self, provider, asset):
         pass
 
-    def on_pre_product_spec_attachment(self, asset, asset_t, product_spec):
+    def on_pre_service_spec_attachment(self, asset, asset_t, service_spec):
         pass
 
-    def on_post_product_spec_attachment(self, asset, asset_t, product_spec):
+    def on_post_service_spec_attachment(self, asset, asset_t, service_spec):
         pass
 
-    def on_pre_product_spec_upgrade(self, asset, asset_t, product_spec):
+    def on_pre_service_spec_validation(self, provider, asset_t, media_type, url):
         pass
 
-    def on_post_product_spec_upgrade(self, asset, asset_t, product_spec):
+    def on_post_service_spec_validation(self, provider, asset):
+        pass
+
+    def on_pre_service_spec_upgrade(self, asset, asset_t, service_spec):
+        pass
+
+    def on_post_service_spec_upgrade(self, asset, asset_t, service_spec):
         pass
 
     def on_pre_product_offering_validation(self, asset, product_offering):

@@ -320,6 +320,20 @@ class RollbackTestCase(TestCase):
         if side_effect is not None:
             side_effect(self)
 
+        mock_prev_asset = MagicMock(spec=dict)
+
+        prev_version= {  # Diccionario interno para almacenar valores
+            "resource_path": "old/path",
+            "download_link": "http://host/old/path",
+            "content_type": "old_type",
+            "version": "1.0",
+            # Setting optional attributes to default value
+            "is_public": False,
+            "has_terms": False,
+            "meta_info": {}
+        }
+        mock_prev_asset.__getitem__.side_effect = lambda key : prev_version[key]
+
         asset = MagicMock(
             resource_path=res_path,
             download_link="http://host/new/path",
@@ -327,12 +341,7 @@ class RollbackTestCase(TestCase):
             version="2.0",
             state="upgrading",
             old_versions=[
-                MagicMock(
-                    resource_path="old/path",
-                    download_link="http://host/old/path",
-                    content_type="old_type",
-                    version="1.0",
-                )
+                prev_version
             ],
         )
         downgrade_object = MagicMock(_to_downgrade=asset)

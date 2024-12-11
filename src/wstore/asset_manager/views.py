@@ -25,7 +25,7 @@ from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.http import HttpResponse
 
 from wstore.asset_manager.asset_manager import AssetManager
-from wstore.asset_manager.errors import ProductError
+from wstore.asset_manager.errors import ProductError, ServiceError
 from wstore.asset_manager.offering_validator import OfferingValidator
 from wstore.asset_manager.product_validator import ProductValidator
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
@@ -38,6 +38,11 @@ from wstore.store_commons.utils.http import (
     get_content_type,
     supported_request_mime_types,
 )
+
+##########################################
+#from wstore.asset_manager import service_specification_manager
+from wstore.asset_manager.service_validator import ServiceValidator
+##########################################
 
 
 class AssetCollection(Resource):
@@ -189,6 +194,14 @@ class UploadCollection(Resource):
         def upload_asset(req, user, content_type):
             asset_manager = AssetManager()
 
+            ##########################
+            # APIs TMForums
+            # En el body de la request iría json con la info bien ordenada
+            # Si falla xa tería que ir dar o error e parar a execución
+            #mspecification = service_specification_manager.ServiceSpecificationManager()
+            #mspecification.create_service_spec_cand(req.body)
+            ##########################
+
             if content_type == "application/json":
                 data = json.loads(req.body)
                 resource = asset_manager.upload_asset(user, data)
@@ -212,7 +225,8 @@ class UpgradeCollection(Resource):
         :param asset_id: Id of the asset to be upgraded
         :return: Response 200 if the asset is correctly upgraded
         """
-
+        print("upgrade")
+        print(asset_id)
         def upgrade_asset(req, user, content_type):
             asset_manager = AssetManager()
 
@@ -229,7 +243,12 @@ class UpgradeCollection(Resource):
         return _manage_digital_asset(request, upgrade_asset)
 
 
+
+#Vai dar problemas fijo polo tema do data, revisalo
 def _validate_catalog_element(request, element, validator):
+
+    print("Entra en _validate_catalog_element")
+
     # Validate user permissions
     user = request.user
     if "provider" not in user.userprofile.get_current_roles() and not user.is_staff:
@@ -248,10 +267,12 @@ def _validate_catalog_element(request, element, validator):
         return build_response(request, 400, "Missing required field: product")
 
     try:
-        validator.validate(data["action"], user.userprofile.current_organization, data[element])
+        response = validator.validate(data["action"], user.userprofile.current_organization, data[element])
     except ValueError as e:
         return build_response(request, 400, str(e))
     except ProductError as e:
+        return build_response(request, 400, str(e))
+    except ServiceError as e:
         return build_response(request, 400, str(e))
     except ConflictError as e:
         return build_response(request, 409, str(e))
@@ -259,24 +280,37 @@ def _validate_catalog_element(request, element, validator):
         return build_response(request, 422, str(e))
     except PermissionDenied as e:
         return build_response(request, 403, str(e))
-    except:
+    except Exception as e:
+        print(str(e))
         return build_response(request, 500, "An unexpected error has occurred")
+    print("sale de _validate_catalog_element")
+    return build_response(request, 200, "OK", extra_content=response)
 
-    return build_response(request, 200, "OK")
-
+class ValidateServiceCollection(Resource):
+    @supported_request_mime_types(("application/json",))
+    @authentication_required
+    def create(self, request):
+        """
+        Validates the digital asset contained in a TMForum service Specification
+        :param request:
+        :return:
+        """
+        
+        service_validator = ServiceValidator()
+        return _validate_catalog_element(request, "service", service_validator)
 
 class ValidateCollection(Resource):
     @supported_request_mime_types(("application/json",))
     @authentication_required
     def create(self, request):
         """
-        Validates the digital assets contained in a TMForum product Specification
+        Validates the digital assets contained in a TMForum service Specification assosiated to a product Specification
         :param request:
         :return:
         """
+
         product_validator = ProductValidator()
         return _validate_catalog_element(request, "product", product_validator)
-
 
 class ValidateOfferingCollection(Resource):
     @supported_request_mime_types(("application/json",))

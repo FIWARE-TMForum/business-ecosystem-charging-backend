@@ -32,6 +32,7 @@ from wstore.asset_manager.resource_plugins.plugin_rollback import installPluginR
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.models import Resource, ResourcePlugin
 from wstore.store_commons.utils.version import is_lower_version
+from wstore.asset_manager import service_category_manager
 
 logger = getLogger("wstore.default_logger")
 
@@ -62,6 +63,7 @@ class PluginLoader:
 
     def _update_model_data_from_json(self, model, module, json_info):
         # Create or update plugin model data
+        model.category_id = json_info["category_id"]
         model.name = json_info["name"]
         model.version = json_info["version"]
         model.author = json_info["author"]
@@ -87,7 +89,7 @@ class PluginLoader:
         with zipfile.ZipFile(path, "r") as z:
             # Validate that the file package.json exists
             if "package.json" not in z.namelist():
-                logger.error("Invalid package format: Not a zip file")
+                logger.error("Invalid package format: Missing package.json file")
                 raise PluginError("Missing package.json file")
 
             logger.debug("Found `package.json`")
@@ -118,7 +120,7 @@ class PluginLoader:
 
             # Create the directory
             try:
-                os.mkdir(plugin_path)
+                os.makedirs(plugin_path)
             except FileExistsError:
                 raise PluginError("An equal version of this plugin is already installed")
 
@@ -154,6 +156,18 @@ class PluginLoader:
         if pull_accounting_errors:
             logger.error("Error in implementation for pull accounting")
             raise PluginError(pull_accounting_errors)
+        
+        #####################
+        # service category
+        logger.debug("Creating API entry")
+        s_cat = service_category_manager.ServiceCategoryManager()
+        created_cat = s_cat.create_service_cat(json_info)
+        logger.debug("Antes del rb_log")
+        rb_log.log_action("API", created_cat["name"])
+        logger.debug("Antes de crear el cateogy_id en el json")
+        json_info["category_id"] = created_cat["id"]
+        logger.debug("Tras crearlo en el API")
+        #####################
 
         self._update_model_data_from_json(plugin_model, module, json_info)
         rb_log.log_action("MODEL", plugin_model)
@@ -203,7 +217,12 @@ class PluginLoader:
         """
 
         # Get plugin model
-        plugin_model = ResourcePlugin.objects.get(plugin_id=plugin_id)
+        try:
+            plugin_model = ResourcePlugin.objects.get(plugin_id=plugin_id)
+        except ResourcePlugin.DoesNotExist:
+            raise PluginError("Plugin name not found")     
+        except Exception as e:
+            raise PluginError("Error while retrieving the plugin")
 
         if version is None:
             version = plugin_model.version_history[-1] if plugin_model.version_history else None
@@ -217,6 +236,13 @@ class PluginLoader:
 
         while plugin_model.version != version:
             self._downgrade_plugin_to_last_version(plugin_id, plugin_model)
+        category_id = plugin_model.category_id
+        ###############
+        # En la base de datos del api solo se guardará la versión acctual
+        # service category
+        s_cat = service_category_manager.ServiceCategoryManager()
+        s_cat.update_service_cat(category_id, plugin_model)
+        ###############
 
         logger.info(f"Plugin {plugin_id} successfully downgraded")
 
@@ -248,8 +274,16 @@ class PluginLoader:
             module_class(plugin_model).remove_usage_specs()
 
         # Remove plugin files
-        plugin_path = os.path.join(self._plugins_path, plugin_id)
-        rmtree(plugin_path)
+        plugin_path = self._plugins_path
+        for file in os.listdir(plugin_path):
+            if file.startswith(f"{plugin_id}-"):
+                rmtree(os.path.join(plugin_path, file))
+
+        ###############
+        # service category
+        s_cat = service_category_manager.ServiceCategoryManager()
+        s_cat.remove_service_cat(plugin_model.category_id)
+        ###############
 
         # Remove model
         plugin_model.delete()

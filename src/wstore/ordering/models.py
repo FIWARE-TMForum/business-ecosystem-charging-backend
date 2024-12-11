@@ -36,7 +36,7 @@ class Offering(models.Model):
     version = models.CharField(max_length=100)
     description = models.CharField(max_length=1500)
     is_digital = models.BooleanField(default=True)
-    asset = models.ForeignKey(Resource, on_delete=models.DO_NOTHING, null=True, blank=True)
+    asset = models.ManyToManyField(Resource, blank=True)
     is_open = models.BooleanField(default=False)
     is_custom = models.BooleanField(default=False)
     bundled_offerings = models.JSONField(default=[])  # List

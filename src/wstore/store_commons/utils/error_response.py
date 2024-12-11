@@ -22,9 +22,10 @@ import json
 from xml.dom.minidom import getDOMImplementation
 
 
-def get_xml_response(request, mimetype, status_code, value):
+def get_xml_response(request, mimetype, status_code, value, extra_content):
     dom = getDOMImplementation()
-
+    if extra_content is None:
+        extra_content = []
     if status_code >= 400:
         doc = dom.createDocument(None, "error", None)
     else:
@@ -39,20 +40,28 @@ def get_xml_response(request, mimetype, status_code, value):
     return errormsg
 
 
-def get_json_response(request, mimetype, status_code, message):
+def get_json_response(request, mimetype, status_code, message, extra_content):
     response = {}
+    if extra_content is None:
+        extra_content = []
     if status_code >= 400:
         response["result"] = "error"
         response["error"] = message
     else:
         response["result"] = "correct"
         response["message"] = message
+        print("sssss")
+        for name in extra_content:
+            print(name)
+            response[name] = extra_content[name]
 
     return json.dumps(response)
 
 
-def get_unicode_response(request, mimetype, status_code, message):
+def get_unicode_response(request, mimetype, status_code, message, extra_content):
     response = ""
+    if extra_content is None:
+        extra_content = []
     if status_code >= 400:
         response += "Error: " + message
     else:

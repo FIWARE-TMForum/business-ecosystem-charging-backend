@@ -35,6 +35,7 @@ def get_plugin_info(plugin):
     plugin_url = urljoin(site, "api/offering/resources/plugins/" + plugin.plugin_id)
     plugin_info = {
         "id": plugin.plugin_id,
+        "category_id": plugin.category_id,
         "href": plugin_url,
         "name": plugin.name,
         "author": plugin.author,

@@ -34,7 +34,7 @@ from wstore.asset_manager import asset_manager, models
 from wstore.asset_manager.test.resource_test_data import *
 from wstore.store_commons.errors import ConflictError
 from wstore.store_commons.utils.testing import decorator_mock
-
+from bson import ObjectId
 
 class ResourceRetrievingTestCase(TestCase):
     tags = ("asset-manager",)
@@ -65,7 +65,7 @@ class ResourceRetrievingTestCase(TestCase):
 
         asset_manager.Resource.objects.filter.return_value = [self._mock_resource(r, self.org) for r in EXISTING_INFO]
         asset_manager.Resource.objects.get.return_value = self._mock_resource(EXISTING_INFO[0], self.org)
-
+    
     @classmethod
     def tearDownClass(cls):
         # Restore resource model
@@ -153,7 +153,7 @@ class ResourceRetrievingTestCase(TestCase):
         except Exception as e:
             error = e
 
-        asset_manager.Resource.objects.filter.assert_called_once_with(product_id="123")
+        asset_manager.Resource.objects.filter.assert_called_once_with(service_spec_id="123")
         self.validate_response(result, expected_result, error, err_type, err_msg)
 
 
@@ -176,7 +176,7 @@ class UploadAssetTestCase(TestCase):
         asset_manager.settings.BUCKET_NAME= "test"
         asset_manager.settings.ACL_ENABLED= False
 
-        asset_manager.Resource = MagicMock()
+        asset_manager.Resource.objects = MagicMock()
         self.res_mock = MagicMock()
         self.res_mock.get_url.return_value = "http://locationurl.com/"
         self.res_mock.get_uri.return_value = "http://uri.com/"
@@ -220,11 +220,11 @@ class UploadAssetTestCase(TestCase):
 
     def _file_conflict(self):
         asset_manager.os.path.exists.return_value = True
-        self.res_mock.product_id = None
+        self.res_mock.service_spec_id = None
 
     def _file_conflict_err(self):
         asset_manager.os.path.exists.return_value = True
-        self.res_mock.product_id = "1"
+        self.res_mock.service_spec_id = "1"
 
     def _check_file_calls(self, file_name="example.wgt", aws= False):
         final_dir = "test_user" if not aws else "temp"
@@ -486,7 +486,7 @@ class UploadAssetTestCase(TestCase):
         )
 
     def _existing_asset(self):
-        asset_manager.Resource.objects.filter.return_value = [MagicMock(product_id="1")]
+        asset_manager.Resource.objects.filter.return_value = [MagicMock(service_spec_id="1")]
 
     def _type_not_found(self):
         asset_manager.ResourcePlugin.objects.filter.return_value = []
@@ -643,14 +643,14 @@ class UploadAssetTestCase(TestCase):
 
     @override_settings(MEDIA_ROOT="/home/test/media")
     def test_upgrade_asset(self):
-        asset_id = "1"
+        asset_id = "668bcf45efdd886c081d25c4"
         prev_path = "media/assets/test_user/example1.wgt"
         prev_link = "http://testdomain.com/charging/media/assets/test_user/example1.wgt"
         prev_type = "application/x-widget-old"
         prev_version = "1.0"
 
         asset = MagicMock(
-            product_id="2",
+            service_spec_id="2",
             is_public=False,
             resource_path=prev_path,
             download_link=prev_link,
@@ -670,7 +670,7 @@ class UploadAssetTestCase(TestCase):
         resource = am.upgrade_asset(asset_id, self._user, UPLOAD_CONTENT, file_=None)
 
         # Check calls
-        asset_manager.Resource.objects.filter.assert_called_once_with(pk=asset_id)
+        asset_manager.Resource.objects.filter.assert_called_once_with(pk=ObjectId(asset_id))
         self.assertEquals(asset, resource)
         self._check_file_calls()
 
@@ -708,13 +708,13 @@ class UploadAssetTestCase(TestCase):
         return []
 
     def _public_asset(self):
-        return [MagicMock(product_id="2", is_public=True)]
+        return [MagicMock(service_spec_id="2", is_public=True)]
 
     def _not_attached_asset(self):
-        return [MagicMock(product_id=None, is_public=False)]
+        return [MagicMock(service_spec_id=None, is_public=False)]
 
     def _upgrading_asset(self):
-        return [MagicMock(product_id="2", state="upgrading", is_public=False)]
+        return [MagicMock(service_spec_id="2", state="upgrading", is_public=False)]
 
     @parameterized.expand(
         [
@@ -734,7 +734,7 @@ class UploadAssetTestCase(TestCase):
                 "not_attached",
                 _not_attached_asset,
                 ValueError,
-                "It is not possible to upgrade an asset not included in a product specification",
+                "It is not possible to upgrade an asset not included in a service specification",
             ),
             (
                 "upgrading",
@@ -748,19 +748,19 @@ class UploadAssetTestCase(TestCase):
         self._mock_timer()
         asset_resp = asset_mock(self)
         asset_manager.Resource.objects.filter.return_value = asset_resp
-
+        asset_id = "668bcf45efdd886c081d25c4"
         error = None
         try:
             am = asset_manager.AssetManager()
-            am.upgrade_asset("1", self._user, UPLOAD_CONTENT, file_=None)
+            am.upgrade_asset(asset_id, self._user, UPLOAD_CONTENT, file_=None)
         except Exception as e:
             error = e
 
-        self.assertTrue(isinstance(error, err_type))
+        self.assertIsInstance(error, err_type)
         self.assertEquals(err_msg, str(error))
 
     def _test_timer(self, state, check_calls):
-        asset_pk = "1234"
+        asset_pk = "668bcf45efdd886c081d25c4"
 
         lock = MagicMock()
         asset_manager.DocumentLock = MagicMock(return_value=lock)
@@ -778,7 +778,7 @@ class UploadAssetTestCase(TestCase):
         lock.wait_document.assert_called_once_with()
         lock.unlock_document.assert_called_once_with()
 
-        asset_manager.Resource.objects.get.assert_called_once_with(pk=asset_pk)
+        asset_manager.Resource.objects.get.assert_called_once_with(pk=ObjectId(asset_pk))
 
         check_calls(asset)
 

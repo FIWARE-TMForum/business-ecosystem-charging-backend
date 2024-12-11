@@ -47,7 +47,7 @@ FORMATTERS = {
 }
 
 
-def build_response(request, status_code, msg, extra_formats=None, headers=None):
+def build_response(request, status_code, msg, extra_formats=None, headers=None, extra_content = None):
     logger.debug(f"Building response for {request.method} {request.path}")
     if extra_formats is not None:
         formatters = extra_formats.copy()
@@ -61,7 +61,7 @@ def build_response(request, status_code, msg, extra_formats=None, headers=None):
         mimetype = mimeparser.best_match(formatters.keys(), request.META.get("HTTP_ACCEPT", "text/plain"))
 
     response = HttpResponse(
-        formatters[mimetype](request, mimetype, status_code, msg),
+        formatters[mimetype](request, mimetype, status_code, msg, extra_content),
         content_type=mimetype,
         status=status_code,
     )
@@ -71,6 +71,7 @@ def build_response(request, status_code, msg, extra_formats=None, headers=None):
     for header_name in headers:
         response[header_name] = headers[header_name]
 
+    print("salida")
     return response
 
 

@@ -25,6 +25,7 @@ import os
 import threading
 from logging import getLogger
 from urllib.parse import urljoin
+from bson import ObjectId
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -36,6 +37,8 @@ from wstore.store_commons.rollback import downgrade_asset, downgrade_asset_pa, r
 from wstore.store_commons.utils.name import is_valid_file
 from wstore.store_commons.utils.url import is_valid_url, url_fix
 import boto3
+from wstore.asset_manager import service_specification_manager
+
 logger = getLogger("wstore.default_logger")
 
 
@@ -136,8 +139,8 @@ class AssetManager:
         # Check if the file already exists
         if os.path.exists(file_path):
             res = Resource.objects.get(resource_path=resource_path)
-            if res.product_id is not None:
-                # If the resource has product_id field, it means that a product
+            if res.service_spec_id is not None:
+                # If the resource has service_spec_id field, it means that a product
                 # spec has been created, so it cannot be overridden
                 logger.error(f"The asset file `{file_name}` already exists")
                 raise ConflictError(f"The provided digital asset file ({file_name}) already exists")
@@ -190,7 +193,7 @@ class AssetManager:
             logger.error(f"The asset type {resource_type} does not exist")
             raise ObjectDoesNotExist(f"The asset type {resource_type} does not exist")
 
-        asset_type = plugins[0]
+        asset_type = plugins[0]  #Os asset_types son os plugins
 
         # Validate content type
         if len(asset_type.media_types) and content_type not in asset_type.media_types:
@@ -297,6 +300,10 @@ class AssetManager:
             resource_data["metadata"],
         )
 
+        #####################
+
+        #####################
+
         logger.debug(f"Loaded resource info for {resource_data['content_type']} OK")
         return resource_data, current_organization
 
@@ -313,23 +320,33 @@ class AssetManager:
         resource_data, current_organization = self._load_resource_info(provider, data, file_=file_)
         resource = self._create_resource_model(current_organization, resource_data)
 
+        ########################
+        #sp_manager = service_specification_manager.ServiceSpecificationManager()
+        #sp_manager.create_service_spec_cand(resource)
+        ########################
+
         logger.info(f"Uploaded asset: {resource}")
         return resource
 
     def _save_current_asset_version(self, asset):
         # Save current version info
-        curr_version = ResourceVersion(
-            version=asset.version,
-            resource_path=asset.resource_path,
-            download_link=asset.download_link,
-            content_type=asset.content_type,
-            meta_info=asset.meta_info,
-        )
+        try:
+            curr_version = ResourceVersion(
+                version=asset.version,
+                resource_path=asset.resource_path,
+                download_link=asset.download_link,
+                content_type=asset.content_type,
+                meta_info=asset.meta_info,
+            )
 
-        asset.old_versions.append(curr_version)
-        asset.version = ""
-        asset.download_link = ""
-        asset.meta_info = {}
+            asset.old_versions = asset.old_versions if isinstance(asset.old_versions, list) else []
+            asset.old_versions.append(curr_version)
+            asset.version = ""
+            asset.download_link = ""
+            asset.meta_info = {}
+        except Exception as e:
+            print("error")
+            print(str(e))
 
         asset.save()
         logger.debug(f"Saved asset version: {asset.version}")
@@ -339,7 +356,7 @@ class AssetManager:
         lock.wait_document()
 
         # Refresh asset info
-        asset = Resource.objects.get(pk=self._to_downgrade.pk)
+        asset = Resource.objects.get(pk=ObjectId(self._to_downgrade.pk))
 
         # If the asset is in upgrading state when the timer ends, rollback is called
         if asset.state == "upgrading":
@@ -359,7 +376,7 @@ class AssetManager:
         """
         logger.debug(f"Start upgrading asset: {asset_id}")
 
-        assets = Resource.objects.filter(pk=asset_id)
+        assets = Resource.objects.filter(pk=ObjectId(asset_id))
 
         if not len(assets):
             logger.error(f"The specified asset does not exist")
@@ -371,19 +388,22 @@ class AssetManager:
             logger.error(f"It is not allowed to upgrade public assets, create a new one instead")
             raise ValueError("It is not allowed to upgrade public assets, create a new one instead")
 
-        if asset.product_id is None:
-            logger.error(f"It is not possible to upgrade an asset not included in a product specification")
-            raise ValueError("It is not possible to upgrade an asset not included in a product specification")
+        if asset.service_spec_id is None:
+            logger.error(f"It is not possible to upgrade an asset not included in a service specification")
+            raise ValueError("It is not possible to upgrade an asset not included in a service specification")
 
         if asset.state == "upgrading":
             logger.error(f"The provided asset is already in upgrading state")
             raise ValueError("The provided asset is already in upgrading state")
 
+        logger.debug(f"Save current asset version")
         self._save_current_asset_version(asset)
         self._to_downgrade = asset
 
+        logger.debug(f"load resource info")
         resource_data, current_organization = self._load_resource_info(provider, data, file_=file_)
 
+        logger.debug("saving...")
         asset.download_link = resource_data["link"]
         asset.resource_path = resource_data["content_path"]
         asset.meta_info = resource_data["metadata"]
@@ -396,6 +416,13 @@ class AssetManager:
         t = threading.Timer(15, self._upgrade_timer)
         t.start()
 
+        ######################
+        # Necisto mirar lo del rollback porque si falla el api entonces
+        # Necesitamos borrarlo en local
+        #sp_manager = service_specification_manager.ServiceSpecificationManager()
+        #sp_manager.update_service_spec_cand(asset)
+        ######################
+        
         logger.info(f"Upgrading asset: {asset_id} OK")
         return asset
 
@@ -407,7 +434,7 @@ class AssetManager:
             "state": resource.state,
             "href": resource.get_uri(),
             "location": resource.get_url(),
-            "resourceType": resource.resource_type,
+            "resourceType": resource.resource_type,                           
             "metadata": resource.meta_info,
         }
 
@@ -419,8 +446,8 @@ class AssetManager:
 
         return self.get_resource_info(asset)
 
-    def get_product_assets(self, product_id):
-        assets = Resource.objects.filter(product_id=product_id)
+    def get_product_assets(self, service_spec_id):
+        assets = Resource.objects.filter(service_spec_id=service_spec_id)
 
         return [self.get_resource_info(asset) for asset in assets]
 

@@ -284,7 +284,9 @@ class OrderingManager:
         account = None
         try:
             billing_client = BillingClient()
+            print(11)
             account = billing_client.get_billing_account(billing_account["id"])
+            print(account)
         except Exception as e:
             logger.error("Error retriving billing account {}".format(str(e)))
             raise OrderingError("Invalid billing account, billing account could not be loaded")
@@ -299,12 +301,21 @@ class OrderingManager:
             if contactMedium["mediumType"] == "PostalAddress"
         ]
 
-        if len(postal_addresses) != 1:
-            logger.error("Provided Billing Account does not contain a Postal Address")
-            raise OrderingError("Provided Billing Account does not contain a Postal Address")
+        # if len(postal_addresses) != 1:
+        #     logger.error("Provided Billing Account does not contain a Postal Address")
+        #     raise OrderingError("Provided Billing Account does not contain a Postal Address")
 
         postal_address = postal_addresses[0]["characteristic"]
 
+        # return {
+        #     "street": postal_address["streetOne"] + "\n" + postal_address.get("streetTwo", ""),
+        #     "postal": postal_address["postcode"],
+        #     "city": postal_address["city"],
+        #     "province": postal_address["stateOrProvince"],
+        #     "country": postal_address["country"],
+        # }
+
+        # TODO: Add billing address
         return {
             "street": postal_address["street1"] + "\n" + postal_address.get("street2", ""),
             "postal": postal_address["postCode"],

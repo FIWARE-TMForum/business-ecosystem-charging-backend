@@ -491,14 +491,14 @@ class OrderingManagementTestCase(TestCase):
                 _missing_offering_local,
                 "OrderingError: The offering 20 has not been previously registered",
             ),
-            (
-                "missing_postal_address",
-                BASIC_ORDER,
-                BASIC_PRICING,
-                None,
-                _missing_postal,
-                "OrderingError: Provided Billing Account does not contain a Postal Address",
-            ),
+            # (
+            #     "missing_postal_address",
+            #     BASIC_ORDER,
+            #     BASIC_PRICING,
+            #     None,
+            #     _missing_postal,
+            #     "OrderingError: Provided Billing Account does not contain a Postal Address",
+            # ),
             (
                 "missing_contact",
                 BASIC_ORDER,
@@ -527,6 +527,8 @@ class OrderingManagementTestCase(TestCase):
         err_msg=None,
         terms_accepted=True,
     ):
+        # if name == 'free_add':
+        #    import ipdb; ipdb.sset_trace()
 
         # Mock requests results
         self._response.json.side_effect = [

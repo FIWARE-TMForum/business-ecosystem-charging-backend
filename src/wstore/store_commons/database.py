@@ -96,7 +96,7 @@ class DocumentLock:
     def lock_document(self):
         prev = self._db[self._collection].find_one_and_update({"_id": self._doc_id}, {"$set": {self._lock_id: True}})
         logger.debug(f"Locked document {self._lock_id}")
-        return self._lock_id in prev and prev[self._lock_id]
+        return prev is not None and self._lock_id in prev and prev[self._lock_id]
 
     def wait_document(self):
         locked = self.lock_document()

@@ -113,14 +113,14 @@ class NotificationsHandler:
 
         self._send_multipart_email(text, recipients, "Product order accepted", bills)
 
-    def send_product_upgraded_notification(self, order, contract, product_name):
+    def send_product_upgraded_notification(self, order, contract, service_name):
         org = order.owner_organization
         recipients = [User.objects.get(pk=pk).email for pk in org.managers]
         domain = settings.SITE
 
         product_url = urljoin(domain, "/#/inventory/product/{}".format(contract.product_id))
 
-        text = "There is a new version available for your acquired product {}\n".format(product_name)
+        text = "There is a new version available for your acquired product {}\n".format(service_name)
         text += "You can review your new product version at {}\n".format(product_url)
 
         self._send_text_email(text, recipients, "Product upgraded")

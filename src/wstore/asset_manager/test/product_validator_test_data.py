@@ -55,135 +55,15 @@ BASIC_PRODUCT = {
             }
         ],
         "bundledProductSpecification": [],
-        "serviceSpecification": [],
+        "serviceSpecification": [
+            {
+            "id": "id",
+            "href": "id",
+            "version": "1.0"
+        }
+            ],
         "resourceSpecification": [],
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "Custom char",
-                "description": "Custom characteristic of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Custom value",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset",
-                "description": "ID of the asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "61004aba5e05acc115f022f0",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ],
+        "productSpecCharacteristic": [],
     },
 }
 
@@ -322,9 +202,6 @@ UPGRADE_PRODUCT = {
     },
 }
 
-UPGRADE_PRODUCT_INV_VERSION = deepcopy(UPGRADE_PRODUCT)
-UPGRADE_PRODUCT_INV_VERSION["product"]["version"] = "inv"
-
 TERMS_PRODUCT = deepcopy(BASIC_PRODUCT)
 TERMS_PRODUCT["product"]["productSpecCharacteristic"].append(
     {
@@ -415,651 +292,15 @@ MULTIPLE_TERMS["product"]["productSpecCharacteristic"].append(
     }
 )
 
-INVALID_ACTION = {"action": "invalid", "product": {}}
+INVALID_P_ACTION = {"action": "invalid", "product": {}}
 
-MISSING_CHAR = {"action": "create", "product": {}}
-
-MISSING_MEDIA = {
+INVALID_BUNDLE_CREATION = {
     "action": "create",
     "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset",
-                "description": "ID of the asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "61004aba5e05acc115f022f0",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ]
-    },
-}
-
-MISSING_TYPE = {
-    "action": "create",
-    "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset",
-                "description": "ID of the asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "61004aba5e05acc115f022f0",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ]
-    },
-}
-
-MISSING_LOCATION = {
-    "action": "create",
-    "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset",
-                "description": "ID of the asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "61004aba5e05acc115f022f0",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ]
-    },
-}
-
-MISSING_ASSET_ID = {
-    "action": "create",
-    "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ]
-    },
-}
-
-MULTIPLE_LOCATION = {
-    "action": "create",
-    "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ]
-    },
-}
-
-MULTIPLE_VALUES = {
-    "action": "create",
-    "product": {
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    },
-                    {
-                        "valueType": "string",
-                        "default": False,
-                        "value": PRODUCT_LOCATION,
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    },
-                ],
-            },
-        ]
-    },
-}
-
-INVALID_LOCATION = {
-    "action": "create",
-    "product": {
-        "isBundle": False,
-        "productSpecCharacteristic": [
-            {
-                "id": "42",
-                "name": "media type",
-                "description": "Media type of the product",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "application/x-widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset type",
-                "description": "Type of digital asset being provided",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "Widget",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Location",
-                "description": "URL pointing to the digital asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "invalid location",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-            {
-                "id": "34",
-                "name": "Asset",
-                "description": "ID of the asset",
-                "valueType": "string",
-                "configurable": False,
-                "validFor": {
-                    "startDateTime": "2013-04-19T16:42:23-04:00",
-                    "endDateTime": "",
-                },
-                "productSpecCharacteristicValue": [
-                    {
-                        "valueType": "string",
-                        "default": True,
-                        "value": "61004aba5e05acc115f022f0",
-                        "unitOfMeasure": "",
-                        "valueFrom": "",
-                        "valueTo": "",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T16:42:23-04:00",
-                            "endDateTime": "",
-                        },
-                    }
-                ],
-            },
-        ],
+        "id": "1",
+        "isBundle": True,
+        "version": "1.0",
+        "lifecycleStatus": "Active",
     },
 }
 
@@ -1168,13 +409,15 @@ EMPTY_CHARS_PRODUCT = {
     ],
 }
 
+OFFER_PS_ID = "20"
+
 BASIC_OFFERING = {
     "id": "3",
     "href": "http://catalog.com/offerin3",
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1195,7 +438,7 @@ OPEN_OFFERING = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{
         "id": "urn:priceid:1234",
         "name": "open",
@@ -1209,7 +452,7 @@ ZERO_OFFERING = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1228,7 +471,7 @@ FREE_OFFERING = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
 }
 
 CUSTOM_PRICING_OFFERING = {
@@ -1237,7 +480,7 @@ CUSTOM_PRICING_OFFERING = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "The custom pricing",
@@ -1253,7 +496,7 @@ CUSTOM_PRICING_OFFERING_MULTIPLE = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "The custom pricing",
@@ -1274,7 +517,7 @@ CUSTOM_MULTIPLE = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "The custom pricing",
@@ -1328,17 +571,17 @@ BUNDLE_MISSING_ELEMS = {
 
 
 MISSING_PRICETYPE = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{"name": "plan", "price": {"currencyCode": "EUR"}}],
 }
 
 INVALID_PRICETYPE = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{"name": "plan", "priceType": "invalid", "price": {"currencyCode": "EUR"}}],
 }
 
 MISSING_PERIOD = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{
         "name": "plan",
         "priceType": "recurring",
@@ -1347,7 +590,7 @@ MISSING_PERIOD = {
 }
 
 INVALID_PERIOD = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1359,12 +602,12 @@ INVALID_PERIOD = {
 }
 
 MISSING_PRICE = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{"name": "plan", "priceType": "recurring", "recurringChargePeriod": "monthly"}],
 }
 
 MISSING_CURRENCY = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1376,7 +619,7 @@ MISSING_CURRENCY = {
 }
 
 INVALID_CURRENCY = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1392,12 +635,12 @@ INVALID_CURRENCY = {
 }
 
 MISSING_NAME = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [{"priceType": "recurring", "recurringChargePeriod": "monthly", "price": {}}],
 }
 
 MULTIPLE_NAMES = {
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {
             "name": "plan",
@@ -1428,7 +671,7 @@ OPEN_MIXED = {
     "isBundle": False,
     "name": "TestOffering",
     "version": "1.0",
-    "productSpecification": {"id": "20", "href": "http://catalog.com/products/20"},
+    "productSpecification": {"id": OFFER_PS_ID, "href": "http://catalog.com/products/20"},
     "productOfferingPrice": [
         {"id": "urn:price:1234", "name": "open", "description": "Open offering"},
         {

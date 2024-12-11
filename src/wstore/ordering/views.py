@@ -43,7 +43,6 @@ from wstore.store_commons.utils.http import authentication_required, build_respo
 
 logger = getLogger("wstore.default_logger")
 
-
 class OrderingCollection(Resource):
     @authentication_required
     @supported_request_mime_types(("application/json",))

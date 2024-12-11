@@ -1,0 +1,57 @@
+name: Trigger Testing Workflow
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches:
+      - master
+
+jobs:
+  trigger-system-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Repository Dispatch
+        run: |
+          LOCATION=$(echo -e '${{ github.event.pull_request.body }}' | tr -d '\r'| grep '^DEPENDS ON' | sed 's/DEPENDS ON //')
+          echo location: "$LOCATION"
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$LOCATION")
+          echo $STATUS
+          if [[ $STATUS -eq 200 ]]; then
+            echo "repository found"
+          else
+            echo "repository not found: %STATUS"
+            exit 1
+          fi
+          TM_VERSION=$(echo -e '${{ github.event.pull_request.body }}' | tr -d '\r' | grep '^TM_VERSION' | sed 's/TM_VERSION //')
+          if [[ -z $TM_VERSION ]]; then
+            echo "missing tmforum api version"
+            exit 1
+          else
+            echo "tmforum api version: $TM_VERSION"
+          fi
+          D_REPO=$(echo -e $LOCATION | awk -F "/" '{print $4 "/" $5}')
+          echo repo: $D_REPO
+          D_BRANCH=$(echo -e $LOCATION | awk -F "/tree/" '{print $2}')
+          if [[ -z $D_BRANCH ]]; then
+            echo "missing branch, if the branch is master, please don't specify the keyword DEPENDS ON at the beginning of line"
+            exit 1
+          else
+            echo "branch collected: $D_BRANCH"
+          fi
+          echo ${{ secrets.ADMIN }}
+          curl -X POST \
+          -H "Authorization: token ${{ secrets.ADMIN }}" \
+          -H "Accept: application/vnd.github.everest-preview+json" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"event_type\": \"cross-repo-test\",
+            \"client_payload\": {
+              \"repository_B\": \"${{ github.repository }}\",
+              \"branch_B\": \"${{ github.event.pull_request.head.ref }}\",
+              \"pull_request_url\": \"${{ github.event.pull_request.html_url }}\",
+              \"tm_version\": \"$TM_VERSION\",
+              \"repository_A\": \"$D_REPO\",
+              \"branch_A\": \"$D_BRANCH\"
+            }
+          }" \
+          https://api.github.com/repos/sluFicodes/DOME-testing/dispatches

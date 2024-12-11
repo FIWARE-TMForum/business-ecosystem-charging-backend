@@ -38,7 +38,6 @@ class BillingClient:
 
         response = requests.get(url, verify=settings.VERIFY_REQUESTS)
         response.raise_for_status()
-
         return response.json()
 
     def create_charge(self, charge_model, product_id, start_date=None, end_date=None):

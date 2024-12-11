@@ -54,20 +54,17 @@ class OfferingValidator(CatalogValidator):
 
         return bundled_offerings
 
-    def _count_resource_offerings(self, asset):
+    def _count_resource_offerings(self, assets):
         count = 0
-        if asset is not None:
-            offerings = Offering.objects.filter(asset=asset)
+        if len(assets)>0:
+            offerings = Offering.objects.filter(asset__overlap=assets)
             count = len(offerings)
         return count
 
-    def _set_asset_public_status(self, asset, is_open):
-        if is_open and len(asset.bundled_assets) > 0:
-            # If the asset is single set the is_public flag
-            raise ValueError("Product bundles cannot be published in open offerings. Create an offering bundle instead")
-
-        asset.is_public = is_open
-        asset.save()
+    def _set_asset_public_status(self, assets, is_open):
+        for asset in assets:
+            asset.is_public = is_open
+            asset.save()
 
     def _get_price(self, id_):
         url = "{}/productOfferingPrice/{}".format(settings.CATALOG, id_)
@@ -89,7 +86,7 @@ class OfferingValidator(CatalogValidator):
             raise ValueError("Invalid price, it must be greater than zero.")
 
     @on_product_offering_validation
-    def _validate_offering_pricing(self, provider, product_offering, bundled_offerings):
+    def _validate_offering_pricing(self, provider, product_offering, bundled_offerings, assets):
         is_open = False
         is_custom = False
 
@@ -170,81 +167,64 @@ class OfferingValidator(CatalogValidator):
 
         return is_open, is_custom
 
-    def _download(self, url):
-        r = requests.get(url)
-
-        if r.status_code != 200:
-            raise ValueError("There has been a problem accessing the product spec included in the offering")
-
-        return r.json()
-
     def _get_offering_asset(self, product_offering, bundled_offerings):
-        asset = None
-        # Check if the offering is a bundle
+        assets = []
+        
+        # Check if the offering is not a bundle
         if not len(bundled_offerings):
-            assets = Resource.objects.filter(product_id=product_offering["productSpecification"]["id"])
+            product_specs = self._get_product_specs(product_offering["productSpecification"]["id"])
+            if len(product_specs) == 0:
+                raise ValueError("Product specs inside the offering does not exist")
+            # product_specs list has at maximum 1 object
+            for service_spec_ref in product_specs[0]["serviceSpecification"]:
+                assets.extend(Resource.objects.filter(service_spec_id=service_spec_ref["id"]))
+        return assets
 
-            if len(assets):
-                asset = assets[0]
-
-            is_digital = asset is not None
-        else:
-            # Check if the bundle is digital
-            digital = len([offering for offering in bundled_offerings if offering.is_digital])
-
-            if digital > 0 and digital != len(bundled_offerings):
-                raise ValueError(
-                    "Mixed bundle offerings are not allowed. All bundled offerings must be digital or physical"
-                )
-
-            is_digital = digital > 0
-
-        return asset, is_digital
-
-    def _validate_offering_model(self, product_offering, bundled_offerings, is_open):
-        asset, is_digital = self._get_offering_asset(product_offering, bundled_offerings)
-
-        # Open offerings only can be digital
-        if is_open and not is_digital:
-            raise ValueError("Non digital products cannot be open")
+    # def _validate_offering_model(self, product_offering, bundled_offerings, is_open):
+    #     assets = self._get_offering_asset(product_offering, bundled_offerings)
 
         # If the offering is a bundle and is open all the bundled offerings must be open
-        if is_open and len(bundled_offerings) != len([offer for offer in bundled_offerings if offer.is_open]):
-            raise ValueError("If a bundle is open all the bundled offerings must be open")
+        # Unsupported
+        # if is_open and len(bundled_offerings) != len([offer for offer in bundled_offerings if offer.is_open]):
+        #     raise ValueError("If a bundle is open all the bundled offerings must be open")
 
-        return asset, is_digital
-
-    def _build_offering_model(self, provider, product_offering, bundled_offerings, is_open, is_custom=False):
-        asset, is_digital = self._validate_offering_model(product_offering, bundled_offerings, is_open)
+        # return assets
+        
+    def _build_offering_model(self, provider, product_offering, bundled_offerings, assets, is_open, is_custom=False):
 
         # Open products can only be included in a single offering
-        offering_count = self._count_resource_offerings(asset)
-        if is_digital and (
-            (is_open and offering_count > 0) or (not is_open and offering_count == 1 and asset.is_public)
-        ):
-            raise ValueError("Assets of open offerings cannot be monetized in other offerings")
+        # Unsupported
+        # offering_count = self._count_resource_offerings(assets)
+        # is_public= any(el.is_public for el in assets)
+        # if (is_open and offering_count > 0) or (not is_open and offering_count == 1 and is_public):
+        #     raise ValueError("Assets of open offerings cannot be monetized in other offerings")
 
         # Check if the offering contains a description
         description = ""
         if "description" in product_offering:
             description = product_offering["description"]
 
-        if asset is not None:
-            self._set_asset_public_status(asset, is_open)
-
-        Offering.objects.create(
-            owner_organization=provider,
-            name=product_offering["name"],
-            description=description,
-            version=product_offering["version"],
-            is_digital=is_digital,
-            asset=asset,
-            is_open=is_open,
-            is_custom=is_custom,
-            bundled_offerings=[offering.pk for offering in bundled_offerings],
-        )
+        # Unsupported
+        # if len(assets) > 0:
+        #     self._set_asset_public_status(assets, is_open)
+        try:
+            offering = Offering.objects.create(
+                owner_organization=provider,
+                name=product_offering["name"],
+                description=description,
+                version=product_offering["version"],
+                is_open=is_open,
+                is_custom=is_custom,
+                bundled_offerings=[offering.pk for offering in bundled_offerings],
+            )
+            print(offering)
+            offering.asset.set(assets)
+            offering.save()
+        except Exception as e:
+            raise Exception(f"Offering Creation Error: {e}")
 
     def attach_info(self, provider, product_offering):
+        print("attach info")
         # Find the offering model to attach the info
         offerings = Offering.objects.filter(
             off_id=None,
@@ -263,18 +243,24 @@ class OfferingValidator(CatalogValidator):
 
     def validate_creation(self, provider, product_offering):
         bundled_offerings = self._get_bundled_offerings(product_offering)
-        is_open, is_custom = self._validate_offering_pricing(provider, product_offering, bundled_offerings)
-        self._build_offering_model(provider, product_offering, bundled_offerings, is_open, is_custom)
+        assets = self._get_offering_asset(product_offering, bundled_offerings)
+        print(assets)
+        is_open, is_custom = self._validate_offering_pricing(provider, product_offering, bundled_offerings, assets)
+        print(1)
+        self._build_offering_model(provider, product_offering, bundled_offerings, assets, is_open, is_custom)
+        print(2)
 
     def validate_update(self, provider, product_offering):
         bundled_offerings = self._get_bundled_offerings(product_offering)
-        is_open, is_custom = self._validate_offering_pricing(provider, product_offering, bundled_offerings)
-
-        asset, is_digital = self._validate_offering_model(product_offering, bundled_offerings, is_open)
+        assets = self._get_offering_asset(product_offering, bundled_offerings)
+        self._validate_offering_pricing(provider, product_offering, bundled_offerings, assets)
+        
+        #assets = self._validate_offering_model(product_offering, bundled_offerings, is_open)
 
         # Open products can only be included in a single offering
-        if is_open and self._count_resource_offerings(asset) > 1:
-            raise ValueError("Assets of open offerings cannot be monetized in other offerings")
+        # Unsupported
+        # if is_open and self._count_resource_offerings(assets) > 1:
+        #     raise ValueError("Assets of open offerings cannot be monetized in other offerings")
 
-        if asset is not None:
-            self._set_asset_public_status(asset, is_open)
+        # if assets is not None:
+        #     self._set_asset_public_status(assets, is_open)
