@@ -108,8 +108,17 @@ class OfferingValidator(CatalogValidator):
         if "unitOfMeasure" in prd_char_value:
             prd_unit = prd_char_value["unitOfMeasure"].lower()
 
-        return use_val["value"] == prd_char_value["value"] and \
+        # Check if we have a range
+        is_same = False
+        if not "value" in prd_char_value and "valueFrom" in prd_char_value and "valueTo" in prd_char_value:
+            is_same = use_val["value"] >= prd_char_value["valueFrom"] and \
+                use_val["value"] <= prd_char_value["valueTo"] and \
+                use_unit == prd_unit
+        else:
+            is_same = use_val["value"] == prd_char_value["value"] and \
             use_unit == prd_unit
+
+        return is_same
 
     def _validate_char_value_use(self, price_component, prod_spec_id):
         # Check if a configuration profile has been provided
