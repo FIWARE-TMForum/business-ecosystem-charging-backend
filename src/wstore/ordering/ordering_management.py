@@ -223,7 +223,7 @@ class OrderingManager:
     def _get_mode(self, offering_info):
         if "productOfferingTerm" in offering_info:
             for term in offering_info["productOfferingTerm"]:
-                if term["name"].lower() == "procurement" and term["description"].lower() == "manual":
+                if term["name"].lower() == "procurement":
                     return term["description"].lower()
 
     def _filter_item(self, item):
@@ -586,7 +586,7 @@ class OrderingManager:
             if "productOfferingTerm" in offering_info:
                 mode = 'manual'
                 for term in offering_info["productOfferingTerm"]:
-                    if term["name"].lower() == "procurement" and term["description"].lower() != "automatic":
+                    if term["name"].lower() == "procurement":
                         mode = term["description"].lower()
                         break
 

@@ -27,7 +27,7 @@ class DpasClient(PaymentClient):
                 "currency": t['currency'],
                 "productProviderSpecificData": {}
             }
-            if "subscription" in t['related_model']:
+            if "recurring" in t['related_model']:
                 payment_item.update({"recurring": True})
             else:
                 payment_item.update({"recurring": False})

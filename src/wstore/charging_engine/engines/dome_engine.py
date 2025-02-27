@@ -80,10 +80,11 @@ class DomeEngine:
                 currency = price["price"]["dutyFreeAmount"]["unit"]
                 inc = Decimal(price["price"]["taxIncludedAmount"]["value"])
                 excl = Decimal(price["price"]["dutyFreeAmount"]["value"])
+                rate_type = "One time" if price["priceType"].lower() == "one time" else "Recurring"
 
                 tax = str(inc - excl)
                 rates.append({
-                    "appliedBillingRateType": "Initial",
+                    "appliedBillingRateType": rate_type,
                     "isBilled": False,
                     "appliedTax": [
                         {
@@ -151,7 +152,7 @@ class DomeEngine:
                     "duty_free": rate["taxExcludedAmount"]["value"],
                     "description": '',
                     "currency": rate["taxIncludedAmount"]["unit"],
-                    "related_model": ''
+                    "related_model": rate["appliedBillingRateType"].lower(),
                 } for rate in response])
 
         if len(transactions) == 0:
