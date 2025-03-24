@@ -260,7 +260,7 @@ class InventoryClient:
     def build_product_model(self, order_item, order_id, billing_account):
         product = deepcopy(order_item["product"])
 
-        product["name"] = "oid={}".format(order_id)
+        product["name"] = "oid-{}".format(order_id)
         product["status"] = "created"
         product["productOffering"] = order_item["productOffering"]
 

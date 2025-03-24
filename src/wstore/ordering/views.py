@@ -120,6 +120,18 @@ class NotifyOrderCollection(Resource):
             logger.error("The order {} could not be retrieved {}".format(order["id"], str(e.value)))
             return build_response(request, 400, 'Error accessing the product order')
 
+        # Check if the product already exists
+        try:
+            iv = InventoryClient()
+            products = iv.get_products(query={"name": "oid-{}".format(order["id"])})
+
+            if len(products) > 0:
+                return build_response(request, 200, "OK")
+
+        except Exception as e:
+            logger.error("The products for order {} could not be created {}".format(order["id"], str(e.value)))
+            return build_response(request, 400, 'Error creating product in the inventory')
+
         om = OrderingManager()
         try:
             om.process_order_completed(order)
