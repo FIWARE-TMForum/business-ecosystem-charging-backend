@@ -186,7 +186,7 @@ class InventoryClient:
         resource_spec = self.download_spec(settings.RESOURCE_CATALOG, '/resourceSpecification', resource_id)
 
         resource = {
-            "resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
+            #"resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
             "relatedParty": [customer_party],
             "resourceStatus": "reserved",
             "startOperatingDate": datetime.now().isoformat() + "Z"
@@ -227,18 +227,33 @@ class InventoryClient:
         inv_service = inv_response.json()
         return inv_service["id"]
 
-    def get_list_of_prices(self, price_model):
+    def get_product_price(self, price):
+        # Build a price object compatible with 
+        return {
+            "productOfferingPrice": {
+                "id": price["id"],
+                "href": price["id"]
+            }
+        }
+
+    def get_price_component(self, price_id):
         catalog = urlparse(settings.CATALOG)
         price_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", price_model["id"]
+            catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", price_id
         )
         resp = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
-
         price = resp.json()
 
-        result = [price["id"]]
+        return price
+
+    def get_list_of_prices(self, price_model):
+        price = self.get_price_component(price_model["id"])
+        result = [self.get_product_price(price)]
+
         if "isBundle" in price and price["isBundle"]:
-            result.extend([bundle["id"] for bundle in price["bundledPopRelationship"]])
+            result.extend([
+                self.get_product_price(self.get_price_component(bundle["id"]))
+            for bundle in price["bundledPopRelationship"]])
 
         return result
 
@@ -253,14 +268,7 @@ class InventoryClient:
                 product["productCharacteristic"] = []
 
         if "itemTotalPrice" in order_item and len(order_item["itemTotalPrice"]) > 0:
-            prices = self.get_list_of_prices(order_item["itemTotalPrice"][0]["productOfferingPrice"])
-
-            product["productPrice"] = [{
-                "productOfferingPrice": {
-                    "id": price,
-                    "href": price
-                }
-            } for price in prices]
+            product["productPrice"] = self.get_list_of_prices(order_item["itemTotalPrice"][0]["productOfferingPrice"])
 
         product["billingAccount"] = billing_account
 

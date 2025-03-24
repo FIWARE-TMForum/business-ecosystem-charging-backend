@@ -102,6 +102,35 @@ class OrderingCollection(Resource):
         return response
 
 
+class NotifyOrderCollection(Resource):
+    @authentication_required
+    @supported_request_mime_types(("application/json",))
+    def create(self, request, order_id):
+        """
+        This mthod is called when a product order is completed
+        :param request:
+        :return:
+        """
+
+        oc = OrderingClient()
+        try:
+            order = oc.get_order(order_id)
+        except Exception as e:
+            # The order is correct so we cannot set is as failed
+            logger.error("The order {} could not be retrieved {}".format(order["id"], str(e.value)))
+            return build_response(request, 400, 'Error accessing the product order')
+
+        om = OrderingManager()
+        try:
+            om.process_order_completed(order)
+        except Exception as e:
+            # The order is correct so we cannot set is as failed
+            logger.error("The products for order {} could not be created {}".format(order["id"], str(e.value)))
+            return build_response(request, 400, 'Error creating product in the inventory')
+
+        return build_response(request, 200, "OK")
+
+
 class InventoryCollection(Resource):
     @supported_request_mime_types(("application/json",))
     def create(self, request):

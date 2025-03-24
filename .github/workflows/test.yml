@@ -31,7 +31,7 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           tags: |
-            fiware/biz-ecosystem-charging-backend:10.0.0-rc8
+            fiware/biz-ecosystem-charging-backend:10.0.0-rc9
           push: ${{ github.ref == 'refs/heads/feat/extended-pricing' }}
 
       - name: Image digest

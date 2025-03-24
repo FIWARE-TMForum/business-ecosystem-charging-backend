@@ -90,6 +90,10 @@ urlpatterns = [
         ordering_views.OrderingCollection(permitted_methods=("POST",)),
     ),
     url(
+        r"^charging/api/orderManagement/orders/completed/(?P<order_id>[\w -]+)?$",
+        ordering_views.NotifyOrderCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/orderManagement/orders/confirm/?$",
         charging_views.PaymentConfirmation(permitted_methods=("POST",)),
     ),

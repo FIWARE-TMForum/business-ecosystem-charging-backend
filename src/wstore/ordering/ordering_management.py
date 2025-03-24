@@ -223,7 +223,7 @@ class OrderingManager:
     def _get_mode(self, offering_info):
         if "productOfferingTerm" in offering_info:
             for term in offering_info["productOfferingTerm"]:
-                if term["name"].lower() == "procurement":
+                if "name" in term and "description" in term and term["name"].lower() == "procurement":
                     return term["description"].lower()
 
     def _filter_item(self, item):
@@ -555,6 +555,70 @@ class OrderingManager:
 
         return redirection_url
 
+    def get_offer_info(self, orderItem):
+        catalog = urlparse(settings.CATALOG)
+
+        offering_id = orderItem["productOffering"]["href"]
+        offering_url = "{}://{}{}/{}".format(
+            catalog.scheme, catalog.netloc, catalog.path + "/productOffering", offering_id
+        )
+
+        offering_info = self._download(offering_url, "product offering", orderItem["id"])
+        return offering_info
+
+    def create_inventory_product(self, order, orderItem, offering_info, extra_char=None):
+        resources = []
+        services = []
+        inventory_client = InventoryClient()
+
+        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"])
+        customer_party = None
+        for party in product["relatedParty"]:
+            if party["role"].lower() == "customer":
+                customer_party = party
+                break
+
+        # Instantiate services and resources if needed
+        if "productSpecification" in offering_info:
+            catalog = urlparse(settings.CATALOG)
+            spec_id = offering_info["productSpecification"]["id"]
+            spec_url = "{}://{}{}/{}".format(
+                catalog.scheme, catalog.netloc, catalog.path + "/productSpecification", spec_id
+            )
+
+            spec_info = self._download(spec_url, "product specification", orderItem["id"])
+
+            if "resourceSpecification" in spec_info:
+                # Create resources in the inventory
+                resources = [
+                    inventory_client.create_resource(resource["id"], customer_party)
+                    for resource in spec_info["resourceSpecification"]
+                ]
+
+            # if "serviceSpecification" in spec_info:
+            #     # Create services in the inventory
+            #     services = [
+            #         inventory_client.create_service(service["id"], customer_party)
+            #         for service in spec_info["serviceSpecification"]
+            #     ]
+
+        if len(resources) > 0:
+            product["realizingResource"] = [{"id": resource, "href": resource} for resource in resources]
+
+        # if len(services) > 0:
+        #     product["realizingService"] = [{"id": service, "href": service} for service in services]
+
+        # This cannot work until the Service Intentory API is published
+        product["productCharacteristic"].extend([{"name": "service", "value": service}] for service in services)
+
+        if extra_char is not None:
+            product["productCharacteristic"].extend(extra_char)
+
+        logger.info("Creating product in the inventory")
+        new_product = inventory_client.create_product(product)
+
+        return new_product
+
     def notify_completed(self, order):
         #####
         ### TODO: We need to refactor this method to create the inventory items when the
@@ -565,6 +629,10 @@ class OrderingManager:
         # Get order from the database
         order_model = Order.objects.get(order_id=order["id"])
 
+        extra_char = []
+        for sale_id in order_model.sales_ids:
+            extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
+
         processed_items = []
         for orderItem in order["productOrderItem"]:
             contracts = [ cnt for cnt in order_model.get_contracts() if cnt.item_id == orderItem["id"] ]
@@ -573,15 +641,8 @@ class OrderingManager:
 
             contract = contracts[0]
 
-            # Get product specification
-            catalog = urlparse(settings.CATALOG)
-
-            offering_id = orderItem["productOffering"]["href"]
-            offering_url = "{}://{}{}/{}".format(
-                catalog.scheme, catalog.netloc, catalog.path + "/productOffering", offering_id
-            )
-
-            offering_info = self._download(offering_url, "product offering", orderItem["id"])
+            # Get product offering
+            offering_info = self.get_offer_info(orderItem)
 
             if "productOfferingTerm" in offering_info:
                 mode = 'manual'
@@ -593,54 +654,9 @@ class OrderingManager:
                 if mode != 'automatic':
                     continue
 
-            resources = []
-            services = []
-            inventory_client = InventoryClient()
+            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
 
-            product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"])
-
-            customer_party = None
-            for party in product["relatedParty"]:
-                if party["role"].lower() == "customer":
-                    customer_party = party
-                    break
-
-            # Instantiate services and resources if needed
-            if "productSpecification" in offering_info:
-                spec_id = offering_info["productSpecification"]["id"]
-                spec_url = "{}://{}{}/{}".format(
-                    catalog.scheme, catalog.netloc, catalog.path + "/productSpecification", spec_id
-                )
-
-                spec_info = self._download(spec_url, "product specification", orderItem["id"])
-
-                if "resourceSpecification" in spec_info:
-                    # Create resources in the inventory
-                    resources = [
-                        inventory_client.create_resource(resource["id"], customer_party)
-                        for resource in spec_info["resourceSpecification"]
-                    ]
-
-                if "serviceSpecification" in spec_info:
-                    # Create services in the inventory
-                    services = [
-                        inventory_client.create_service(service["id"], customer_party)
-                        for service in spec_info["serviceSpecification"]
-                    ]
-
-            if len(resources) > 0:
-                product["realizingResource"] = [{"id": resource, "href": resource} for resource in resources]
-
-            if len(services) > 0:
-                product["realizingService"] = [{"id": service, "href": service} for service in services]
-
-            # This cannot work until the Service Intentory API is published
-            product["productCharacteristic"].extend([{"name": "service", "value": service}] for service in services)
-
-            logger.info("Creating product in the inventory")
-            new_product = inventory_client.create_product(product)
-
-            # Update the billing
+            # Update the billing for automatic procurement
             for inv_id in contract.applied_rates:
                 billing_client = BillingClient()
                 billing_client.update_customer_rate(inv_id, new_product["id"])
@@ -651,9 +667,43 @@ class OrderingManager:
 
         ordering_client = OrderingClient()
         ordering_client.update_items_state(order, "completed", items=processed_items)
+
+        if len(processed_items) == len(order["productOrderItem"]):
+            ordering_client.update_state(order, "completed")
+
         logger.info("Items completed")
 
-        # TODO: When to update the status of the order?
+    def process_order_completed(self, order):
+        orders = Order.objects.filter(order_id=order["id"])
+
+        order_model = None
+        if len(orders) == 0:
+            logger.info("Order not found in the database, externally processed or fully manual")
+            order_model = orders[0]
+
+        extra_char = []
+        if order_model is not None:
+            for sale_id in order_model.sales_ids:
+                extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
+
+        for orderItem in order["productOrderItem"]:
+            contract = None
+            if order_model is not None:
+                contracts = [ cnt for cnt in order_model.get_contracts() if cnt.item_id == orderItem["id"] ]
+
+                if len(contracts) > 0:
+                    contract = contracts[0]
+
+            # Create the product for the orderItem
+            offering_info = self.get_offer_info(orderItem)
+            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
+
+            # Update the billing for automatic procurement
+            if contract is not None:
+                for inv_id in contract.applied_rates:
+                    billing_client = BillingClient()
+                    billing_client.update_customer_rate(inv_id, new_product["id"])
+
 
     def activate_product(self, order_id, product):
         # Get order

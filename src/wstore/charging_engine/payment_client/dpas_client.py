@@ -4,6 +4,8 @@ from django.conf import settings
 
 import os
 import requests
+import jwt
+
 from decimal import Decimal
 from logging import getLogger
 
@@ -67,7 +69,14 @@ class DpasClient(PaymentClient):
             logger.debug(f"Error contacting payment API: {e}")
 
     def end_redirection_payment(self, **kwargs):
-        return []
+        token = kwargs.get("jwt", None)
+
+        result = []
+        if token is not None:
+            decoded = jwt.decode(token, options={"verify_signature": False})
+            result.append(decoded['paymentPreAuthorizationId'])
+
+        return result
 
     def refund(self, sale_id):
         pass
