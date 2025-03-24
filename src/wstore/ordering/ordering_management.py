@@ -677,7 +677,7 @@ class OrderingManager:
         orders = Order.objects.filter(order_id=order["id"])
 
         order_model = None
-        if len(orders) == 0:
+        if len(orders) > 0:
             logger.info("Order not found in the database, externally processed or fully manual")
             order_model = orders[0]
 

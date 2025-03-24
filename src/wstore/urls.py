@@ -90,7 +90,7 @@ urlpatterns = [
         ordering_views.OrderingCollection(permitted_methods=("POST",)),
     ),
     url(
-        r"^charging/api/orderManagement/orders/completed/(?P<order_id>[\w -]+)?$",
+        r"^charging/api/orderManagement/orders/completed/(?P<order_id>[^/]+)/?$",
         ordering_views.NotifyOrderCollection(permitted_methods=("POST",)),
     ),
     url(
