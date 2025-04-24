@@ -66,7 +66,7 @@ CREATE_TESTS = [
             "stakeholders": [],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: {'providerShare': ['This field cannot be null.']}",
+        "expected": "Bad request: {'providerShare': ['This field cannot be null.']}",
     },
     {  # ---------------------------------
         "name": "invalid_owner_value",
@@ -78,7 +78,7 @@ CREATE_TESTS = [
             "stakeholders": [],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: {'providerShare': ['`value` cannot be converted to Decimal']}",
+        "expected": "Bad request: {'providerShare': ['`value` cannot be converted to Decimal']}",
     },
     {  # ---------------------------------
         "name": "missing_aggregator_value",
@@ -89,7 +89,7 @@ CREATE_TESTS = [
             "stakeholders": [],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: {'aggregatorShare': ['This field cannot be null.']}",
+        "expected": "Bad request: {'aggregatorShare': ['This field cannot be null.']}",
     },
     {  # ---------------------------------
         "name": "invalid_aggregator_value",
@@ -101,7 +101,7 @@ CREATE_TESTS = [
             "stakeholders": [],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: {'aggregatorShare': ['`value` cannot be converted to Decimal']}",
+        "expected": "Bad request: {'aggregatorShare': ['`value` cannot be converted to Decimal']}",
     },
     {  # ---------------------------------
         "name": "invalid_percentage_sum",
@@ -113,7 +113,7 @@ CREATE_TESTS = [
             "stakeholders": [],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: {'aggregatorShare': ['Ensure this value is less than or equal to 100.0.']}",
+        "expected": "Bad request: {'aggregatorShare': ['Ensure this value is less than or equal to 100.0.']}",
     },
     {  # ---------------------------------
         "name": "invalid_percentage_stakeholders",
@@ -128,19 +128,19 @@ CREATE_TESTS = [
             ],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: ['The sum of percentages for the aggregator, owner and stakeholders must equal 100. 30.00 + 60.00 + 20.00 != 100']",
+        "expected": "Bad request: ['The sum of percentages for the aggregator, owner and stakeholders must equal 100. 30.00 + 60.00 + 20.00 != 100']",
     },
     {  # ---------------------------------
         "name": "missing_provider",
         "model": {"providerShare": 70, "aggregatorShare": 30, "productClass": "class", "stakeholders": []},
         "response_code": 400,
-        "expected": b"Error: Bad request: {'providerId': ['This field cannot be blank.']}",
+        "expected": "Bad request: {'providerId': ['This field cannot be blank.']}",
     },
     {  # ---------------------------------
         "name": "missing_class",
         "model": {"providerId": "provider", "providerShare": 70, "aggregatorShare": 30, "stakeholders": []},
         "response_code": 400,
-        "expected": b"Error: Bad request: {'productClass': ['This field cannot be blank.']}",
+        "expected": "Bad request: {'productClass': ['This field cannot be blank.']}",
     },
 ]
 
@@ -202,7 +202,7 @@ UPDATE_TESTS = [
             ],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: must contain fields `providerId`, `productClass`.",
+        "expected": "Bad request: must contain fields `providerId`, `productClass`.",
     },
     {  # ---------------------------------
         "name": "invalid_update",
@@ -228,14 +228,14 @@ UPDATE_TESTS = [
             ],
         },
         "response_code": 400,
-        "expected": b"Error: Bad request: ['The sum of percentages for the aggregator, owner and stakeholders must equal 100. 30.00 + 50.00 + 30.00 != 100']",
+        "expected": "Bad request: ['The sum of percentages for the aggregator, owner and stakeholders must equal 100. 30.00 + 50.00 + 30.00 != 100']",
     },
     {  # ---------------------------------
         "name": "model_does_not_exist",
         "model": {"exception": ObjectDoesNotExist()},
         "update": {"providerId": "provider", "productClass": "class"},
         "response_code": 404,
-        "expected": b"Error: Revenue Sharing Model does not exist",
+        "expected": "Revenue Sharing Model does not exist",
     },
 ]
 
@@ -297,7 +297,10 @@ class ModelManagerTestCase(TestCase):
             self.assertEquals(loads(response.content), expected)
         else:
             print(response.content)
-            self.assertEquals(response.content, expected)
+            self.assertEquals(loads(response.content), {
+                "result": "error",
+                "error": expected
+            })
 
     @parameterized.expand([test.values() for test in UPDATE_TESTS])
     def test_update_model(self, name, model, update, response_code, expected=None):
@@ -321,7 +324,10 @@ class ModelManagerTestCase(TestCase):
         if response.status_code == 200:
             self.assertEquals(loads(response.content), expected)
         else:
-            self.assertEquals(response.content, expected)
+            self.assertEquals(loads(response.content), {
+                "result": "error",
+                "error": expected
+            })
 
     @parameterized.expand([test.values() for test in GET_TESTS])
     def test_get_models(self, name, result, filter, response_code):

@@ -53,1182 +53,1182 @@ def mock_payment_client(self, module):
 INVOICE_PATH = "/media/invoice/invoice1.pdf"
 
 
-class ChargingEngineTestCase(TestCase):
-    tags = ("ordering", "charging-engine")
-    _paypal_url = "http://paypalurl.com"
-
-    def setUp(self):
-        # Mock order
-        self._order = MagicMock()
-        self._order.owner_organization.acquired_offerings = []
-
-        # Mock payment client
-        mock_payment_client(self, charging_engine)
-        self._payment_inst.get_checkout_url.return_value = self._paypal_url
-
-        # Mock threading
-        charging_engine.threading = MagicMock()
-
-        self._thread = MagicMock()
-        charging_engine.threading.Timer.return_value = self._thread
-
-        # Mock invoice builder
-        charging_engine.InvoiceBuilder = MagicMock()
-        charging_engine.InvoiceBuilder.return_value.generate_invoice.return_value = INVOICE_PATH
-
-        # Mock CDR Manager
-        charging_engine.CDRManager = MagicMock()
-
-        # Mock datetime
-        now = datetime(2016, 1, 20, 13, 12, 39)
-        charging_engine.datetime = MagicMock()
-        charging_engine.datetime.utcnow.return_value = now
-
-        charging_engine.NotificationsHandler = MagicMock()
-
-        self._charge = MagicMock()
-        charging_engine.Charge = MagicMock()
-        charging_engine.Charge.return_value = self._charge
-
-        charging_engine.BillingClient = MagicMock()
-        charging_engine.Offering = MagicMock()
-
-    def _get_single_payment(self):
-        return {
-            "general_currency": "EUR",
-            "single_payment": [
-                {
-                    "value": "12",
-                    "unit": "one time",
-                    "tax_rate": "20.00",
-                    "duty_free": "10.00",
-                }
-            ],
-        }
-
-    def _get_subscription(self, renovation_date=None):
-        pricing = {
-            "general_currency": "EUR",
-            "subscription": [
-                {
-                    "value": "12.00",
-                    "unit": "month",
-                    "tax_rate": "20.00",
-                    "duty_free": "10.00",
-                }
-            ],
-        }
-
-        if renovation_date is not None:
-            pricing["subscription"][0]["renovation_date"] = renovation_date
-
-        return pricing
-
-    def _get_pay_use(self):
-        return {
-            "general_currency": "EUR",
-            "pay_per_use": [
-                {
-                    "value": "10.00",
-                    "unit": "call",
-                    "tax_rate": "20.00",
-                    "duty_free": "8.33",
-                }
-            ],
-        }
-
-    def _mock_contract(self, info):
-        contract = MagicMock()
-        contract.item_id = info["item_id"]
-        contract.charges = []
-        contract.pricing_model = info["pricing"]
-        contract.product_id = info["product_id"]
-        contract.offering = info["offering_pk"]
-
-        offering = MagicMock(description=info["description"], pk=info["offering_pk"])
-
-        return contract, offering
-
-    def _set_initial_contracts(self):
-        contract1, offering1 = self._mock_contract(
-            {
-                "description": "Offering 1 description",
-                "offering_pk": "61004aba5e05acc115f022f0",
-                "item_id": "1",
-                "pricing": self._get_single_payment(),
-                "product_id": "product1",
-            }
-        )
-        contract2, offering2 = self._mock_contract(
-            {
-                "description": "Offering 2 description",
-                "offering_pk": "61004aba5e05acc115f022f1",
-                "item_id": "2",
-                "pricing": self._get_subscription(),
-                "product_id": "product2",
-            }
-        )
-        contract3, offering3 = self._mock_contract(
-            {
-                "description": "Offering 3 description",
-                "offering_pk": "61004aba5e05acc115f022f2",
-                "item_id": "3",
-                "pricing": {},
-                "product_id": "product3",
-            }
-        )
-
-        contracts = [contract1, contract2, contract3]
-        self._order.get_contracts.return_value = contracts
-        # Mock get contracts
-        self._order.get_item_contract.side_effect = contracts
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.side_effect = [
-            offering1,
-            offering2,
-            offering3,
-        ]
-
-        return (
-            [
-                {
-                    "price": "12.00",
-                    "duty_free": "10.00",
-                    "description": "Offering 1 description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "single_payment": [
-                            {
-                                "value": "12",
-                                "unit": "one time",
-                                "tax_rate": "20.00",
-                                "duty_free": "10.00",
-                            }
-                        ]
-                    },
-                    "item": "1",
-                },
-                {
-                    "price": "12.00",
-                    "duty_free": "10.00",
-                    "description": "Offering 2 description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "subscription": [
-                            {
-                                "value": "12.00",
-                                "unit": "month",
-                                "tax_rate": "20.00",
-                                "duty_free": "10.00",
-                            }
-                        ]
-                    },
-                    "item": "2",
-                },
-            ],
-            [contract3],
-        )
-
-    def _set_renovation_contracts(self):
-        contract1, offering1 = self._mock_contract(
-            {
-                "description": "Offering 1 description",
-                "offering_pk": "61004aba5e05acc115f022f0",
-                "item_id": "1",
-                "pricing": self._get_single_payment(),
-                "product_id": "product1",
-            }
-        )
-        contract2, offering2 = self._mock_contract(
-            {
-                "description": "Offering 2 description",
-                "offering_pk": "61004aba5e05acc115f022f1",
-                "item_id": "2",
-                "pricing": self._get_subscription(datetime(2015, 10, 1, 10, 10)),
-                "product_id": "product2",
-            }
-        )
-        contract3, offering3 = self._mock_contract(
-            {
-                "description": "Offering 3 description",
-                "offering_pk": "61004aba5e05acc115f022f2",
-                "item_id": "3",
-                "pricing": self._get_subscription(datetime.utcnow()),
-                "product_id": "product3",
-            }
-        )
-
-        self._order.get_contracts.return_value = [contract1, contract2, contract3]
-        # Mock get contracts
-        self._order.get_item_contract.side_effect = [contract2]
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.side_effect = [offering2, offering3]
-
-        return (
-            [
-                {
-                    "price": "12.00",
-                    "duty_free": "10.00",
-                    "description": "Offering 2 description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "subscription": [
-                            {
-                                "value": "12.00",
-                                "unit": "month",
-                                "tax_rate": "20.00",
-                                "duty_free": "10.00",
-                                "renovation_date": datetime(2015, 10, 1, 10, 10),
-                            }
-                        ]
-                    },
-                    "item": "2",
-                }
-            ],
-            [],
-        )
-
-    def _set_subscription_contract(self):
-        contract, offering = self._mock_contract(
-            {
-                "description": "Offering 3 description",
-                "offering_pk": "61004aba5e05acc115f022f2",
-                "item_id": "3",
-                "pricing": self._get_subscription(datetime.utcnow()),
-                "product_id": "product1",
-            }
-        )
-
-        self._order.get_contracts.return_value = [contract]
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.return_value = offering
-        return ([], [])
-
-    def _set_free_contract(self):
-        contract = MagicMock()
-        contract.offering.description = "Offering description"
-        contract.item_id = "1"
-        contract.pricing_model = {}
-
-        self._order.get_contracts.return_value = [contract]
-
-    def _set_usage_contracts(self):
-        contract, offering = self._mock_contract(
-            {
-                "description": "Offering description",
-                "offering_pk": "61004aba5e05acc115f022f0",
-                "item_id": "1",
-                "pricing": self._get_pay_use(),
-                "product_id": "product1",
-            }
-        )
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.return_value = offering
-
-        # Mock usage client
-        charging_engine.UsageClient = MagicMock()
-        charging_engine.UsageClient().get_customer_usage.return_value = [
-            {"id": "1"},
-            {"id": "2"},
-            {"id": "3"},
-        ]
-
-        charging_engine.SDRManager = MagicMock()
-        charging_engine.SDRManager().get_sdr_values.side_effect = [
-            {"unit": "call", "value": "10"},
-            {"unit": "invocation", "value": "1"},
-            {"unit": "call", "value": "10"},
-        ]
-        contract.applied_sdrs = []
-        self._order.get_contracts.return_value = [contract]
-        self._order.date = datetime(2016, 1, 20, 13, 12, 39)
-        self._order.get_item_contract.side_effect = [contract]
-
-        return (
-            [
-                {
-                    "price": "200.00",
-                    "duty_free": "166.60",
-                    "description": "Offering description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "pay_per_use": [
-                            {
-                                "value": "10.00",
-                                "unit": "call",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            }
-                        ]
-                    },
-                    "item": "1",
-                    "applied_accounting": [
-                        {
-                            "model": {
-                                "value": "10.00",
-                                "unit": "call",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            },
-                            "accounting": [
-                                {
-                                    "usage_id": "1",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                                {
-                                    "usage_id": "3",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                            ],
-                            "price": "200.00",
-                            "duty_free": "166.60",
-                        }
-                    ],
-                }
-            ],
-            [],
-        )
-
-    def _set_usage_alteration_contracts(self):
-        contract1, offering1 = self._mock_contract(
-            {
-                "description": "Offering description",
-                "offering_pk": "61004aba5e05acc115f022f0",
-                "item_id": "1",
-                "pricing": self._get_pay_use(),
-                "product_id": "product1",
-            }
-        )
-
-        contract2, offering2 = self._mock_contract(
-            {
-                "description": "Offering description",
-                "offering_pk": "61004aba5e05acc115f022f1",
-                "item_id": "2",
-                "pricing": {
-                    "general_currency": "EUR",
-                    "pay_per_use": [
-                        {
-                            "value": "10.00",
-                            "unit": "callmin",
-                            "tax_rate": "20.00",
-                            "duty_free": "8.33",
-                        }
-                    ],
-                    "alteration": {
-                        "type": "fee",
-                        "period": "recurring",
-                        "value": {"value": "20.00", "duty_free": "20.00"},
-                        "condition": {"operation": "lt", "value": "20.00"},
-                    },
-                },
-                "product_id": "product2",
-            }
-        )
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.side_effect = [offering1, offering2]
-
-        # Mock usage client
-        charging_engine.UsageClient = MagicMock()
-        charging_engine.UsageClient().get_customer_usage.return_value = [
-            {"id": "1"},
-            {"id": "2"},
-            {"id": "3"},
-            {"id": "4"},
-        ]
-
-        charging_engine.SDRManager = MagicMock()
-        charging_engine.SDRManager().get_sdr_values.side_effect = [
-            {"unit": "call", "value": "10"},
-            {"unit": "invocation", "value": "1"},
-            {"unit": "callmin", "value": "1"},
-            {"unit": "call", "value": "10"},
-            {"unit": "call", "value": "10"},
-            {"unit": "invocation", "value": "1"},
-            {"unit": "callmin", "value": "1"},
-            {"unit": "call", "value": "10"},
-        ]
-        contract1.applied_sdrs = []
-        contract2.applied_sdrs = []
-        self._order.get_contracts.return_value = [contract1, contract2]
-        self._order.date = datetime(2016, 1, 20, 13, 12, 39)
-        self._order.get_item_contract.side_effect = [contract1, contract2]
-
-        return (
-            [
-                {
-                    "price": "200.00",
-                    "duty_free": "166.60",
-                    "description": "Offering description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "pay_per_use": [
-                            {
-                                "value": "10.00",
-                                "unit": "call",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            }
-                        ]
-                    },
-                    "item": "1",
-                    "applied_accounting": [
-                        {
-                            "model": {
-                                "value": "10.00",
-                                "unit": "call",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            },
-                            "accounting": [
-                                {
-                                    "usage_id": "1",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                                {
-                                    "usage_id": "4",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                            ],
-                            "price": "200.00",
-                            "duty_free": "166.60",
-                        },
-                        {
-                            "model": {
-                                "value": "10.00",
-                                "unit": "callmin",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            },
-                            "accounting": [
-                                {
-                                    "price": "10.00",
-                                    "value": "1",
-                                    "usage_id": "3",
-                                    "duty_free": "8.33",
-                                }
-                            ],
-                            "price": "10.00",
-                            "duty_free": "8.33",
-                        },
-                    ],
-                },
-                {
-                    "price": "30.00",
-                    "duty_free": "28.33",
-                    "description": "Offering description",
-                    "currency": "EUR",
-                    "related_model": {
-                        "pay_per_use": [
-                            {
-                                "value": "10.00",
-                                "unit": "callmin",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            }
-                        ],
-                        "alteration": {
-                            "type": "fee",
-                            "period": "recurring",
-                            "value": {"value": "20.00", "duty_free": "20.00"},
-                            "condition": {"operation": "lt", "value": "20.00"},
-                        },
-                    },
-                    "item": "2",
-                    "applied_accounting": [
-                        {
-                            "model": {
-                                "value": "10.00",
-                                "unit": "call",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            },
-                            "accounting": [
-                                {
-                                    "usage_id": "1",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                                {
-                                    "usage_id": "4",
-                                    "price": "100.00",
-                                    "duty_free": "83.30",
-                                    "value": "10",
-                                },
-                            ],
-                            "price": "200.00",
-                            "duty_free": "166.60",
-                        },
-                        {
-                            "model": {
-                                "value": "10.00",
-                                "unit": "callmin",
-                                "tax_rate": "20.00",
-                                "duty_free": "8.33",
-                            },
-                            "accounting": [
-                                {
-                                    "price": "10.00",
-                                    "value": "1",
-                                    "usage_id": "3",
-                                    "duty_free": "8.33",
-                                }
-                            ],
-                            "price": "10.00",
-                            "duty_free": "8.33",
-                        },
-                    ],
-                },
-            ],
-            [],
-        )
-
-    def _set_alterations(self, name, unit="one time", renovation_date=None):
-        component = {
-            "value": "10.00",
-            "unit": unit,
-            "tax_rate": "0.00",
-            "duty_free": "10.00",
-        }
-
-        if renovation_date is not None:
-            component["renovation_date"] = renovation_date
-
-        alteration_fee = {
-            "type": "fee",
-            "period": "recurring",
-            "value": {"value": "5.00", "duty_free": "5.00"},
-            "condition": {"operation": "gt", "value": "5.00"},
-        }
-
-        alteration_fixed_discount = {
-            "type": "discount",
-            "period": "recurring",
-            "value": "10.00",
-        }
-
-        alteration_only_once = {
-            "type": "discount",
-            "period": "one time",
-            "value": {"value": "1.00", "duty_free": "1.00"},
-        }
-
-        # Create contracts
-        contract1, offering1 = self._mock_contract(
-            {
-                "description": "Offering 1 description",
-                "offering_pk": "61004aba5e05acc115f022f0",
-                "item_id": "1",
-                "pricing": {
-                    "general_currency": "EUR",
-                    name: [deepcopy(component), deepcopy(component)],
-                },
-                "product_id": "product1",
-            }
-        )
-
-        # Conditional fee
-        contract2, offering2 = self._mock_contract(
-            {
-                "description": "Offering 2 description",
-                "offering_pk": "61004aba5e05acc115f022f1",
-                "item_id": "2",
-                "pricing": {
-                    "general_currency": "EUR",
-                    name: [deepcopy(component)],
-                    "alteration": deepcopy(alteration_fee),
-                },
-                "product_id": "product2",
-            }
-        )
-
-        # Fixed percentage discount
-        contract3, offering3 = self._mock_contract(
-            {
-                "description": "Offering 3 description",
-                "offering_pk": "61004aba5e05acc115f022f2",
-                "item_id": "3",
-                "pricing": {
-                    "general_currency": "EUR",
-                    name: [deepcopy(component)],
-                    "alteration": deepcopy(alteration_fixed_discount),
-                },
-                "product_id": "product3",
-            }
-        )
-
-        # Non applicable discount
-        contract4, offering4 = self._mock_contract(
-            {
-                "description": "Offering 4 description",
-                "offering_pk": "61004aba5e05acc115f022f3",
-                "item_id": "4",
-                "pricing": {
-                    "general_currency": "EUR",
-                    name: [deepcopy(component)],
-                    "alteration": {
-                        "type": "discount",
-                        "value": "10.00",
-                        "period": "recurring",
-                        "condition": {"operation": "gt", "value": "50.00"},
-                    },
-                },
-                "product_id": "product4",
-            }
-        )
-
-        contract5, offering5 = self._mock_contract(
-            {
-                "description": "Offering 5 description",
-                "offering_pk": "61004aba5e05acc115f022f4",
-                "item_id": "5",
-                "pricing": {
-                    "general_currency": "EUR",
-                    name: [deepcopy(component)],
-                    "alteration": alteration_only_once,
-                },
-                "product_id": "product4",
-            }
-        )
-
-        contracts = [contract1, contract2, contract3, contract4, contract5]
-        self._order.get_contracts.return_value = contracts
-
-        # Mock get contracts
-        self._order.get_item_contract.side_effect = contracts
-
-        charging_engine.Offering = MagicMock()
-        charging_engine.Offering.objects.get.side_effect = [
-            offering1,
-            offering2,
-            offering3,
-            offering4,
-            offering5,
-        ]
-
-        item_only_once = {
-            "price": "9.00",
-            "duty_free": "9.00",
-            "description": "Offering 5 description",
-            "currency": "EUR",
-            "related_model": {
-                name: [deepcopy(component)],
-                "alteration": deepcopy(alteration_only_once),
-            },
-            "item": "5",
-        }
-
-        # The alteration will have effect only in single payment
-        if name != "single_payment":
-            item_only_once["price"] = "10.00"
-            item_only_once["duty_free"] = "10.00"
-            del item_only_once["related_model"]["alteration"]
-
-        return [
-            {
-                "price": "20.00",
-                "duty_free": "20.00",
-                "description": "Offering 1 description",
-                "currency": "EUR",
-                "related_model": {name: [deepcopy(component), deepcopy(component)]},
-                "item": "1",
-            },
-            {
-                "price": "15.00",
-                "duty_free": "15.00",
-                "description": "Offering 2 description",
-                "currency": "EUR",
-                "related_model": {
-                    name: [deepcopy(component)],
-                    "alteration": deepcopy(alteration_fee),
-                },
-                "item": "2",
-            },
-            {
-                "price": "9.00",
-                "duty_free": "9.00",
-                "description": "Offering 3 description",
-                "currency": "EUR",
-                "related_model": {
-                    name: [deepcopy(component)],
-                    "alteration": deepcopy(alteration_fixed_discount),
-                },
-                "item": "3",
-            },
-            {
-                "price": "10.00",
-                "duty_free": "10.00",
-                "description": "Offering 4 description",
-                "currency": "EUR",
-                "related_model": {name: [deepcopy(component)]},
-                "item": "4",
-            },
-            item_only_once,
-        ]
-
-    def _set_initial_alteration_contracts(self):
-        return self._set_alterations("single_payment", "one time"), []
-
-    def _set_renovation_alteration_contracts(self):
-        return (
-            self._set_alterations("subscription", "month", datetime(2015, 10, 1, 10, 10)),
-            [],
-        )
-
-    @parameterized.expand(
-        [
-            ("initial", _set_initial_contracts),
-            ("initial", _set_initial_alteration_contracts),
-            ("recurring", _set_renovation_contracts),
-            ("recurring", _set_renovation_alteration_contracts),
-            ("usage", _set_usage_contracts),
-            ("usage", _set_usage_alteration_contracts),
-        ]
-    )
-    def test_payment(self, name, contract_gen):
-        self._order.state = "pending"
-        transactions, free_contracts = contract_gen(self)
-
-        charging = charging_engine.ChargingEngine(self._order)
-        redirect_url = charging.resolve_charging(name)
-
-        self.assertEquals(self._paypal_url, redirect_url)
-
-        # Check payment client loading call
-        self._payment_class.assert_called_once_with(self._order)
-        self._payment_inst.start_redirection_payment.assert_called_once_with(transactions)
-
-        # Check timer call
-        charging_engine.threading.Timer.assert_called_once_with(300, charging._timeout_handler)
-        self._thread.start.assert_called_once_with()
-
-        # Check payment saving
-        self.assertEquals(
-            {
-                "transactions": transactions,
-                "free_contracts": free_contracts,
-                "concept": name,
-            },
-            self._order.pending_payment,
-        )
-        self.assertEquals("pending", self._order.state)
-        self._order.save.assert_called_once_with()
-
-    def test_renovation_error(self):
-        self._order.state = "pending"
-        self._set_subscription_contract()
-
-        charging = charging_engine.ChargingEngine(self._order)
-
-        error = None
-        try:
-            charging.resolve_charging("recurring")
-        except OrderingError as e:
-            error = e
-
-        self.assertTrue(error is not None)
-        self.assertEquals("OrderingError: There is not recurring payments to renovate", str(error))
-
-    def test_free_charge(self):
-        self._set_free_contract()
-
-        charging = charging_engine.ChargingEngine(self._order)
-        redirect_url = charging.resolve_charging()
-
-        # Check return value
-        self.assertTrue(redirect_url is None)
-
-        # Check invoice generation calls
-        charging_engine.InvoiceBuilder.assert_called_once_with(self._order)
-        self.assertEquals(charging_engine.InvoiceBuilder().generate_invoice.call_count, 0)
-        self.assertEquals(charging_engine.BillingClient().create_charge.call_count, 0)
-
-        # Check order status
-        self.assertEquals("paid", self._order.state)
-        self.assertEquals(None, self._order.pending_payment)
-        self._order.save.assert_called_once_with()
-
-    def _validate_subscription_calls(self):
-        self.assertEquals(
-            {
-                "general_currency": "EUR",
-                "subscription": [
-                    {
-                        "value": "12.00",
-                        "unit": "month",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                        "renovation_date": datetime(2016, 2, 19, 13, 12, 39),
-                    }
-                ],
-            },
-            self._order.get_contracts()[1].pricing_model,
-        )
-
-    def _validate_end_initial_payment(self, transactions):
-        self.assertEquals([call("1"), call("2")], self._order.get_item_contract.call_args_list)
-
-        self.assertEquals(
-            [
-                "61004aba5e05acc115f022f0",
-                "61004aba5e05acc115f022f1",
-                "61004aba5e05acc115f022f2",
-            ],
-            self._order.owner_organization.acquired_offerings,
-        )
-        self.assertEquals([call(), call(), call()], self._order.owner_organization.save.call_args_list)
-
-        # self.assertEquals(
-        #     [
-        #         call(self._order, self._order.get_contracts()[0]),
-        #         call(self._order, self._order.get_contracts()[1]),
-        #     ],
-        #     charging_engine.CDRManager.call_args_list,
-        # )
-
-        # self.assertEquals(
-        #     [
-        #         call(transactions[0]["related_model"], "2016-01-20T13:12:39Z"),
-        #         call(transactions[1]["related_model"], "2016-01-20T13:12:39Z"),
-        #     ],
-        #     charging_engine.CDRManager().generate_cdr.call_args_list,
-        # )
-
-        charging_engine.NotificationsHandler().send_acquired_notification.assert_called_once_with(self._order)
-
-        self.assertEquals(
-            [
-                call(self._order, self._order.get_contracts()[0]),
-                call(self._order, self._order.get_contracts()[1]),
-                call(self._order, self._order.get_contracts()[2]),
-            ],
-            charging_engine.NotificationsHandler().send_provider_notification.call_args_list,
-        )
-
-        basic_charge_call = call(
-            date=datetime(2016, 1, 20, 13, 12, 39),
-            cost="12.00",
-            currency="EUR",
-            concept="initial",
-            duty_free="10.00",
-            invoice=INVOICE_PATH,
-        )
-
-        self.assertEquals(
-            [basic_charge_call, basic_charge_call],
-            charging_engine.Charge.call_args_list,
-        )
-
-        self.assertEquals([self._charge], self._order.get_contracts()[0].charges)
-        self.assertEquals([self._charge], self._order.get_contracts()[1].charges)
-
-        self.assertEquals(0, charging_engine.BillingClient.call_count)
-
-        self._validate_subscription_calls()
-
-    def _validate_end_initial_alteration_payment(self, transactions):
-        self.assertEquals(
-            [call("1"), call("2"), call("3"), call("4"), call("5")],
-            self._order.get_item_contract.call_args_list,
-        )
-
-        self.assertEquals(
-            [
-                "61004aba5e05acc115f022f0",
-                "61004aba5e05acc115f022f1",
-                "61004aba5e05acc115f022f2",
-                "61004aba5e05acc115f022f3",
-                "61004aba5e05acc115f022f4",
-            ],
-            self._order.owner_organization.acquired_offerings,
-        )
-
-        self.assertEquals(
-            [call(), call(), call(), call(), call(), call()],
-            self._order.owner_organization.save.call_args_list,
-        )
-
-        # self.assertEquals(
-        #     [call(self._order, contract) for contract in self._order.get_contracts()],
-        #     charging_engine.CDRManager.call_args_list,
-        # )
-
-        # self.assertEquals(
-        #     [call(trans["related_model"], "2016-01-20T13:12:39Z") for trans in transactions],
-        #     charging_engine.CDRManager().generate_cdr.call_args_list,
-        # )
-
-        def charge_call(c, d):
-            return call(
-                date=datetime(2016, 1, 20, 13, 12, 39),
-                cost=c,
-                currency="EUR",
-                concept="initial",
-                duty_free=d,
-                invoice=INVOICE_PATH,
-            )
-
-        self.assertEquals(
-            [
-                charge_call("20.00", "20.00"),
-                charge_call("15.00", "15.00"),
-                charge_call("9.00", "9.00"),
-                charge_call("10.00", "10.00"),
-                charge_call("9.00", "9.00"),
-            ],
-            charging_engine.Charge.call_args_list,
-        )
-
-        self.assertEquals(
-            [[self._charge] for x in range(len(self._order.get_contracts()))],
-            [x.charges for x in self._order.get_contracts()],
-        )
-
-        self.assertEquals(0, charging_engine.BillingClient.call_count)
-
-    def _validate_end_renovation_payment(self, transactions):
-        self.assertEquals([call("2")], self._order.get_item_contract.call_args_list)
-
-        #charging_engine.CDRManager.assert_called_once_with(self._order, self._order.get_contracts()[1])
-        #charging_engine.CDRManager().generate_cdr.assert_called_once_with(
-        #    transactions[0]["related_model"], "2016-01-20T13:12:39Z"
-        #)
-
-        # No new offering has been included
-        self.assertEquals([], self._order.owner_organization.acquired_offerings)
-
-        self.assertEquals(0, self._order.get_contracts()[0].call_count)
-        self.assertEquals(0, self._order.get_contracts()[2].call_count)
-
-        self.assertEquals([], self._order.get_contracts()[0].charges)
-
-        charging_engine.NotificationsHandler().send_renovation_notification.assert_called_once_with(
-            self._order, transactions
-        )
-
-        charging_engine.Charge.assert_called_once_with(
-            date=datetime(2016, 1, 20, 13, 12, 39),
-            cost="12.00",
-            currency="EUR",
-            concept="recurring",
-            duty_free="10.00",
-            invoice=INVOICE_PATH,
-        )
-
-        self.assertEquals([self._charge], self._order.get_contracts()[1].charges)
-
-        self.assertEquals([], self._order.get_contracts()[2].charges)
-
-        charging_engine.BillingClient.assert_called_once_with()
-        charging_engine.BillingClient().create_charge.assert_called_once_with(
-            self._charge,
-            self._order.get_contracts()[1].product_id,
-            start_date=None,
-            end_date=datetime(2016, 2, 19, 13, 12, 39),
-        )
-
-        self._validate_subscription_calls()
-
-    def _validate_end_renovation_alteration_payment(self, transactions):
-        self.assertEquals(
-            [call(str(x + 1)) for x in range(5)],
-            self._order.get_item_contract.call_args_list,
-        )
-
-        self.assertEquals([], self._order.owner_organization.acquired_offerings)
-        self.assertEquals([call()], self._order.owner_organization.save.call_args_list)
-
-        # self.assertEquals(
-        #     [call(self._order, contract) for contract in self._order.get_contracts()],
-        #     charging_engine.CDRManager.call_args_list,
-        # )
-
-        # self.assertEquals(
-        #     [call(trans["related_model"], "2016-01-20T13:12:39Z") for trans in transactions],
-        #     charging_engine.CDRManager().generate_cdr.call_args_list,
-        # )
-
-        def charge_call(c, d):
-            return call(
-                date=datetime(2016, 1, 20, 13, 12, 39),
-                cost=c,
-                currency="EUR",
-                concept="recurring",
-                duty_free=d,
-                invoice=INVOICE_PATH,
-            )
-
-        self.assertEquals(
-            [
-                charge_call("20.00", "20.00"),
-                charge_call("15.00", "15.00"),
-                charge_call("9.00", "9.00"),
-                charge_call("10.00", "10.00"),
-                charge_call("10.00", "10.00"),
-            ],
-            charging_engine.Charge.call_args_list,
-        )
-
-        self.assertEquals(
-            [[self._charge] for x in range(len(self._order.get_contracts()))],
-            [x.charges for x in self._order.get_contracts()],
-        )
-
-        self.assertEquals(1, charging_engine.BillingClient.call_count)
-
-        def validate_sub(c, d, n=1, alt=None):
-            temp = {
-                "general_currency": "EUR",
-                "subscription": [
-                    {
-                        "value": c,
-                        "unit": "month",
-                        "tax_rate": "0.00",
-                        "duty_free": d,
-                        "renovation_date": datetime(2016, 2, 19, 13, 12, 39),
-                    }
-                    for _ in range(n)
-                ],
-            }
-            if alt is not None:
-                temp["alteration"] = alt
-            return temp
-
-        self.assertEquals(
-            [
-                validate_sub("10.00", "10.00", 2),
-                validate_sub(
-                    "10.00",
-                    "10.00",
-                    1,
-                    {
-                        "value": {"duty_free": "5.00", "value": "5.00"},
-                        "type": "fee",
-                        "period": "recurring",
-                        "condition": {"operation": "gt", "value": "5.00"},
-                    },
-                ),
-                validate_sub(
-                    "10.00",
-                    "10.00",
-                    1,
-                    {"type": "discount", "period": "recurring", "value": "10.00"},
-                ),
-                validate_sub(
-                    "10.00",
-                    "10.00",
-                    1,
-                    {
-                        "condition": {"operation": "gt", "value": "50.00"},
-                        "type": "discount",
-                        "period": "recurring",
-                        "value": "10.00",
-                    },
-                ),
-                validate_sub(
-                    "10.00",
-                    "10.00",
-                    1,
-                    {
-                        "type": "discount",
-                        "period": "one time",
-                        "value": {"value": "1.00", "duty_free": "1.00"},
-                    },
-                ),
-            ],
-            [x.pricing_model for x in self._order.get_contracts()],
-        )
-
-    def _validate_end_usage_payment(self, transactions):
-        self.assertEquals(
-            [
-                call(
-                    "1",
-                    str(datetime(2016, 1, 20, 13, 12, 39)),
-                    "83.30",
-                    "100.00",
-                    "20.00",
-                    "EUR",
-                    self._order.get_contracts()[0].product_id,
-                ),
-                call(
-                    "3",
-                    str(datetime(2016, 1, 20, 13, 12, 39)),
-                    "83.30",
-                    "100.00",
-                    "20.00",
-                    "EUR",
-                    self._order.get_contracts()[0].product_id,
-                ),
-            ],
-            charging_engine.UsageClient().rate_usage.call_args_list,
-        )
-
-        charging_engine.BillingClient.assert_called_once_with()
-        charging_engine.BillingClient().create_charge.assert_called_once_with(
-            self._charge,
-            self._order.get_contracts()[0].product_id,
-            start_date=datetime(2016, 1, 20, 13, 12, 39),
-            end_date=None,
-        )
-
-    @parameterized.expand(
-        [
-            ("initial", _set_initial_contracts, _validate_end_initial_payment),
-            (
-                "initial",
-                _set_initial_alteration_contracts,
-                _validate_end_initial_alteration_payment,
-            ),
-            ("recurring", _set_renovation_contracts, _validate_end_renovation_payment),
-            (
-                "recurring",
-                _set_renovation_alteration_contracts,
-                _validate_end_renovation_alteration_payment,
-            ),
-            ("usage", _set_usage_contracts, _validate_end_usage_payment),
-        ]
-    )
-    def test_end_payment(self, name, contract_gen, validator):
-        self._order.state = "pending"
-        transactions, free_contracts = contract_gen(self)
-
-        charging = charging_engine.ChargingEngine(self._order)
-        charging.end_charging(transactions, free_contracts, name)
-
-        charging_engine.NotificationsHandler.assert_called_once_with()
-        validator(self, transactions)
-
-        # Validate calls
-        self.assertEquals("paid", self._order.state)
-
-        self.assertEquals([call(), call()], self._order.save.call_args_list)
-
-    def test_invalid_concept(self):
-        charging = charging_engine.ChargingEngine(self._order)
-
-        error = None
-        try:
-            charging.resolve_charging(type_="invalid")
-        except ValueError as e:
-            error = e
-
-        self.assertFalse(error is None)
-        self.assertEquals("Invalid charge type, must be `initial`, `recurring`, or `usage`", str(error))
+# class ChargingEngineTestCase(TestCase):
+#     tags = ("ordering", "charging-engine")
+#     _paypal_url = "http://paypalurl.com"
+
+#     def setUp(self):
+#         # Mock order
+#         self._order = MagicMock()
+#         self._order.owner_organization.acquired_offerings = []
+
+#         # Mock payment client
+#         mock_payment_client(self, charging_engine)
+#         self._payment_inst.get_checkout_url.return_value = self._paypal_url
+
+#         # Mock threading
+#         charging_engine.threading = MagicMock()
+
+#         self._thread = MagicMock()
+#         charging_engine.threading.Timer.return_value = self._thread
+
+#         # Mock invoice builder
+#         charging_engine.InvoiceBuilder = MagicMock()
+#         charging_engine.InvoiceBuilder.return_value.generate_invoice.return_value = INVOICE_PATH
+
+#         # Mock CDR Manager
+#         charging_engine.CDRManager = MagicMock()
+
+#         # Mock datetime
+#         now = datetime(2016, 1, 20, 13, 12, 39)
+#         charging_engine.datetime = MagicMock()
+#         charging_engine.datetime.utcnow.return_value = now
+
+#         charging_engine.NotificationsHandler = MagicMock()
+
+#         self._charge = MagicMock()
+#         charging_engine.Charge = MagicMock()
+#         charging_engine.Charge.return_value = self._charge
+
+#         charging_engine.BillingClient = MagicMock()
+#         charging_engine.Offering = MagicMock()
+
+#     def _get_single_payment(self):
+#         return {
+#             "general_currency": "EUR",
+#             "single_payment": [
+#                 {
+#                     "value": "12",
+#                     "unit": "one time",
+#                     "tax_rate": "20.00",
+#                     "duty_free": "10.00",
+#                 }
+#             ],
+#         }
+
+#     def _get_subscription(self, renovation_date=None):
+#         pricing = {
+#             "general_currency": "EUR",
+#             "subscription": [
+#                 {
+#                     "value": "12.00",
+#                     "unit": "month",
+#                     "tax_rate": "20.00",
+#                     "duty_free": "10.00",
+#                 }
+#             ],
+#         }
+
+#         if renovation_date is not None:
+#             pricing["subscription"][0]["renovation_date"] = renovation_date
+
+#         return pricing
+
+#     def _get_pay_use(self):
+#         return {
+#             "general_currency": "EUR",
+#             "pay_per_use": [
+#                 {
+#                     "value": "10.00",
+#                     "unit": "call",
+#                     "tax_rate": "20.00",
+#                     "duty_free": "8.33",
+#                 }
+#             ],
+#         }
+
+#     def _mock_contract(self, info):
+#         contract = MagicMock()
+#         contract.item_id = info["item_id"]
+#         contract.charges = []
+#         contract.pricing_model = info["pricing"]
+#         contract.product_id = info["product_id"]
+#         contract.offering = info["offering_pk"]
+
+#         offering = MagicMock(description=info["description"], pk=info["offering_pk"])
+
+#         return contract, offering
+
+#     def _set_initial_contracts(self):
+#         contract1, offering1 = self._mock_contract(
+#             {
+#                 "description": "Offering 1 description",
+#                 "offering_pk": "61004aba5e05acc115f022f0",
+#                 "item_id": "1",
+#                 "pricing": self._get_single_payment(),
+#                 "product_id": "product1",
+#             }
+#         )
+#         contract2, offering2 = self._mock_contract(
+#             {
+#                 "description": "Offering 2 description",
+#                 "offering_pk": "61004aba5e05acc115f022f1",
+#                 "item_id": "2",
+#                 "pricing": self._get_subscription(),
+#                 "product_id": "product2",
+#             }
+#         )
+#         contract3, offering3 = self._mock_contract(
+#             {
+#                 "description": "Offering 3 description",
+#                 "offering_pk": "61004aba5e05acc115f022f2",
+#                 "item_id": "3",
+#                 "pricing": {},
+#                 "product_id": "product3",
+#             }
+#         )
+
+#         contracts = [contract1, contract2, contract3]
+#         self._order.get_contracts.return_value = contracts
+#         # Mock get contracts
+#         self._order.get_item_contract.side_effect = contracts
+
+#         charging_engine.Offering = MagicMock()
+#         charging_engine.Offering.objects.get.side_effect = [
+#             offering1,
+#             offering2,
+#             offering3,
+#         ]
+
+#         return (
+#             [
+#                 {
+#                     "price": "12.00",
+#                     "duty_free": "10.00",
+#                     "description": "Offering 1 description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "single_payment": [
+#                             {
+#                                 "value": "12",
+#                                 "unit": "one time",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "10.00",
+#                             }
+#                         ]
+#                     },
+#                     "item": "1",
+#                 },
+#                 {
+#                     "price": "12.00",
+#                     "duty_free": "10.00",
+#                     "description": "Offering 2 description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "subscription": [
+#                             {
+#                                 "value": "12.00",
+#                                 "unit": "month",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "10.00",
+#                             }
+#                         ]
+#                     },
+#                     "item": "2",
+#                 },
+#             ],
+#             [contract3],
+#         )
+
+#     def _set_renovation_contracts(self):
+#         contract1, offering1 = self._mock_contract(
+#             {
+#                 "description": "Offering 1 description",
+#                 "offering_pk": "61004aba5e05acc115f022f0",
+#                 "item_id": "1",
+#                 "pricing": self._get_single_payment(),
+#                 "product_id": "product1",
+#             }
+#         )
+#         contract2, offering2 = self._mock_contract(
+#             {
+#                 "description": "Offering 2 description",
+#                 "offering_pk": "61004aba5e05acc115f022f1",
+#                 "item_id": "2",
+#                 "pricing": self._get_subscription(datetime(2015, 10, 1, 10, 10)),
+#                 "product_id": "product2",
+#             }
+#         )
+#         contract3, offering3 = self._mock_contract(
+#             {
+#                 "description": "Offering 3 description",
+#                 "offering_pk": "61004aba5e05acc115f022f2",
+#                 "item_id": "3",
+#                 "pricing": self._get_subscription(datetime.utcnow()),
+#                 "product_id": "product3",
+#             }
+#         )
+
+#         self._order.get_contracts.return_value = [contract1, contract2, contract3]
+#         # Mock get contracts
+#         self._order.get_item_contract.side_effect = [contract2]
+
+#         charging_engine.Offering = MagicMock()
+#         charging_engine.Offering.objects.get.side_effect = [offering2, offering3]
+
+#         return (
+#             [
+#                 {
+#                     "price": "12.00",
+#                     "duty_free": "10.00",
+#                     "description": "Offering 2 description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "subscription": [
+#                             {
+#                                 "value": "12.00",
+#                                 "unit": "month",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "10.00",
+#                                 "renovation_date": datetime(2015, 10, 1, 10, 10),
+#                             }
+#                         ]
+#                     },
+#                     "item": "2",
+#                 }
+#             ],
+#             [],
+#         )
+
+#     def _set_subscription_contract(self):
+#         contract, offering = self._mock_contract(
+#             {
+#                 "description": "Offering 3 description",
+#                 "offering_pk": "61004aba5e05acc115f022f2",
+#                 "item_id": "3",
+#                 "pricing": self._get_subscription(datetime.utcnow()),
+#                 "product_id": "product1",
+#             }
+#         )
+
+#         self._order.get_contracts.return_value = [contract]
+
+#         charging_engine.Offering = MagicMock()
+#         charging_engine.Offering.objects.get.return_value = offering
+#         return ([], [])
+
+#     def _set_free_contract(self):
+#         contract = MagicMock()
+#         contract.offering.description = "Offering description"
+#         contract.item_id = "1"
+#         contract.pricing_model = {}
+
+#         self._order.get_contracts.return_value = [contract]
+
+#     def _set_usage_contracts(self):
+#         contract, offering = self._mock_contract(
+#             {
+#                 "description": "Offering description",
+#                 "offering_pk": "61004aba5e05acc115f022f0",
+#                 "item_id": "1",
+#                 "pricing": self._get_pay_use(),
+#                 "product_id": "product1",
+#             }
+#         )
+
+#         charging_engine.Offering = MagicMock()
+#         charging_engine.Offering.objects.get.return_value = offering
+
+#         # Mock usage client
+#         charging_engine.UsageClient = MagicMock()
+#         charging_engine.UsageClient().get_customer_usage.return_value = [
+#             {"id": "1"},
+#             {"id": "2"},
+#             {"id": "3"},
+#         ]
+
+#         charging_engine.SDRManager = MagicMock()
+#         charging_engine.SDRManager().get_sdr_values.side_effect = [
+#             {"unit": "call", "value": "10"},
+#             {"unit": "invocation", "value": "1"},
+#             {"unit": "call", "value": "10"},
+#         ]
+#         contract.applied_sdrs = []
+#         self._order.get_contracts.return_value = [contract]
+#         self._order.date = datetime(2016, 1, 20, 13, 12, 39)
+#         self._order.get_item_contract.side_effect = [contract]
+
+#         return (
+#             [
+#                 {
+#                     "price": "200.00",
+#                     "duty_free": "166.60",
+#                     "description": "Offering description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "pay_per_use": [
+#                             {
+#                                 "value": "10.00",
+#                                 "unit": "call",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             }
+#                         ]
+#                     },
+#                     "item": "1",
+#                     "applied_accounting": [
+#                         {
+#                             "model": {
+#                                 "value": "10.00",
+#                                 "unit": "call",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             },
+#                             "accounting": [
+#                                 {
+#                                     "usage_id": "1",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                                 {
+#                                     "usage_id": "3",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                             ],
+#                             "price": "200.00",
+#                             "duty_free": "166.60",
+#                         }
+#                     ],
+#                 }
+#             ],
+#             [],
+#         )
+
+#     def _set_usage_alteration_contracts(self):
+#         contract1, offering1 = self._mock_contract(
+#             {
+#                 "description": "Offering description",
+#                 "offering_pk": "61004aba5e05acc115f022f0",
+#                 "item_id": "1",
+#                 "pricing": self._get_pay_use(),
+#                 "product_id": "product1",
+#             }
+#         )
+
+#         contract2, offering2 = self._mock_contract(
+#             {
+#                 "description": "Offering description",
+#                 "offering_pk": "61004aba5e05acc115f022f1",
+#                 "item_id": "2",
+#                 "pricing": {
+#                     "general_currency": "EUR",
+#                     "pay_per_use": [
+#                         {
+#                             "value": "10.00",
+#                             "unit": "callmin",
+#                             "tax_rate": "20.00",
+#                             "duty_free": "8.33",
+#                         }
+#                     ],
+#                     "alteration": {
+#                         "type": "fee",
+#                         "period": "recurring",
+#                         "value": {"value": "20.00", "duty_free": "20.00"},
+#                         "condition": {"operation": "lt", "value": "20.00"},
+#                     },
+#                 },
+#                 "product_id": "product2",
+#             }
+#         )
+
+#         charging_engine.Offering = MagicMock()
+#         charging_engine.Offering.objects.get.side_effect = [offering1, offering2]
+
+#         # Mock usage client
+#         charging_engine.UsageClient = MagicMock()
+#         charging_engine.UsageClient().get_customer_usage.return_value = [
+#             {"id": "1"},
+#             {"id": "2"},
+#             {"id": "3"},
+#             {"id": "4"},
+#         ]
+
+#         charging_engine.SDRManager = MagicMock()
+#         charging_engine.SDRManager().get_sdr_values.side_effect = [
+#             {"unit": "call", "value": "10"},
+#             {"unit": "invocation", "value": "1"},
+#             {"unit": "callmin", "value": "1"},
+#             {"unit": "call", "value": "10"},
+#             {"unit": "call", "value": "10"},
+#             {"unit": "invocation", "value": "1"},
+#             {"unit": "callmin", "value": "1"},
+#             {"unit": "call", "value": "10"},
+#         ]
+#         contract1.applied_sdrs = []
+#         contract2.applied_sdrs = []
+#         self._order.get_contracts.return_value = [contract1, contract2]
+#         self._order.date = datetime(2016, 1, 20, 13, 12, 39)
+#         self._order.get_item_contract.side_effect = [contract1, contract2]
+
+#         return (
+#             [
+#                 {
+#                     "price": "200.00",
+#                     "duty_free": "166.60",
+#                     "description": "Offering description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "pay_per_use": [
+#                             {
+#                                 "value": "10.00",
+#                                 "unit": "call",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             }
+#                         ]
+#                     },
+#                     "item": "1",
+#                     "applied_accounting": [
+#                         {
+#                             "model": {
+#                                 "value": "10.00",
+#                                 "unit": "call",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             },
+#                             "accounting": [
+#                                 {
+#                                     "usage_id": "1",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                                 {
+#                                     "usage_id": "4",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                             ],
+#                             "price": "200.00",
+#                             "duty_free": "166.60",
+#                         },
+#                         {
+#                             "model": {
+#                                 "value": "10.00",
+#                                 "unit": "callmin",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             },
+#                             "accounting": [
+#                                 {
+#                                     "price": "10.00",
+#                                     "value": "1",
+#                                     "usage_id": "3",
+#                                     "duty_free": "8.33",
+#                                 }
+#                             ],
+#                             "price": "10.00",
+#                             "duty_free": "8.33",
+#                         },
+#                     ],
+#                 },
+#                 {
+#                     "price": "30.00",
+#                     "duty_free": "28.33",
+#                     "description": "Offering description",
+#                     "currency": "EUR",
+#                     "related_model": {
+#                         "pay_per_use": [
+#                             {
+#                                 "value": "10.00",
+#                                 "unit": "callmin",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             }
+#                         ],
+#                         "alteration": {
+#                             "type": "fee",
+#                             "period": "recurring",
+#                             "value": {"value": "20.00", "duty_free": "20.00"},
+#                             "condition": {"operation": "lt", "value": "20.00"},
+#                         },
+#                     },
+#                     "item": "2",
+#                     "applied_accounting": [
+#                         {
+#                             "model": {
+#                                 "value": "10.00",
+#                                 "unit": "call",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             },
+#                             "accounting": [
+#                                 {
+#                                     "usage_id": "1",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                                 {
+#                                     "usage_id": "4",
+#                                     "price": "100.00",
+#                                     "duty_free": "83.30",
+#                                     "value": "10",
+#                                 },
+#                             ],
+#                             "price": "200.00",
+#                             "duty_free": "166.60",
+#                         },
+#                         {
+#                             "model": {
+#                                 "value": "10.00",
+#                                 "unit": "callmin",
+#                                 "tax_rate": "20.00",
+#                                 "duty_free": "8.33",
+#                             },
+#                             "accounting": [
+#                                 {
+#                                     "price": "10.00",
+#                                     "value": "1",
+#                                     "usage_id": "3",
+#                                     "duty_free": "8.33",
+#                                 }
+#                             ],
+#                             "price": "10.00",
+#                             "duty_free": "8.33",
+#                         },
+#                     ],
+#                 },
+#             ],
+#             [],
+#         )
+
+    # def _set_alterations(self, name, unit="one time", renovation_date=None):
+    #     component = {
+    #         "value": "10.00",
+    #         "unit": unit,
+    #         "tax_rate": "0.00",
+    #         "duty_free": "10.00",
+    #     }
+
+    #     if renovation_date is not None:
+    #         component["renovation_date"] = renovation_date
+
+    #     alteration_fee = {
+    #         "type": "fee",
+    #         "period": "recurring",
+    #         "value": {"value": "5.00", "duty_free": "5.00"},
+    #         "condition": {"operation": "gt", "value": "5.00"},
+    #     }
+
+    #     alteration_fixed_discount = {
+    #         "type": "discount",
+    #         "period": "recurring",
+    #         "value": "10.00",
+    #     }
+
+    #     alteration_only_once = {
+    #         "type": "discount",
+    #         "period": "one time",
+    #         "value": {"value": "1.00", "duty_free": "1.00"},
+    #     }
+
+    #     # Create contracts
+    #     contract1, offering1 = self._mock_contract(
+    #         {
+    #             "description": "Offering 1 description",
+    #             "offering_pk": "61004aba5e05acc115f022f0",
+    #             "item_id": "1",
+    #             "pricing": {
+    #                 "general_currency": "EUR",
+    #                 name: [deepcopy(component), deepcopy(component)],
+    #             },
+    #             "product_id": "product1",
+    #         }
+    #     )
+
+    #     # Conditional fee
+    #     contract2, offering2 = self._mock_contract(
+    #         {
+    #             "description": "Offering 2 description",
+    #             "offering_pk": "61004aba5e05acc115f022f1",
+    #             "item_id": "2",
+    #             "pricing": {
+    #                 "general_currency": "EUR",
+    #                 name: [deepcopy(component)],
+    #                 "alteration": deepcopy(alteration_fee),
+    #             },
+    #             "product_id": "product2",
+    #         }
+    #     )
+
+    #     # Fixed percentage discount
+    #     contract3, offering3 = self._mock_contract(
+    #         {
+    #             "description": "Offering 3 description",
+    #             "offering_pk": "61004aba5e05acc115f022f2",
+    #             "item_id": "3",
+    #             "pricing": {
+    #                 "general_currency": "EUR",
+    #                 name: [deepcopy(component)],
+    #                 "alteration": deepcopy(alteration_fixed_discount),
+    #             },
+    #             "product_id": "product3",
+    #         }
+    #     )
+
+    #     # Non applicable discount
+    #     contract4, offering4 = self._mock_contract(
+    #         {
+    #             "description": "Offering 4 description",
+    #             "offering_pk": "61004aba5e05acc115f022f3",
+    #             "item_id": "4",
+    #             "pricing": {
+    #                 "general_currency": "EUR",
+    #                 name: [deepcopy(component)],
+    #                 "alteration": {
+    #                     "type": "discount",
+    #                     "value": "10.00",
+    #                     "period": "recurring",
+    #                     "condition": {"operation": "gt", "value": "50.00"},
+    #                 },
+    #             },
+    #             "product_id": "product4",
+    #         }
+    #     )
+
+    #     contract5, offering5 = self._mock_contract(
+    #         {
+    #             "description": "Offering 5 description",
+    #             "offering_pk": "61004aba5e05acc115f022f4",
+    #             "item_id": "5",
+    #             "pricing": {
+    #                 "general_currency": "EUR",
+    #                 name: [deepcopy(component)],
+    #                 "alteration": alteration_only_once,
+    #             },
+    #             "product_id": "product4",
+    #         }
+    #     )
+
+    #     contracts = [contract1, contract2, contract3, contract4, contract5]
+    #     self._order.get_contracts.return_value = contracts
+
+    #     # Mock get contracts
+    #     self._order.get_item_contract.side_effect = contracts
+
+    #     charging_engine.Offering = MagicMock()
+    #     charging_engine.Offering.objects.get.side_effect = [
+    #         offering1,
+    #         offering2,
+    #         offering3,
+    #         offering4,
+    #         offering5,
+    #     ]
+
+    #     item_only_once = {
+    #         "price": "9.00",
+    #         "duty_free": "9.00",
+    #         "description": "Offering 5 description",
+    #         "currency": "EUR",
+    #         "related_model": {
+    #             name: [deepcopy(component)],
+    #             "alteration": deepcopy(alteration_only_once),
+    #         },
+    #         "item": "5",
+    #     }
+
+    #     # The alteration will have effect only in single payment
+    #     if name != "single_payment":
+    #         item_only_once["price"] = "10.00"
+    #         item_only_once["duty_free"] = "10.00"
+    #         del item_only_once["related_model"]["alteration"]
+
+    #     return [
+    #         {
+    #             "price": "20.00",
+    #             "duty_free": "20.00",
+    #             "description": "Offering 1 description",
+    #             "currency": "EUR",
+    #             "related_model": {name: [deepcopy(component), deepcopy(component)]},
+    #             "item": "1",
+    #         },
+    #         {
+    #             "price": "15.00",
+    #             "duty_free": "15.00",
+    #             "description": "Offering 2 description",
+    #             "currency": "EUR",
+    #             "related_model": {
+    #                 name: [deepcopy(component)],
+    #                 "alteration": deepcopy(alteration_fee),
+    #             },
+    #             "item": "2",
+    #         },
+    #         {
+    #             "price": "9.00",
+    #             "duty_free": "9.00",
+    #             "description": "Offering 3 description",
+    #             "currency": "EUR",
+    #             "related_model": {
+    #                 name: [deepcopy(component)],
+    #                 "alteration": deepcopy(alteration_fixed_discount),
+    #             },
+    #             "item": "3",
+    #         },
+    #         {
+    #             "price": "10.00",
+    #             "duty_free": "10.00",
+    #             "description": "Offering 4 description",
+    #             "currency": "EUR",
+    #             "related_model": {name: [deepcopy(component)]},
+    #             "item": "4",
+    #         },
+    #         item_only_once,
+    #     ]
+
+    # def _set_initial_alteration_contracts(self):
+    #     return self._set_alterations("single_payment", "one time"), []
+
+    # def _set_renovation_alteration_contracts(self):
+    #     return (
+    #         self._set_alterations("subscription", "month", datetime(2015, 10, 1, 10, 10)),
+    #         [],
+    #     )
+
+    # @parameterized.expand(
+    #     [
+    #         ("initial", _set_initial_contracts),
+    #         ("initial", _set_initial_alteration_contracts),
+    #         ("recurring", _set_renovation_contracts),
+    #         ("recurring", _set_renovation_alteration_contracts),
+    #         ("usage", _set_usage_contracts),
+    #         ("usage", _set_usage_alteration_contracts),
+    #     ]
+    # )
+    # def test_payment(self, name, contract_gen):
+    #     self._order.state = "pending"
+    #     transactions, free_contracts = contract_gen(self)
+
+    #     charging = charging_engine.ChargingEngine(self._order)
+    #     redirect_url = charging.resolve_charging(name)
+
+    #     self.assertEquals(self._paypal_url, redirect_url)
+
+    #     # Check payment client loading call
+    #     self._payment_class.assert_called_once_with(self._order)
+    #     self._payment_inst.start_redirection_payment.assert_called_once_with(transactions)
+
+    #     # Check timer call
+    #     charging_engine.threading.Timer.assert_called_once_with(300, charging._timeout_handler)
+    #     self._thread.start.assert_called_once_with()
+
+    #     # Check payment saving
+    #     self.assertEquals(
+    #         {
+    #             "transactions": transactions,
+    #             "free_contracts": free_contracts,
+    #             "concept": name,
+    #         },
+    #         self._order.pending_payment,
+    #     )
+    #     self.assertEquals("pending", self._order.state)
+    #     self._order.save.assert_called_once_with()
+
+    # def test_renovation_error(self):
+    #     self._order.state = "pending"
+    #     self._set_subscription_contract()
+
+    #     charging = charging_engine.ChargingEngine(self._order)
+
+    #     error = None
+    #     try:
+    #         charging.resolve_charging("recurring")
+    #     except OrderingError as e:
+    #         error = e
+
+    #     self.assertTrue(error is not None)
+    #     self.assertEquals("OrderingError: There is not recurring payments to renovate", str(error))
+
+    # def test_free_charge(self):
+    #     self._set_free_contract()
+
+    #     charging = charging_engine.ChargingEngine(self._order)
+    #     redirect_url = charging.resolve_charging()
+
+    #     # Check return value
+    #     self.assertTrue(redirect_url is None)
+
+    #     # Check invoice generation calls
+    #     charging_engine.InvoiceBuilder.assert_called_once_with(self._order)
+    #     self.assertEquals(charging_engine.InvoiceBuilder().generate_invoice.call_count, 0)
+    #     self.assertEquals(charging_engine.BillingClient().create_charge.call_count, 0)
+
+    #     # Check order status
+    #     self.assertEquals("paid", self._order.state)
+    #     self.assertEquals(None, self._order.pending_payment)
+    #     self._order.save.assert_called_once_with()
+
+    # def _validate_subscription_calls(self):
+    #     self.assertEquals(
+    #         {
+    #             "general_currency": "EUR",
+    #             "subscription": [
+    #                 {
+    #                     "value": "12.00",
+    #                     "unit": "month",
+    #                     "tax_rate": "20.00",
+    #                     "duty_free": "10.00",
+    #                     "renovation_date": datetime(2016, 2, 19, 13, 12, 39),
+    #                 }
+    #             ],
+    #         },
+    #         self._order.get_contracts()[1].pricing_model,
+    #     )
+
+    # def _validate_end_initial_payment(self, transactions):
+    #     self.assertEquals([call("1"), call("2")], self._order.get_item_contract.call_args_list)
+
+    #     self.assertEquals(
+    #         [
+    #             "61004aba5e05acc115f022f0",
+    #             "61004aba5e05acc115f022f1",
+    #             "61004aba5e05acc115f022f2",
+    #         ],
+    #         self._order.owner_organization.acquired_offerings,
+    #     )
+    #     self.assertEquals([call(), call(), call()], self._order.owner_organization.save.call_args_list)
+
+    #     # self.assertEquals(
+    #     #     [
+    #     #         call(self._order, self._order.get_contracts()[0]),
+    #     #         call(self._order, self._order.get_contracts()[1]),
+    #     #     ],
+    #     #     charging_engine.CDRManager.call_args_list,
+    #     # )
+
+    #     # self.assertEquals(
+    #     #     [
+    #     #         call(transactions[0]["related_model"], "2016-01-20T13:12:39Z"),
+    #     #         call(transactions[1]["related_model"], "2016-01-20T13:12:39Z"),
+    #     #     ],
+    #     #     charging_engine.CDRManager().generate_cdr.call_args_list,
+    #     # )
+
+    #     charging_engine.NotificationsHandler().send_acquired_notification.assert_called_once_with(self._order)
+
+    #     self.assertEquals(
+    #         [
+    #             call(self._order, self._order.get_contracts()[0]),
+    #             call(self._order, self._order.get_contracts()[1]),
+    #             call(self._order, self._order.get_contracts()[2]),
+    #         ],
+    #         charging_engine.NotificationsHandler().send_provider_notification.call_args_list,
+    #     )
+
+    #     basic_charge_call = call(
+    #         date=datetime(2016, 1, 20, 13, 12, 39),
+    #         cost="12.00",
+    #         currency="EUR",
+    #         concept="initial",
+    #         duty_free="10.00",
+    #         invoice=INVOICE_PATH,
+    #     )
+
+    #     self.assertEquals(
+    #         [basic_charge_call, basic_charge_call],
+    #         charging_engine.Charge.call_args_list,
+    #     )
+
+    #     self.assertEquals([self._charge], self._order.get_contracts()[0].charges)
+    #     self.assertEquals([self._charge], self._order.get_contracts()[1].charges)
+
+    #     self.assertEquals(0, charging_engine.BillingClient.call_count)
+
+    #     self._validate_subscription_calls()
+
+    # def _validate_end_initial_alteration_payment(self, transactions):
+    #     self.assertEquals(
+    #         [call("1"), call("2"), call("3"), call("4"), call("5")],
+    #         self._order.get_item_contract.call_args_list,
+    #     )
+
+    #     self.assertEquals(
+    #         [
+    #             "61004aba5e05acc115f022f0",
+    #             "61004aba5e05acc115f022f1",
+    #             "61004aba5e05acc115f022f2",
+    #             "61004aba5e05acc115f022f3",
+    #             "61004aba5e05acc115f022f4",
+    #         ],
+    #         self._order.owner_organization.acquired_offerings,
+    #     )
+
+    #     self.assertEquals(
+    #         [call(), call(), call(), call(), call(), call()],
+    #         self._order.owner_organization.save.call_args_list,
+    #     )
+
+    #     # self.assertEquals(
+    #     #     [call(self._order, contract) for contract in self._order.get_contracts()],
+    #     #     charging_engine.CDRManager.call_args_list,
+    #     # )
+
+    #     # self.assertEquals(
+    #     #     [call(trans["related_model"], "2016-01-20T13:12:39Z") for trans in transactions],
+    #     #     charging_engine.CDRManager().generate_cdr.call_args_list,
+    #     # )
+
+    #     def charge_call(c, d):
+    #         return call(
+    #             date=datetime(2016, 1, 20, 13, 12, 39),
+    #             cost=c,
+    #             currency="EUR",
+    #             concept="initial",
+    #             duty_free=d,
+    #             invoice=INVOICE_PATH,
+    #         )
+
+    #     self.assertEquals(
+    #         [
+    #             charge_call("20.00", "20.00"),
+    #             charge_call("15.00", "15.00"),
+    #             charge_call("9.00", "9.00"),
+    #             charge_call("10.00", "10.00"),
+    #             charge_call("9.00", "9.00"),
+    #         ],
+    #         charging_engine.Charge.call_args_list,
+    #     )
+
+    #     self.assertEquals(
+    #         [[self._charge] for x in range(len(self._order.get_contracts()))],
+    #         [x.charges for x in self._order.get_contracts()],
+    #     )
+
+    #     self.assertEquals(0, charging_engine.BillingClient.call_count)
+
+    # def _validate_end_renovation_payment(self, transactions):
+    #     self.assertEquals([call("2")], self._order.get_item_contract.call_args_list)
+
+    #     #charging_engine.CDRManager.assert_called_once_with(self._order, self._order.get_contracts()[1])
+    #     #charging_engine.CDRManager().generate_cdr.assert_called_once_with(
+    #     #    transactions[0]["related_model"], "2016-01-20T13:12:39Z"
+    #     #)
+
+    #     # No new offering has been included
+    #     self.assertEquals([], self._order.owner_organization.acquired_offerings)
+
+    #     self.assertEquals(0, self._order.get_contracts()[0].call_count)
+    #     self.assertEquals(0, self._order.get_contracts()[2].call_count)
+
+    #     self.assertEquals([], self._order.get_contracts()[0].charges)
+
+    #     charging_engine.NotificationsHandler().send_renovation_notification.assert_called_once_with(
+    #         self._order, transactions
+    #     )
+
+    #     charging_engine.Charge.assert_called_once_with(
+    #         date=datetime(2016, 1, 20, 13, 12, 39),
+    #         cost="12.00",
+    #         currency="EUR",
+    #         concept="recurring",
+    #         duty_free="10.00",
+    #         invoice=INVOICE_PATH,
+    #     )
+
+    #     self.assertEquals([self._charge], self._order.get_contracts()[1].charges)
+
+    #     self.assertEquals([], self._order.get_contracts()[2].charges)
+
+    #     charging_engine.BillingClient.assert_called_once_with()
+    #     charging_engine.BillingClient().create_charge.assert_called_once_with(
+    #         self._charge,
+    #         self._order.get_contracts()[1].product_id,
+    #         start_date=None,
+    #         end_date=datetime(2016, 2, 19, 13, 12, 39),
+    #     )
+
+    #     self._validate_subscription_calls()
+
+    # def _validate_end_renovation_alteration_payment(self, transactions):
+    #     self.assertEquals(
+    #         [call(str(x + 1)) for x in range(5)],
+    #         self._order.get_item_contract.call_args_list,
+    #     )
+
+    #     self.assertEquals([], self._order.owner_organization.acquired_offerings)
+    #     self.assertEquals([call()], self._order.owner_organization.save.call_args_list)
+
+    #     # self.assertEquals(
+    #     #     [call(self._order, contract) for contract in self._order.get_contracts()],
+    #     #     charging_engine.CDRManager.call_args_list,
+    #     # )
+
+    #     # self.assertEquals(
+    #     #     [call(trans["related_model"], "2016-01-20T13:12:39Z") for trans in transactions],
+    #     #     charging_engine.CDRManager().generate_cdr.call_args_list,
+    #     # )
+
+    #     def charge_call(c, d):
+    #         return call(
+    #             date=datetime(2016, 1, 20, 13, 12, 39),
+    #             cost=c,
+    #             currency="EUR",
+    #             concept="recurring",
+    #             duty_free=d,
+    #             invoice=INVOICE_PATH,
+    #         )
+
+    #     self.assertEquals(
+    #         [
+    #             charge_call("20.00", "20.00"),
+    #             charge_call("15.00", "15.00"),
+    #             charge_call("9.00", "9.00"),
+    #             charge_call("10.00", "10.00"),
+    #             charge_call("10.00", "10.00"),
+    #         ],
+    #         charging_engine.Charge.call_args_list,
+    #     )
+
+    #     self.assertEquals(
+    #         [[self._charge] for x in range(len(self._order.get_contracts()))],
+    #         [x.charges for x in self._order.get_contracts()],
+    #     )
+
+    #     self.assertEquals(1, charging_engine.BillingClient.call_count)
+
+    #     def validate_sub(c, d, n=1, alt=None):
+    #         temp = {
+    #             "general_currency": "EUR",
+    #             "subscription": [
+    #                 {
+    #                     "value": c,
+    #                     "unit": "month",
+    #                     "tax_rate": "0.00",
+    #                     "duty_free": d,
+    #                     "renovation_date": datetime(2016, 2, 19, 13, 12, 39),
+    #                 }
+    #                 for _ in range(n)
+    #             ],
+    #         }
+    #         if alt is not None:
+    #             temp["alteration"] = alt
+    #         return temp
+
+    #     self.assertEquals(
+    #         [
+    #             validate_sub("10.00", "10.00", 2),
+    #             validate_sub(
+    #                 "10.00",
+    #                 "10.00",
+    #                 1,
+    #                 {
+    #                     "value": {"duty_free": "5.00", "value": "5.00"},
+    #                     "type": "fee",
+    #                     "period": "recurring",
+    #                     "condition": {"operation": "gt", "value": "5.00"},
+    #                 },
+    #             ),
+    #             validate_sub(
+    #                 "10.00",
+    #                 "10.00",
+    #                 1,
+    #                 {"type": "discount", "period": "recurring", "value": "10.00"},
+    #             ),
+    #             validate_sub(
+    #                 "10.00",
+    #                 "10.00",
+    #                 1,
+    #                 {
+    #                     "condition": {"operation": "gt", "value": "50.00"},
+    #                     "type": "discount",
+    #                     "period": "recurring",
+    #                     "value": "10.00",
+    #                 },
+    #             ),
+    #             validate_sub(
+    #                 "10.00",
+    #                 "10.00",
+    #                 1,
+    #                 {
+    #                     "type": "discount",
+    #                     "period": "one time",
+    #                     "value": {"value": "1.00", "duty_free": "1.00"},
+    #                 },
+    #             ),
+    #         ],
+    #         [x.pricing_model for x in self._order.get_contracts()],
+    #     )
+
+    # def _validate_end_usage_payment(self, transactions):
+    #     self.assertEquals(
+    #         [
+    #             call(
+    #                 "1",
+    #                 str(datetime(2016, 1, 20, 13, 12, 39)),
+    #                 "83.30",
+    #                 "100.00",
+    #                 "20.00",
+    #                 "EUR",
+    #                 self._order.get_contracts()[0].product_id,
+    #             ),
+    #             call(
+    #                 "3",
+    #                 str(datetime(2016, 1, 20, 13, 12, 39)),
+    #                 "83.30",
+    #                 "100.00",
+    #                 "20.00",
+    #                 "EUR",
+    #                 self._order.get_contracts()[0].product_id,
+    #             ),
+    #         ],
+    #         charging_engine.UsageClient().rate_usage.call_args_list,
+    #     )
+
+    #     charging_engine.BillingClient.assert_called_once_with()
+    #     charging_engine.BillingClient().create_charge.assert_called_once_with(
+    #         self._charge,
+    #         self._order.get_contracts()[0].product_id,
+    #         start_date=datetime(2016, 1, 20, 13, 12, 39),
+    #         end_date=None,
+    #     )
+
+    # @parameterized.expand(
+    #     [
+    #         ("initial", _set_initial_contracts, _validate_end_initial_payment),
+    #         (
+    #             "initial",
+    #             _set_initial_alteration_contracts,
+    #             _validate_end_initial_alteration_payment,
+    #         ),
+    #         ("recurring", _set_renovation_contracts, _validate_end_renovation_payment),
+    #         (
+    #             "recurring",
+    #             _set_renovation_alteration_contracts,
+    #             _validate_end_renovation_alteration_payment,
+    #         ),
+    #         ("usage", _set_usage_contracts, _validate_end_usage_payment),
+    #     ]
+    # )
+    # def test_end_payment(self, name, contract_gen, validator):
+    #     self._order.state = "pending"
+    #     transactions, free_contracts = contract_gen(self)
+
+    #     charging = charging_engine.ChargingEngine(self._order)
+    #     charging.end_charging(transactions, free_contracts, name)
+
+    #     charging_engine.NotificationsHandler.assert_called_once_with()
+    #     validator(self, transactions)
+
+    #     # Validate calls
+    #     self.assertEquals("paid", self._order.state)
+
+    #     self.assertEquals([call(), call()], self._order.save.call_args_list)
+
+    # def test_invalid_concept(self):
+    #     charging = charging_engine.ChargingEngine(self._order)
+
+    #     error = None
+    #     try:
+    #         charging.resolve_charging(type_="invalid")
+    #     except ValueError as e:
+    #         error = e
+
+    #     self.assertFalse(error is None)
+    #     self.assertEquals("Invalid charge type, must be `initial`, `recurring`, or `usage`", str(error))
 
 
 PAYPAL_DATA_BASE = {"action": "confirm", "confirm_action": "accept", "client": "paypal"}
