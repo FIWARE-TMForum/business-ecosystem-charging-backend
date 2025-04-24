@@ -24,7 +24,7 @@ class DpasClient(PaymentClient):
         payment_items = []
         for t in transactions:
             payment_item = {
-                "productProviderId": "1", #
+                "productProviderExternalId": "1", #
                 "amount": float(t['price']),
                 "currency": t['currency'],
                 "productProviderSpecificData": {}
