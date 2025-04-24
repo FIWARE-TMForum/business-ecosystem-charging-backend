@@ -3,16 +3,47 @@ name: Tests
 on:
   push:
     branches:
-      - feat/extended-pricing
+      - master
 
   pull_request:
     branches:
-      - feat/extended-pricing
+      - master
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9']
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Use Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Start MongoDB
+        uses: supercharge/mongodb-github-action@1.3.0
+        with:
+          mongodb-version: '4.4'
+      - name: Build
+        run: |
+          pip install -r requirements.txt
+          pip install -r dev-requirements.txt
+      - name: Test
+        working-directory: ./src
+        run: coverage run --branch --source=wstore manage.py test --noinput --nologcapture -v 2
+      - name: Coveralls Parallel
+        uses: AndreMiras/coveralls-python-action@develop
+        with:
+          github-token: ${{ secrets.github_token }}
+          base-path: src
+          parallel: false
+          debug: true
 
   build-docker:
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - uses: actions/checkout@v2
 
@@ -31,8 +62,8 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           tags: |
-            fiware/biz-ecosystem-charging-backend:10.0.0-rc9
-          push: ${{ github.ref == 'refs/heads/feat/extended-pricing' }}
+            fiware/biz-ecosystem-charging-backend:master
+          push: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
