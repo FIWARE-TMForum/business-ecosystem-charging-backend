@@ -54,7 +54,7 @@ class PriceEngine():
                 if option["name"].lower() in conditions:
                     if conditions[option["name"].lower()] == 'tailored':
                         found += 1
-                        tail_value = Decimal(option["value"])
+                        tail_value = Decimal(str(option["value"]))
                         continue
 
                     if str(conditions[option["name"].lower()]) == str(option["value"]):
@@ -77,9 +77,9 @@ class PriceEngine():
             }
 
         if tail_value is None:
-            aggregated[component["priceType"]][period_key]["value"] += Decimal(component["price"]["value"])
+            aggregated[component["priceType"]][period_key]["value"] += Decimal(str(component["price"]["value"]))
         else:
-            tailored_price = Decimal(component["price"]["value"]) * tail_value
+            tailored_price = Decimal(str(component["price"]["value"])) * tail_value
             aggregated[component["priceType"]][period_key]["value"] += tailored_price
 
     def calculate_prices(self, data):

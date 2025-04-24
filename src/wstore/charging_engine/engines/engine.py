@@ -27,7 +27,6 @@ from logging import getLogger
 
 from wstore.charging_engine.payment_client.payment_client import PaymentClient
 from wstore.charging_engine.charging.billing_client import BillingClient
-from wstore.charging_engine.engines.engine import Engine
 
 logger = getLogger("wstore.default_logger")
 
