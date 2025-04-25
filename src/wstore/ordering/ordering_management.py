@@ -238,12 +238,10 @@ class OrderingManager:
         if product_price is None and len(offering_info["productOfferingPrice"]):
             raise OrderingError(f"The price model has not been included for productOrderItem {item['id']}")
 
-        # If the price plan is custom, the item is not processed
-        catalog = urlparse(settings.CATALOG)
-        price_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", product_price["id"]
-        )
-        offering_pricing = self._download(price_url, "product offering price", product_price["id"])
+        if product_price is not None:
+            o_prices = [op for op in offering_info["productOfferingPrice"] if op["id"] == product_price["id"]]
+            if len(o_prices) == 0:
+                raise OrderingError(f"The product price included in productOrderItem {item['id']} does not match with any of the prices included in the related offering")
 
         mode = self._get_mode(offering_info)
         if mode is None:
@@ -251,7 +249,16 @@ class OrderingManager:
         elif mode not in ["manual", "payment-automatic", "automatic"]:
             raise OrderingError(f"The procurement mode {mode} is not supported")
 
-        if ("priceType" in offering_pricing and offering_pricing["priceType"].lower() == "custom") or \
+        # Download the POP if the offering is not free
+        offering_pricing = None
+        if product_price is not None:
+            catalog = urlparse(settings.CATALOG)
+            price_url = "{}://{}{}/{}".format(
+                catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", product_price["id"]
+            )
+            offering_pricing = self._download(price_url, "product offering price", product_price["id"])
+
+        if (offering_pricing is not None and "priceType" in offering_pricing and offering_pricing["priceType"].lower() == "custom") or \
                 mode == "manual":
 
             return None, offering_info, mode
@@ -369,7 +376,15 @@ class OrderingManager:
         }
 
     def _terms_found(self, offering_info):
-        return "productOfferingTerm" in offering_info and len(offering_info["productOfferingTerm"]) > 0
+        expected_terms = ["procurement"]
+        found = False
+        if "productOfferingTerm" in offering_info:
+            for term in offering_info["productOfferingTerm"]:
+                if term["name"].lower() not in expected_terms:
+                    found = True
+                    break
+
+        return found
 
     def _filter_add_items(self, items):
         process_items = []
@@ -395,9 +410,9 @@ class OrderingManager:
             terms_found = terms_found or self._terms_found(item["offering_info"])
             new_contracts.append(item["contract"])
 
-        # if terms_found and not terms_accepted:
-        #     logger.error("Terms and conditions of the offering not accepted")
-        #     raise OrderingError("You must accept the terms and conditions of the offering to acquire it")
+        if terms_found and not terms_accepted:
+            logger.error("Terms and conditions of the offering not accepted")
+            raise OrderingError("You must accept the terms and conditions of the offering to acquire it")
 
         current_org = self._customer.userprofile.current_organization
         order_obj = Order.objects.create(

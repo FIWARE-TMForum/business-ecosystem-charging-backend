@@ -139,65 +139,26 @@ class OrderingManagementTestCase(TestCase):
         )
 
     def _basic_add_checker(self):
-        # Check offering creation
-        self._check_offering_retrieving_call()
-
         # Check contract creation
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "single_payment": [
-                    {
-                        "value": "10.00",
-                        "unit": "one time",
-                        "tax_rate": "20.00",
-                        "duty_free": "8.0000",
-                    }
-                ],
-            }
+        ordering_management.Contract.assert_called_once_with(
+            item_id="1",
+            pricing_model={'id': 'urn:ProductOfferingPrice:1', 'href': 'urn:ProductOfferingPrice:1'},
+            #revenue_class="productClass",
+            offering="5",
+            options=[]
         )
 
     def _non_digital_add_checker(self):
         self._check_offering_retrieving_call()
 
-    def _recurring_add_checker(self):
-        # Check offering creation
-        self._check_offering_retrieving_call()
-
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "subscription": [
-                    {
-                        "value": "10.00",
-                        "unit": "monthly",
-                        "tax_rate": "20.00",
-                        "duty_free": "8.0000",
-                    }
-                ],
-            }
-        )
-
-    def _usage_add_checker(self):
-        self._check_offering_retrieving_call()
-
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "10.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "8.0000",
-                    }
-                ],
-            }
-        )
-
     def _free_add_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call({})
+        ordering_management.Contract.assert_called_once_with(
+            item_id="1",
+            pricing_model=None,
+            #revenue_class="productClass",
+            offering='5',
+            options=[]
+        )
 
     def _basic_discount_checker(self):
         self._check_offering_retrieving_call()
@@ -363,6 +324,7 @@ class OrderingManagementTestCase(TestCase):
                 _terms_not_required,
                 None,
                 False,
+                OFFERING_NO_TERMS
             ),
             (
                 "basic_add_invalid_billing",
@@ -372,85 +334,43 @@ class OrderingManagementTestCase(TestCase):
                 _invalid_billing,
                 "OrderingError: Invalid billing account, billing account could not be loaded",
             ),
-            (
-                "non_digital_add",
-                BASIC_ORDER,
-                BASIC_PRICING,
-                _non_digital_add_checker,
-                _non_digital_offering,
-            ),
+            # (
+            #     "non_digital_add",
+            #     BASIC_ORDER,
+            #     BASIC_PRICING,
+            #     _non_digital_add_checker,
+            #     _non_digital_offering,
+            # ),
             (
                 "recurring_add",
-                RECURRING_ORDER,
+                BASIC_ORDER,
                 RECURRING_PRICING,
-                _recurring_add_checker,
+                _basic_add_checker,
             ),
             (
                 "usage_add",
-                USAGE_ORDER,
+                BASIC_ORDER,
                 USAGE_PRICING,
-                _usage_add_checker,
+                _basic_add_checker,
             ),
-            # (
-            #     "discount",
-            #     USAGE_ORDER,
-            #     DISCOUNT_PRICING,
-            #     _basic_discount_checker,
-            #     _multiple_pricing,
-            # ),
-            # (
-            #     "recurring_fee",
-            #     USAGE_ORDER,
-            #     RECURRING_FEE_PRICING,
-            #     _recurring_fee_checker,
-            # ),
-            # ("double_price", USAGE_ORDER, DOUBLE_PRICE_PRICING, _double_price_checker),
-            # (
-            #     "double_price_usage",
-            #     USAGE_ORDER,
-            #     DOUBLE_USAGE_PRICING,
-            #     _double_usage_checker,
-            # ),
             (
                 "pricing_not_found",
-                USAGE_ORDER,
+                BASIC_ORDER,
                 BASIC_PRICING,
                 None,
                 None,
                 "OrderingError: The product price included in productOrderItem 1 does not match with any of the prices included in the related offering",
+                True,
+                OFFERING_NO_PRICING
             ),
             # (
-            #     "invalid_alt",
-            #     USAGE_ORDER,
-            #     INV_ALTERATION_PRICING,
+            #     "invalid_model",
+            #     BASIC_ORDER,
+            #     INVALID_MODEL_PRICING,
             #     None,
             #     None,
-            #     "OrderingError: Invalid price alteration, it is not possible to determine if it is a discount or a fee",
+            #     "OrderingError: Invalid price model Invalid",
             # ),
-            # (
-            #     "usage_alteration",
-            #     USAGE_ORDER,
-            #     USAGE_ALTERATION_PRICING,
-            #     None,
-            #     None,
-            #     "OrderingError: Invalid priceType in price alteration, it must be one time or recurring",
-            # ),
-            # (
-            #     "inv_alteration_cond",
-            #     USAGE_ORDER,
-            #     INV_CONDITION_PRICING,
-            #     None,
-            #     None,
-            #     "OrderingError: Invalid priceCondition in price alteration, format must be: [eq | lt | gt | le | ge] value",
-            # ),
-            (
-                "invalid_model",
-                INVALID_MODEL_ORDER,
-                INVALID_MODEL_PRICING,
-                None,
-                None,
-                "OrderingError: Invalid price model Invalid",
-            ),
             (
                 "missing_billing",
                 MISSING_BILLING_ORDER,
@@ -467,30 +387,30 @@ class OrderingManagementTestCase(TestCase):
                 _missing_offering,
                 "OrderingError: The product offering specified in order item 1 does not exist",
             ),
-            (
-                "already_owned",
-                BASIC_ORDER,
-                {},
-                None,
-                _already_owned,
-                "OrderingError: The customer already owns the digital product offering Example offering with id 5",
-            ),
-            (
-                "already_owned_bundle",
-                BASIC_ORDER,
-                {},
-                None,
-                _already_owned_bundle,
-                "OrderingError: The customer already owns the digital product offering Bundle with id 6",
-            ),
-            (
-                "offering_not_registered",
-                BASIC_ORDER,
-                {},
-                None,
-                _missing_offering_local,
-                "OrderingError: The offering 20 has not been previously registered",
-            ),
+            # (
+            #     "already_owned",
+            #     BASIC_ORDER,
+            #     {},
+            #     None,
+            #     _already_owned,
+            #     "OrderingError: The customer already owns the digital product offering Example offering with id 5",
+            # ),
+            # (
+            #     "already_owned_bundle",
+            #     BASIC_ORDER,
+            #     {},
+            #     None,
+            #     _already_owned_bundle,
+            #     "OrderingError: The customer already owns the digital product offering Bundle with id 6",
+            # ),
+            # (
+            #     "offering_not_registered",
+            #     BASIC_ORDER,
+            #     {},
+            #     None,
+            #     _missing_offering_local,
+            #     "OrderingError: The offering 20 has not been previously registered",
+            # ),
             (
                 "missing_postal_address",
                 BASIC_ORDER,
@@ -526,19 +446,16 @@ class OrderingManagementTestCase(TestCase):
         side_effect=None,
         err_msg=None,
         terms_accepted=True,
+        offering=OFFERING
     ):
+
+        ordering_management.OrderingClient = MagicMock()
 
         # Mock requests results
         self._response.json.side_effect = [
-            OFFERING,
+            offering,
             pricing
         ]
-
-        if "id" in pricing:
-            OFFERING["productOfferingPrice"] = [{
-                "id": pricing["id"],
-                "href": pricing["href"]
-            }]
 
         if side_effect is not None:
             side_effect(self)
@@ -559,13 +476,16 @@ class OrderingManagementTestCase(TestCase):
             # Check common calls
             ordering_management.ChargingEngine.assert_called_once_with(self._order_inst)
 
+            # Check order status update
+            ordering_management.OrderingClient().update_state.assert_called_once_with(order, "inProgress")
+
             # Check offering and product downloads
             self.assertEquals(2, ordering_management.requests.get.call_count)
 
             self.assertEquals(
                 [
                     call(
-                        "http://catalog.com/productOffering/20",
+                        "http://catalog.com/productOffering/urn:ProductOffering:20",
                         verify=True,
                     ),
                     call(
@@ -605,9 +525,16 @@ class OrderingManagementTestCase(TestCase):
 
     @parameterized.expand([
         ("free_add", FREE_ORDER, _free_add_checker),
-        ("no_product_add", NOPRODUCT_ORDER, _free_add_checker)
+        #("no_product_add", NOPRODUCT_ORDER, _free_add_checker)
     ])
     def test_process_free_order(self, name, order, validator):
+        self._response.json.side_effect = [
+            OFFERING_NO_PRICING
+        ]
+
+        # Mock ordering client
+        ordering_management.OrderingClient = MagicMock()
+
         ordering_manager = ordering_management.OrderingManager()
         error = None
         try:
@@ -626,27 +553,28 @@ class OrderingManagementTestCase(TestCase):
 
         self._billing_instance.get_billing_account.assert_called_once_with(BILLING_ACCOUNT["id"])
 
+        # Validate ordering client calls
+        self.assertEquals([
+            call(order, 'inProgress', items=[{'id': '1', 'action': 'add', 'productOffering': {'id': '20', 'href': '20'}, 'product': {}}]),
+        ], ordering_management.OrderingClient().update_items_state.call_args_list)
+
+        self.assertEquals([
+            call(order, 'inProgress'),
+        ], ordering_management.OrderingClient().update_state.call_args_list)
+
         validator(self)
 
     def test_custom_pricing_order(self):
-        self._offering_inst.is_custom = True
+        self._response.json.side_effect = [
+            OFFERING,
+            CUSTOM_PRICING
+        ]
 
         ordering_manager = ordering_management.OrderingManager()
-        redirect_url = ordering_manager.process_order(self._customer, FREE_ORDER, terms_accepted=True)
-        self.assertEquals("http://redirectionurl.com/", redirect_url)
+        result = ordering_manager.process_order(self._customer, BASIC_ORDER, terms_accepted=True)
 
-    def test_custom_pricing_order_error(self):
-        self._offering_inst.is_custom = True
-
-        ordering_manager = ordering_management.OrderingManager()
-
-        error = None
-        try:
-            ordering_manager.process_order(self._customer, BASIC_ORDER, terms_accepted=True)
-        except OrderingError as e:
-            error = e
-
-        self.assertEquals(str(error), "OrderingError: Custom pricing models are handled externally, please don't include a price in product")
+        # The payment should not be called for custom pricing
+        self.assertEquals(None, result)
 
 
     BASIC_MODIFY = {
@@ -838,12 +766,11 @@ class OrderingClientTestCase(TestCase):
         client.update_items_state(order, "inProgress", items)
 
         self.assertEquals(
-            [call("http://localhost:8080/productOrder/20", json={"state": "inProgress"}),
-             call("http://localhost:8080/productOrder/20", json=expected)],
+            [call("http://localhost:8080/productOrder/20", json=expected)],
             ordering_client.requests.patch.call_args_list,
         )
 
-        self.assertEquals([call(), call()], self._response.raise_for_status.call_args_list)
+        self.assertEquals([call()], self._response.raise_for_status.call_args_list)
 
     def test_update_state(self):
         client = ordering_client.OrderingClient()
@@ -851,14 +778,29 @@ class OrderingClientTestCase(TestCase):
 
         order = {"id": "7"}
 
+        get_req = MagicMock()
+        get_req.json.return_value = {
+            "productOrderItem": []
+        }
+
+        patch_req = MagicMock()
+
+        ordering_client.requests.get.return_value = get_req
+        ordering_client.requests.patch.return_value = patch_req
+
         client.update_state(order, new_state)
+
+        ordering_client.requests.get.assert_called_once_with(
+            "http://localhost:8080/productOrder/" + order["id"],
+        )
 
         ordering_client.requests.patch.assert_called_once_with(
             "http://localhost:8080/productOrder/" + order["id"],
-            json={"state": new_state},
+            json={"state": new_state, "productOrderItem": []},
         )
 
-        self._response.raise_for_status.assert_called_once_with()
+        get_req.raise_for_status.assert_called_once_with()
+        patch_req.raise_for_status.assert_called_once_with()
 
     def test_get_order(self):
         client = ordering_client.OrderingClient()

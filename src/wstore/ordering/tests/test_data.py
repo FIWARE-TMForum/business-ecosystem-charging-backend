@@ -19,6 +19,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from copy import deepcopy
 
 BILLING_ACCOUNT_HREF = "http://serverlocation:port/billingManagement/billingAccount/1789"
 
@@ -30,7 +31,30 @@ OFFERING = {
     "description": "Example offering description",
     "productSpecification": {"href": "http://producturl.com/"},
     "serviceCandidate": {"id": "productClass"},
+    "productOfferingPrice": [{
+        "id": "urn:ProductOfferingPrice:1",
+        "href": "urn:ProductOfferingPrice:1"
+    }],
+    "productOfferingTerm": [{
+        "name": "Terms and conditions",
+        "description": "Terms and conditions"
+    },
+    {
+        "name": "procurement",
+        "description": "automatic"
+    }]
 }
+
+
+OFFERING_NO_TERMS = deepcopy(OFFERING)
+OFFERING_NO_TERMS["productOfferingTerm"] = [{
+    "name": "procurement",
+    "description": "automatic"
+}]
+
+OFFERING_NO_PRICING = deepcopy(OFFERING)
+OFFERING_NO_PRICING["productOfferingPrice"] = []
+
 
 PRODUCT = {
     "id": "5",
@@ -64,39 +88,21 @@ BASIC_ORDER = {
     "state": "Acknowledged",
     "description": "",
     "billingAccount": {"id": "1789", "href": BILLING_ACCOUNT_HREF},
-    "productOrderItem": [
-        {
-            "id": "1",
-            "action": "add",
-            "productOffering": {
-                "id": "20",
-                "href": "20",
-            },
-            "product": {
-                "productPrice": [
-                    {
-                        "productOfferingPrice": {
-                            "id": "urn:ProductOfferingPrice:1",
-                            "href": "urn:ProductOfferingPrice:1"
-                        },
-                        "priceType": "one time",
-                        "price": {
-                            "taxIncludedAmount": {
-                                "value":  "10.00",
-                                "unit": "EUR"
-                            },
-                            "taxRate": "20.00"
-                        },
-                        "name": "One Time",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T20:42:23.000+0000",
-                            "endDateTime": "2013-06-19T04:00:00.000+0000",
-                        },
-                    }
-                ]
-            },
-        }
-    ],
+    "productOrderItem": [{
+        "id": "1",
+        "action": "add",
+        "productOffering": {
+            "id": "urn:ProductOffering:20",
+            "href": "urn:ProductOffering:20",
+        },
+        "itemTotalPrice": [{
+            "productOfferingPrice": {
+                "id": "urn:ProductOfferingPrice:1",
+                "href": "urn:ProductOfferingPrice:1"
+            }
+        }],
+        "product": {}
+    }]
 }
 
 
@@ -111,46 +117,15 @@ BASIC_PRICING = {
     "name": "One Time",
 }
 
-RECURRING_ORDER = {
-    "id": "12",
-    "state": "Acknowledged",
-    "billingAccount": {"id": "1789", "href": BILLING_ACCOUNT_HREF},
-    "productOrderItem": [
-        {
-            "id": "1",
-            "action": "add",
-            "productOffering": {
-                "id": "20",
-                "href": "20",
-            },
-            "product": {
-                "productPrice": [
-                    {
-                        "productOfferingPrice": {
-                            "id": "urn:ProductOfferingPrice:1",
-                            "href": "urn:ProductOfferingPrice:1"
-                        },
-                        "priceType": "recurring",
-                        "price": {
-                            "taxIncludedAmount": {
-                                "value":  "10.00",
-                                "unit": "EUR"
-                            },
-                            "taxRate": "20.00"
-                        },
-                        "recurringChargePeriod": "monthly",
-                        "name": "Recurring Monthly Charge",
-                        "description": "A monthly recurring payment",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T20:42:23.000+0000",
-                            "endDateTime": "2013-06-19T04:00:00.000+0000",
-                        },
-                    }
-                ]
-            },
-        }
-    ],
+
+CUSTOM_PRICING = {
+    "id": "urn:ProductOfferingPrice:1",
+    "href": "urn:ProductOfferingPrice:1",
+    "priceType": "custom",
+    "name": "Custom price",
+    "description": "A custom price"
 }
+
 
 RECURRING_PRICING = {
     "id": "urn:ProductOfferingPrice:1",
@@ -163,47 +138,6 @@ RECURRING_PRICING = {
     "recurringChargePeriodType": "monthly",
     "name": "Recurring Monthly Charge",
     "description": "A monthly recurring payment",
-}
-
-USAGE_ORDER = {
-    "id": "12",
-    "state": "Acknowledged",
-    "billingAccount": {"id": "1789", "href": BILLING_ACCOUNT_HREF},
-    "productOrderItem": [
-        {
-            "id": "1",
-            "action": "add",
-            "productOffering": {
-                "id": "20",
-                "href": "20",
-            },
-            "product": {
-                "productPrice": [
-                    {
-                        "productOfferingPrice": {
-                            "id": "urn:ProductOfferingPrice:1",
-                            "href": "urn:ProductOfferingPrice:1"
-                        },
-                        "priceType": "Usage",
-                        "unitOfMeasure": "megabyte",
-                        "price": {
-                            "taxIncludedAmount": {
-                                "value":  "10.00",
-                                "unit": "EUR"
-                            },
-                            "taxRate": "20.00"
-                        },
-                        "name": "Recurring Monthly Charge",
-                        "description": "A monthly recurring payment",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T20:42:23.000+0000",
-                            "endDateTime": "2013-06-19T04:00:00.000+0000",
-                        },
-                    }
-                ]
-            },
-        }
-    ],
 }
 
 USAGE_PRICING = {
@@ -471,47 +405,6 @@ INV_ALTERATION_PRICING = {
 }
 
 INVALID_STATE_ORDER = {"id": "12", "state": "inProgress"}
-
-INVALID_MODEL_ORDER = {
-    "id": "12",
-    "state": "Acknowledged",
-    "billingAccount": {"id": "1789", "href": BILLING_ACCOUNT_HREF},
-    "productOrderItem": [
-        {
-            "id": "1",
-            "action": "add",
-            "productOffering": {
-                "id": "20",
-                "href": "20",
-            },
-            "product": {
-                "productPrice": [
-                    {
-                        "productOfferingPrice": {
-                            "id": "urn:ProductOfferingPrice:1",
-                            "href": "urn:ProductOfferingPrice:1"
-                        },
-                        "priceType": "Invalid",
-                        "unitOfMeasure": "megabyte",
-                        "price": {
-                            "taxIncludedAmount": {
-                                "value":  "10.00",
-                                "unit": "EUR"
-                            },
-                            "taxRate": "20.00"
-                        },
-                        "name": "Recurring Monthly Charge",
-                        "description": "A monthly recurring payment",
-                        "validFor": {
-                            "startDateTime": "2013-04-19T20:42:23.000+0000",
-                            "endDateTime": "2013-06-19T04:00:00.000+0000",
-                        },
-                    }
-                ]
-            },
-        }
-    ],
-}
 
 INVALID_MODEL_PRICING = {
     "id": "urn:ProductOfferingPrice:1",
