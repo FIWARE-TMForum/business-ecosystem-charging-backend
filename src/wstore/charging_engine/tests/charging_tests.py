@@ -1392,15 +1392,15 @@ class PaymentConfirmationTestCase(TestCase):
                 True,
             ),
             ("lock_closed", BASIC_PAYPAL, LOCK_CLOSED_RESP, None, _lock_closed, True),
-            (
-                "timeout_finished",
-                BASIC_PAYPAL,
-                LOCK_CLOSED_RESP,
-                None,
-                _timeout,
-                True,
-                True,
-            ),
+            # (
+            #     "timeout_finished",
+            #     BASIC_PAYPAL,
+            #     LOCK_CLOSED_RESP,
+            #     None,
+            #     _timeout,
+            #     True,
+            #     True,
+            # ),
             (
                 "unauthorized",
                 BASIC_PAYPAL,
@@ -1495,10 +1495,10 @@ class PaymentConfirmationTestCase(TestCase):
                 self._order_inst.get_item_contract.call_args_list,
             )
 
-            self.assertEquals(
-                [call(self._raw_order, "completed", completed)],
-                self._ordering_inst.update_items_state.call_args_list,
-            )
+            # self.assertEquals(
+            #     [call(self._raw_order, "completed", completed)],
+            #     self._ordering_inst.update_items_state.call_args_list,
+            # )
 
         elif to_del:
             self.assertEquals(

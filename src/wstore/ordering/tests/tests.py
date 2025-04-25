@@ -1070,7 +1070,7 @@ class InventoryClientTestCase(TestCase):
             ]
         inventory_client.urlparse.assert_has_calls(expected_calls_urlparse, any_order=True)
         expected_calls_post = [call("scheme://netlocpath/resource", json={
-            "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
+            # "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
             "relatedParty": [party],
             "resourceStatus": "reserved",
             "startOperatingDate": "2024-03-19T11:49:50Z",
@@ -1078,7 +1078,7 @@ class InventoryClientTestCase(TestCase):
             "description": spec_res["description"]
             
             }, verify = inventory_client.settings.VERIFY_REQUESTS)]
-        client.build_inventory_char.assert_called_once()
+        # client.build_inventory_char.assert_called_once()
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
 
         

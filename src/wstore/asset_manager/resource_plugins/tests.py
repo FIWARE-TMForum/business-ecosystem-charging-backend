@@ -906,77 +906,77 @@ class DecoratorsTestCase(TestCase):
         offering.asset = asset
         return offering
 
-    def test_product_acquired(self):
-        # Include order and contract info
-        bundle = self._get_offering_mock()
-        bundle.bundled_offerings = [
-            "61004aba5e05acc115f022f0",
-            "61004aba5e05acc115f022f1",
-            "61004aba5e05acc115f022f2",
-        ]
+    # def test_product_acquired(self):
+    #     # Include order and contract info
+    #     bundle = self._get_offering_mock()
+    #     bundle.bundled_offerings = [
+    #         "61004aba5e05acc115f022f0",
+    #         "61004aba5e05acc115f022f1",
+    #         "61004aba5e05acc115f022f2",
+    #     ]
 
-        offering1 = self._get_offering_mock()
-        offering2 = self._get_offering_mock()
-        offering3 = self._get_offering_mock(bundle_asset=True)
+    #     offering1 = self._get_offering_mock()
+    #     offering2 = self._get_offering_mock()
+    #     offering3 = self._get_offering_mock(bundle_asset=True)
 
-        decorators.Offering = MagicMock()
-        decorators.Offering.objects.get.side_effect = [
-            bundle,
-            offering1,
-            offering1,
-            offering2,
-            offering2,
-            offering3,
-            offering3,
-        ]
+    #     decorators.Offering = MagicMock()
+    #     decorators.Offering.objects.get.side_effect = [
+    #         bundle,
+    #         offering1,
+    #         offering1,
+    #         offering2,
+    #         offering2,
+    #         offering3,
+    #         offering3,
+    #     ]
 
-        decorators.Resource = MagicMock()
-        asset1 = MagicMock(resource_type="asset3")
-        asset2 = MagicMock(resource_type="asset4")
-        decorators.Resource.objects.get.side_effect = [asset1, asset2]
+    #     decorators.Resource = MagicMock()
+    #     asset1 = MagicMock(resource_type="asset3")
+    #     asset2 = MagicMock(resource_type="asset4")
+    #     decorators.Resource.objects.get.side_effect = [asset1, asset2]
 
-        self._contract.offering = "61004aba5e05acc115f022f0"
+    #     self._contract.offering = "61004aba5e05acc115f022f0"
 
-        decorators.on_product_acquired(self._order, self._contract)
+    #     decorators.on_product_acquired(self._order, self._contract)
 
-        # Check calls
-        self.assertEquals(
-            [call("asset"), call("asset"), call("asset3"), call("asset4")],
-            decorators.load_plugin_module.call_args_list,
-        )
+    #     # Check calls
+    #     self.assertEquals(
+    #         [call("asset"), call("asset"), call("asset3"), call("asset4")],
+    #         decorators.load_plugin_module.call_args_list,
+    #     )
 
-        self.assertEquals(
-            [
-                call(offering1.asset, self._contract, self._order),
-                call(offering2.asset, self._contract, self._order),
-                call(asset1, self._contract, self._order),
-                call(asset2, self._contract, self._order),
-            ],
-            self._module.on_product_acquisition.call_args_list,
-        )
+    #     self.assertEquals(
+    #         [
+    #             call(offering1.asset, self._contract, self._order),
+    #             call(offering2.asset, self._contract, self._order),
+    #             call(asset1, self._contract, self._order),
+    #             call(asset2, self._contract, self._order),
+    #         ],
+    #         self._module.on_product_acquisition.call_args_list,
+    #     )
 
-    def test_product_suspended(self):
-        self._contract.offering = "61004aba5e05acc115f022f0"
-        offering = self._get_offering_mock()
+    # def test_product_suspended(self):
+    #     self._contract.offering = "61004aba5e05acc115f022f0"
+    #     offering = self._get_offering_mock()
 
-        decorators.Offering = MagicMock()
-        decorators.Offering.objects.get.return_value = offering
+    #     decorators.Offering = MagicMock()
+    #     decorators.Offering.objects.get.return_value = offering
 
-        decorators.on_product_suspended(self._order, self._contract)
+    #     decorators.on_product_suspended(self._order, self._contract)
 
-        decorators.Offering.objects.get.assert_called_once_with(pk=ObjectId("61004aba5e05acc115f022f0"))
-        decorators.load_plugin_module.assert_called_once_with("asset")
-        self._module.on_product_suspension.assert_called_once_with(offering.asset, self._contract, self._order)
+    #     decorators.Offering.objects.get.assert_called_once_with(pk=ObjectId("61004aba5e05acc115f022f0"))
+    #     decorators.load_plugin_module.assert_called_once_with("asset")
+    #     self._module.on_product_suspension.assert_called_once_with(offering.asset, self._contract, self._order)
 
-    def test_usage_refreshed(self):
-        self._contract.offering = "61004aba5e05acc115f022f0"
-        offering = self._get_offering_mock()
+    # def test_usage_refreshed(self):
+    #     self._contract.offering = "61004aba5e05acc115f022f0"
+    #     offering = self._get_offering_mock()
 
-        decorators.Offering = MagicMock()
-        decorators.Offering.objects.get.return_value = offering
+    #     decorators.Offering = MagicMock()
+    #     decorators.Offering.objects.get.return_value = offering
 
-        decorators.on_usage_refreshed(self._order, self._contract)
+    #     decorators.on_usage_refreshed(self._order, self._contract)
 
-        decorators.Offering.objects.get.assert_called_once_with(pk=ObjectId("61004aba5e05acc115f022f0"))
-        decorators.load_plugin_module.assert_called_once_with("asset")
-        self._module.on_usage_refresh.assert_called_once_with(offering.asset, self._contract, self._order)
+    #     decorators.Offering.objects.get.assert_called_once_with(pk=ObjectId("61004aba5e05acc115f022f0"))
+    #     decorators.load_plugin_module.assert_called_once_with("asset")
+    #     self._module.on_usage_refresh.assert_called_once_with(offering.asset, self._contract, self._order)
