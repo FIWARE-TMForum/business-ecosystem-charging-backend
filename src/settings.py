@@ -302,4 +302,4 @@ if isinstance(AWS_ENABLED, str):
     AWS_ENABLED = AWS_ENABLED == "True"
 
 
-BILLING_ENGINE = 'dome'
+BILLING_ENGINE = 'local'
