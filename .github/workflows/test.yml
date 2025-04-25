@@ -34,6 +34,7 @@ jobs:
         working-directory: ./src
         run: coverage run --branch --source=wstore manage.py test --noinput --nologcapture -v 2
       - name: Coveralls Parallel
+        if: matrix.python-version == '3.9'
         uses: AndreMiras/coveralls-python-action@develop
         with:
           github-token: ${{ secrets.github_token }}
