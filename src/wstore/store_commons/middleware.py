@@ -48,6 +48,10 @@ class AuthenticationMiddleware:
             user_name = request.META["HTTP_X_ACTOR"]
             external_username = request.META["HTTP_X_EXT_NAME"]
             idp = request.META["HTTP_X_IDP_ID"]
+
+            party_id = request.META["HTTP_X_PARTY_ID"]
+            user_party_id = request.META["HTTP_X_USER_PARTY_ID"]
+
             if "HTTP_X_ISSUER_DID" in request.META:
                 issuerDid = request.META["HTTP_X_ISSUER_DID"]
             else:
@@ -71,7 +75,7 @@ class AuthenticationMiddleware:
             # Update user info
             user.email = email
             user.userprofile.complete_name = display_name
-            user.userprofile.actor_id = external_username
+            user.userprofile.actor_id = user_party_id
             user.is_staff = settings.ADMIN_ROLE.lower() in roles
             user.save()
 
@@ -94,6 +98,7 @@ class AuthenticationMiddleware:
         org.private = nick_name == user_name
         org.idp = idp
         org.issuerDid = issuerDid
+        org.actor_id = party_id
         org.save()
 
         user.userprofile.current_roles = user_roles

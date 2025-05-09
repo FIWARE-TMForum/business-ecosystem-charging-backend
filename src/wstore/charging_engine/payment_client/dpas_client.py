@@ -24,7 +24,7 @@ class DpasClient(PaymentClient):
         payment_items = []
         for t in transactions:
             payment_item = {
-                "productProviderExternalId": "1", #
+                "productProviderExternalId": t["provider"], # This is the provider party ID 
                 "amount": float(t['price']),
                 "currency": t['currency'],
                 "productProviderSpecificData": {}
@@ -46,9 +46,9 @@ class DpasClient(PaymentClient):
 
         payload = {
             "baseAttributes": {
-                "externalId": str(self._order.order_id),
-                "customerId": str(self._order.customer_id),
-                "customerOrganizationId": str(self._order.owner_organization_id),
+                "externalId": str(self._order.order_id),  ## Use the raw order ID
+                "customerId": str(self._order.customer.userprofile.actor_id), ## Use the user Party ID
+                "customerOrganizationId": str(self._order.owner_organization.actor_id), ## Use the organization Party ID
                 "invoiceId": "invoice id", #
                 "paymentItems": payment_items
             },

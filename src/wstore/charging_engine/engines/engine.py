@@ -65,14 +65,20 @@ class Engine:
                 logger.info("Received response " + json.dumps(response))
 
                 # Create the Billing rates as not billed
-                curated_party = [
-                    {
+                seller_id = None
+                curated_party = []
+
+                for party in item["product"]["relatedParty"]:
+                    curated_party.append({
                         "id": party["id"],
                         "href": party["href"],
                         "role": party["role"],
                         "@referredType": "organization"
-                    } for party in item["product"]["relatedParty"]
-                ]
+                    })
+
+                    if party["role"].lower() == "seller":
+                        seller_id = party["id"]
+
                 inv_ids = billing_client.create_batch_customer_rates(response, curated_party)
 
                 contract.applied_rates = inv_ids
@@ -80,6 +86,7 @@ class Engine:
 
                 transactions.extend([{
                     "item": contract.item_id,
+                    "provider": seller_id,
                     "price": rate["taxIncludedAmount"]["value"],
                     "duty_free": rate["taxExcludedAmount"]["value"],
                     "description": '',

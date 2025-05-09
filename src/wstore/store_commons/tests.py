@@ -117,6 +117,8 @@ class AuthenticationMiddlewareTestCase(TestCase):
         self.request.META["HTTP_X_EMAIL"] = "user@email.com"
         self.request.META["HTTP_X_EXT_NAME"] = "user"
         self.request.META["HTTP_X_IDP_ID"] = "local"
+        self.request.META["HTTP_X_PARTY_ID"] = "urn:party:local:test-user"
+        self.request.META["HTTP_X_USER_PARTY_ID"] = "urn:party:local:test-user"
 
         if side_effect is not None:
             side_effect(self)
@@ -148,7 +150,7 @@ class AuthenticationMiddlewareTestCase(TestCase):
             self.assertEquals("user@email.com", self._user_inst.email)
             self.assertEquals("1234567890abcdf", self._user_inst.userprofile.access_token)
             self.assertEquals("Test user", self._user_inst.userprofile.complete_name)
-            self.assertEquals("user", self._user_inst.userprofile.actor_id)
+            self.assertEquals("urn:party:local:test-user", self._user_inst.userprofile.actor_id)
 
             self.assertEquals(expected_roles, self._user_inst.userprofile.current_roles)
             self.assertEquals(self._org_instance, self._user_inst.userprofile.current_organization)
@@ -177,6 +179,8 @@ class AuthenticationMiddlewareTestCase(TestCase):
             "HTTP_X_EMAIL": "org@email.com",
             "HTTP_X_EXT_NAME": "",
             "HTTP_X_IDP_ID": "local",
+            "HTTP_X_PARTY_ID": "urn:party:local:test-org",
+            "HTTP_X_USER_PARTY_ID": "urn:party:local:test-user"
         }
 
         response = MagicMock()
@@ -201,6 +205,8 @@ class AuthenticationMiddlewareTestCase(TestCase):
             "HTTP_X_EMAIL": "org@email.com",
             "HTTP_X_EXT_NAME": "",
             "HTTP_X_IDP_ID": "local",
+            "HTTP_X_PARTY_ID": "urn:party:local:test-org",
+            "HTTP_X_USER_PARTY_ID": "urn:party:local:test-user"
         }
         self._org_model.objects.get.side_effect = Exception("Not found")
 
@@ -220,6 +226,7 @@ class AuthenticationMiddlewareTestCase(TestCase):
         self.assertEquals(self._org_instance, self._user_inst.userprofile.current_organization)
 
         self.assertFalse(self._org_instance.private)
+        self.assertEqual("urn:party:local:test-org", self._org_instance.actor_id)
         self.assertEqual("local", self._org_instance.idp)
 
         self._org_instance.save.assert_called_once_with()
