@@ -154,7 +154,7 @@ class OrderingManagementTestCase(TestCase):
     def _free_add_checker(self):
         ordering_management.Contract.assert_called_once_with(
             item_id="1",
-            pricing_model=None,
+            pricing_model={},
             #revenue_class="productClass",
             offering='5',
             options=[]
