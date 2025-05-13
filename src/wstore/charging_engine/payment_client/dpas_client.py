@@ -48,11 +48,11 @@ class DpasClient(PaymentClient):
         payload = {
             "baseAttributes": {
                 "externalId": str(self._order.order_id),  ## Use the raw order ID
-                "customerId": str(self._order.customer.userprofile.actor_id), ## Use the user Party ID
                 "customerOrganizationId": str(self._order.owner_organization.actor_id), ## Use the organization Party ID
                 "invoiceId": "invoice id", #
                 "paymentItems": payment_items
             },
+            "customerId": str(self._order.customer.userprofile.actor_id), ## Use the user Party ID
             "processSuccessUrl": success_url,
             "processErrorUrl": cancel_url,
             "responseUrlJwtQueryName": "jwt"
