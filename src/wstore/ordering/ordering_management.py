@@ -263,6 +263,9 @@ class OrderingManager:
 
             return None, offering_info, mode
 
+        if product_price is None:
+            product_price = {}
+
         return Contract(
             item_id=item["id"],
             pricing_model=product_price,

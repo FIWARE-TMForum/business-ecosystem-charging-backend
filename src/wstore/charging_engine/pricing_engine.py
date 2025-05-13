@@ -87,6 +87,10 @@ class PriceEngine():
 
         item = data["productOrderItem"][0]
         # 1) Download the POP
+        if "itemTotalPrice" not in item or len(item["itemTotalPrice"]) == 0:
+            # The item has no price, it is free
+            return []
+
         pop_id = item["itemTotalPrice"][0]["productOfferingPrice"]["id"]
             
         pricing = self._download_pricing(pop_id)
