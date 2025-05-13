@@ -24,7 +24,8 @@ class DpasClient(PaymentClient):
         payment_items = []
         for t in transactions:
             payment_item = {
-                "productProviderExternalId": t["provider"], # This is the provider party ID 
+                "productProviderExternalId": t["provider"], # This is the provider party ID
+                "paymentItemExternalId": t["rateId"], # this is the ID of the applied billing rate
                 "amount": float(t['price']),
                 "currency": t['currency'],
                 "productProviderSpecificData": {}

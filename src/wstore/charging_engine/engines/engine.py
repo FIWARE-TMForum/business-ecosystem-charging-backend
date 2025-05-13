@@ -79,20 +79,21 @@ class Engine:
                     if party["role"].lower() == "seller":
                         seller_id = party["id"]
 
-                inv_ids = billing_client.create_batch_customer_rates(response, curated_party)
+                created_rates = billing_client.create_batch_customer_rates(response, curated_party)
 
-                contract.applied_rates = inv_ids
+                contract.applied_rates = [ n_rate["id"] for n_rate in created_rates ]
                 new_contracts.append(contract)
 
                 transactions.extend([{
                     "item": contract.item_id,
                     "provider": seller_id,
+                    "rateId": rate["id"],
                     "price": rate["taxIncludedAmount"]["value"],
                     "duty_free": rate["taxExcludedAmount"]["value"],
                     "description": '',
                     "currency": rate["taxIncludedAmount"]["unit"],
-                    "related_model": rate["appliedBillingRateType"].lower(),
-                } for rate in response])
+                    "related_model": rate["type"].lower(),
+                } for rate in created_rates])
 
         if len(transactions) == 0:
             return None

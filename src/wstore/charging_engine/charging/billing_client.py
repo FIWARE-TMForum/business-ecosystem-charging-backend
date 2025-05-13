@@ -138,7 +138,7 @@ class BillingClient:
         return response.json()
 
     def create_batch_customer_rates(self, rates, parties):
-        rate_ids = []
+        created_rates = []
         for rate in rates:
             if "appliedBillingRateType" in rate:
                 rate_type = rate["appliedBillingRateType"]
@@ -158,9 +158,9 @@ class BillingClient:
                 rate_type, currency, tax_rate, tax, tax_included, tax_excluded,
                 billing_account, coverage_period=coverage_period, parties=parties)
 
-            rate_ids.append(new_rate["id"])
+            created_rates.append(new_rate)
 
-        return rate_ids
+        return created_rates
 
     def create_charge(self, charge_model, product_id, start_date=None, end_date=None):
         # This Object is now part of the CustomerBillManagement API, not yet integrated
