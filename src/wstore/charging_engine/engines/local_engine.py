@@ -47,7 +47,9 @@ class LocalEngine(Engine):
         # Only prices to be paid now are considered
         rates = []
         for price in prices:
-            if price["priceType"].lower() == "one time" or price["priceType"].lower() == "recurring-prepaid":
+            if price["priceType"].lower() == "one time" or price["priceType"].lower() == "recurring-prepaid" \
+                    or price["priceType"].lower() == "recurring":
+
                 currency = price["price"]["dutyFreeAmount"]["unit"]
                 inc = Decimal(price["price"]["taxIncludedAmount"]["value"])
                 excl = Decimal(price["price"]["dutyFreeAmount"]["value"])

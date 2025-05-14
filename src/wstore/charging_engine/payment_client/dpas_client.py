@@ -26,14 +26,23 @@ class DpasClient(PaymentClient):
             payment_item = {
                 "productProviderExternalId": t["provider"], # This is the provider party ID
                 "paymentItemExternalId": t["rateId"], # this is the ID of the applied billing rate
-                "amount": float(t['price']),
                 "currency": t['currency'],
                 "productProviderSpecificData": {}
             }
+
             if "recurring" in t['related_model']:
                 payment_item.update({"recurring": True})
+
+                # Recurring prepaid payment is processed now
+                if t['related_model'] == "recurring-prepaid":
+                    payment_item.update({
+                        "amount": float(t['price'])
+                    })
             else:
-                payment_item.update({"recurring": False})
+                payment_item.update({
+                    "recurring": False,
+                    "amount": float(t['price'])
+                })
 
             payment_items.append(payment_item)
 
