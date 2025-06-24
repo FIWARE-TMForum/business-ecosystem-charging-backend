@@ -20,19 +20,21 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import requests
 from copy import deepcopy
 from datetime import datetime
 from uuid import uuid4
 from urllib.parse import urljoin, urlparse
 
-import requests
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+
+from wstore.store_commons.utils.url import get_service_url
 
 
 class InventoryClient:
     def __init__(self):
-        self._inventory_api = settings.INVENTORY
+        pass
 
     def _build_callback_url(self):
         # Use the local site for registering the callback
@@ -41,7 +43,9 @@ class InventoryClient:
         return urljoin(site, "charging/api/orderManagement/products")
 
     def get_hubs(self):
-        r = requests.get(self._inventory_api + "/hub")
+        url = get_service_url("inventory", "/hub")
+
+        r = requests.get(url)
         r.raise_for_status()
         return r.json()
 
@@ -58,7 +62,8 @@ class InventoryClient:
         else:
             callback = {"callback": callback_url}
 
-            r = requests.post(self._inventory_api + "/hub", json=callback)
+            url = get_service_url("inventory", "/hub")
+            r = requests.post(url, json=callback)
 
             if r.status_code != 201 and r.status_code != 409:
                 msg = "It hasn't been possible to create inventory subscription, "
@@ -67,7 +72,7 @@ class InventoryClient:
                 raise ImproperlyConfigured(msg)
 
     def get_product(self, product_id):
-        url = self._inventory_api + "/product/" + str(product_id)
+        url = get_service_url("inventory", "/product/" + str(product_id))
 
         r = requests.get(url)
         r.raise_for_status()
@@ -85,7 +90,7 @@ class InventoryClient:
         for k, v in query.items():
             qs += "{}={}&".format(k, v)
 
-        url = self._inventory_api + "/product" + qs[:-1]
+        url = get_service_url("inventory", "/product" + qs[:-1])
 
         r = requests.get(url)
         r.raise_for_status()
@@ -99,7 +104,7 @@ class InventoryClient:
         :param patch_body: New values for the product fields to be patched
         """
         # Build product url
-        url = self._inventory_api + "/product/" + str(product_id)
+        url = get_service_url("inventory", "/product/" + str(product_id))
 
         try:
             response = requests.patch(url, json=patch_body)
@@ -147,7 +152,7 @@ class InventoryClient:
         self.patch_product(product_id, patch_body)
 
     def create_product(self, product):
-        url = self._inventory_api + "/product/"
+        url = get_service_url("inventory", "/product")
 
         response = requests.post(url, json=product)
         response.raise_for_status()
@@ -156,10 +161,8 @@ class InventoryClient:
 
     ####
     def download_spec(self, catalog_endpoint, spec_path, spec_id):
-        catalog = urlparse(catalog_endpoint)
-        resource_spec_url = "{}://{}{}/{}".format(catalog.scheme, catalog.netloc, catalog.path + spec_path, spec_id)
-
-        resp = requests.get(resource_spec_url, verify=settings.VERIFY_REQUESTS)
+        spec_url = get_service_url(catalog_endpoint, f"{spec_path}/{spec_id}")
+        resp = requests.get(spec_url, verify=settings.VERIFY_REQUESTS)
         return resp.json()
 
     def build_inventory_char(self, spec_char, value_field):
@@ -183,7 +186,7 @@ class InventoryClient:
 
     def create_resource(self, resource_id, customer_party):
         # Get resource specification        
-        resource_spec = self.download_spec(settings.RESOURCE_CATALOG, '/resourceSpecification', resource_id)
+        resource_spec = self.download_spec("resource_catalog", '/resourceSpecification', resource_id)
 
         resource = {
             #"resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
@@ -198,8 +201,7 @@ class InventoryClient:
         if "description" in resource_spec:
             resource["description"] = resource_spec["description"]
 
-        inventory = urlparse(settings.RESOURCE_INVENTORY)
-        resource_url = "{}://{}{}".format(inventory.scheme, inventory.netloc, inventory.path + '/resource')
+        resource_url = get_service_url("resource_inventory", "/resource")
 
         inv_response = requests.post(resource_url, json=resource, verify=settings.VERIFY_REQUESTS)
         inv_resource = inv_response.json()
@@ -208,7 +210,7 @@ class InventoryClient:
 
     def create_service(self, service_id, customer_party):
         # Get service specification
-        service_spec = self.download_spec(settings.SERVICE_CATALOG, '/serviceSpecification', service_id)
+        service_spec = self.download_spec("service_catalog", '/serviceSpecification', service_id)
         service = {
             "serviceCharacteristic": [self.build_inventory_char(char, "characteristicValueSpecification") for char in service_spec["specCharacteristic"]],
             "relatedParty": [customer_party],
@@ -220,9 +222,8 @@ class InventoryClient:
 
         if "description" in service_spec:
             service["description"] = service_spec["description"]
-        inventory = urlparse(settings.SERVICE_INVENTORY)
-        resource_url = "{}://{}{}".format(inventory.scheme, inventory.netloc, inventory.path + '/service')
 
+        resource_url = get_service_url("service_inventory", "/service")
         inv_response = requests.post(resource_url, json=service, verify=settings.VERIFY_REQUESTS)
         inv_service = inv_response.json()
         return inv_service["id"]
@@ -237,10 +238,8 @@ class InventoryClient:
         }
 
     def get_price_component(self, price_id):
-        catalog = urlparse(settings.CATALOG)
-        price_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", price_id
-        )
+        price_url = get_service_url("catalog", "/productOfferingPrice/{}".format(price_id))
+
         resp = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
         price = resp.json()
 

@@ -394,7 +394,7 @@ class UsageClientTestCase(TestCase):
         price = "12"
         rate = "20"
         currency = "EUR"
-        product_url = site + "DSProductInventory/api/productInventory/v2/product/" + self._product_id
+        product_url = "http://localhost:8080/DSProductInventory/api/productInventory/v2/product/" + self._product_id
 
         expected_json = {
             "status": "rated",

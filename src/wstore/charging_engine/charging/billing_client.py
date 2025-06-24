@@ -28,22 +28,17 @@ from logging import getLogger
 from urllib.parse import urljoin, urlparse
 
 from django.conf import settings
+from wstore.store_commons.utils.url import get_service_url
 
 
 logger = getLogger("wstore.default_logger")
 
 class BillingClient:
     def __init__(self):
-        self._billing_api = settings.BILLING
-        if not self._billing_api.endswith("/"):
-            self._billing_api += "/"
+        pass
 
     def get_billing_account(self, account_id):
-        account_api = settings.ACCOUNT
-        if not account_api.endswith("/"):
-            account_api += "/"
-
-        url = '{}billingAccount/{}'.format(account_api, account_id)
+        url = get_service_url("account", f"billingAccount/{account_id}")
 
         response = requests.get(url, verify=settings.VERIFY_REQUESTS)
         response.raise_for_status()
@@ -54,7 +49,8 @@ class BillingClient:
         # FIXME: This objects is being created with the minum information
         # We will need to add here the payment information and the invoice
         # numbers
-        url = '{}customerBill'.format(self._billing_api)
+
+        url = get_service_url("billing", 'customerBill')
         data = {
             "billDate": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         }
@@ -84,7 +80,7 @@ class BillingClient:
             }
         }
 
-        url = '{}appliedCustomerBillingRate/{}'.format(self._billing_api, rate_id)
+        url = get_service_url("billing", f"appliedCustomerBillingRate/{rate_id}")
 
         try:
             response = requests.patch(url, json=data, verify=settings.VERIFY_REQUESTS)
@@ -126,7 +122,7 @@ class BillingClient:
             data["relatedParty"] = parties
             data["@schemaLocation"] = "https://raw.githubusercontent.com/DOME-Marketplace/dome-odrl-profile/refs/heads/add-related-party-ref/schemas/simplified/RelatedPartyRef.schema.json"
 
-        url = '{}appliedCustomerBillingRate'.format(self._billing_api)
+        url = get_service_url("billing", "appliedCustomerBillingRate")
 
         try:
             response = requests.post(url, json=data, verify=settings.VERIFY_REQUESTS)

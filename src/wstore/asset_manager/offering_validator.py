@@ -30,6 +30,7 @@ from wstore.asset_manager.models import Resource
 from wstore.asset_manager.resource_plugins.decorators import on_product_offering_validation
 from wstore.ordering.models import Offering
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
+from wstore.store_commons.utils.url import get_service_url
 
 
 class OfferingValidator(CatalogValidator):
@@ -71,7 +72,7 @@ class OfferingValidator(CatalogValidator):
 
     def _get_product_spec(self, id_):
         if self._product_spec is None:
-            url = "{}/productSpecification/{}".format(settings.CATALOG, id_)
+            url = get_service_url("catalog", "/productSpecification/{}".format(id_))
             resp = requests.get(url)
 
             if resp.status_code != 200:
@@ -81,7 +82,7 @@ class OfferingValidator(CatalogValidator):
         return self._product_spec
 
     def _get_price(self, id_):
-        url = "{}/productOfferingPrice/{}".format(settings.CATALOG, id_)
+        url = get_service_url("catalog", "/productOfferingPrice/{}".format(id_))
         resp = requests.get(url)
 
         if resp.status_code != 200:

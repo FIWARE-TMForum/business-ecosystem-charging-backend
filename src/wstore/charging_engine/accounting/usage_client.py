@@ -24,13 +24,12 @@ import requests
 from django.conf import settings
 
 from wstore.charging_engine.accounting.errors import UsageError
+from wstore.store_commons.utils.url import get_service_url
 
 
 class UsageClient:
     def __init__(self):
-        self._usage_api = settings.USAGE
-        if not self._usage_api.endswith("/"):
-            self._usage_api += "/"
+        pass
 
     def _validate_state(self, state):
         valid_states = ["guided", "rated", "rejected", "billed"]
@@ -63,7 +62,7 @@ class UsageClient:
         :return: the created usage specification
         """
         path = "usageSpecification/"
-        url = urljoin(self._usage_api, path)
+        url = get_service_url("usage", path)
 
         return self._create_usage_item(url, usage_spec)
 
@@ -73,8 +72,9 @@ class UsageClient:
         :param usage: usage document to be created
         :return:the created usage document
         """
+
         path = "usage/"
-        url = urljoin(self._usage_api, path)
+        url = get_service_url("usage", path)
 
         return self._create_usage_item(url, usage)
 
@@ -84,7 +84,7 @@ class UsageClient:
         :param spec_id: id of the usage specification to be deleted
         """
         path = "usageSpecification/" + spec_id
-        url = urljoin(self._usage_api, path)
+        url = get_service_url("usage", path)
 
         r = requests.delete(url)
         r.raise_for_status()
@@ -99,7 +99,7 @@ class UsageClient:
         """
         # Get customer usage filtered by state
         path = "usage"
-        url = urljoin(self._usage_api, path) + "?relatedParty.id=" + customer
+        url = get_service_url("usage", f"{path}?relatedParty.id={customer}")
 
         if state is not None:
             self._validate_state(state)
@@ -115,7 +115,7 @@ class UsageClient:
 
     def _patch_usage(self, usage_id, patch):
         path = "usage/" + str(usage_id)
-        url = urljoin(self._usage_api, path)
+        url = get_service_url("usage", path)
 
         r = requests.patch(url, json=patch)
         r.raise_for_status()
@@ -144,11 +144,8 @@ class UsageClient:
         :param product_id: Id of the product that generates the usage
         :return:
         """
-        inventory_path = settings.INVENTORY.split("/")[3]
-        ext_host = settings.SITE
-        inventory_url = urljoin(ext_host, inventory_path + "/")
-
-        product_url = urljoin(inventory_url, "api/productInventory/v2/product/" + str(product_id))
+        product_url = get_service_url("inventory", f"api/productInventory/v2/product/{str(product_id)}")
+        
         patch = {
             "status": "rated",
             "ratedProductUsage": [

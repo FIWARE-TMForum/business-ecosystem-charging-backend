@@ -39,6 +39,7 @@ from wstore.ordering.inventory_client import InventoryClient
 from wstore.ordering.models import Contract, Offering, Order
 from wstore.ordering.ordering_client import OrderingClient
 from wstore.store_commons.rollback import rollback
+from wstore.store_commons.utils.url import get_service_url
 
 logger = getLogger("wstore.default_logger")
 
@@ -59,12 +60,8 @@ class OrderingManager:
 
     def _get_offering_info(self, item):
         # Download related product offering and product specification
-        catalog = urlparse(settings.CATALOG)
-
         offering_id = item["productOffering"]["href"]
-        offering_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOffering", offering_id
-        )
+        offering_url = get_service_url("catalog", f"/productOffering/{offering_id}")
 
         offering_info = self._download(offering_url, "product offering", item["id"])
         return offering_info
@@ -164,10 +161,8 @@ class OrderingManager:
         for off_price in offering_info["productOfferingPrice"]:
             if off_price["id"] == product_price["productOfferingPrice"]["id"]:
                 # Download the product offering price model
-                catalog = urlparse(settings.CATALOG)
-                price_url = "{}://{}{}/{}".format(
-                    catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", off_price["id"]
-                )
+
+                price_url = get_service_url("catalog", f"/productOfferingPrice/{off_price['id']}")
                 offering_pricing = self._download(price_url, "product offering price", off_price["id"])
 
                 break
@@ -252,10 +247,7 @@ class OrderingManager:
         # Download the POP if the offering is not free
         offering_pricing = None
         if product_price is not None:
-            catalog = urlparse(settings.CATALOG)
-            price_url = "{}://{}{}/{}".format(
-                catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", product_price["id"]
-            )
+            price_url = get_service_url("catalog", f"/productOfferingPrice/{product_price['id']}")
             offering_pricing = self._download(price_url, "product offering price", product_price["id"])
 
         if (offering_pricing is not None and "priceType" in offering_pricing and offering_pricing["priceType"].lower() == "custom") or \
@@ -574,13 +566,10 @@ class OrderingManager:
         return redirection_url
 
     def get_offer_info(self, orderItem):
-        catalog = urlparse(settings.CATALOG)
 
         offering_id = orderItem["productOffering"]["href"]
-        offering_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOffering", offering_id
-        )
 
+        offering_url = get_service_url("catalog", f"/productOffering/{offering_id}")
         offering_info = self._download(offering_url, "product offering", orderItem["id"])
         return offering_info
 
@@ -598,11 +587,9 @@ class OrderingManager:
 
         # Instantiate services and resources if needed
         if "productSpecification" in offering_info:
-            catalog = urlparse(settings.CATALOG)
+
             spec_id = offering_info["productSpecification"]["id"]
-            spec_url = "{}://{}{}/{}".format(
-                catalog.scheme, catalog.netloc, catalog.path + "/productSpecification", spec_id
-            )
+            spec_url = get_service_url("catalog", f"/productSpecification/{spec_id}")
 
             spec_info = self._download(spec_url, "product specification", orderItem["id"])
 

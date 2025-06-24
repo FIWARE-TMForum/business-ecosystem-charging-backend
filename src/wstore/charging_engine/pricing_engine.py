@@ -19,20 +19,16 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import requests
-
 from decimal import Decimal
-from urllib.parse import urlparse
 
 from django.conf import settings
+
+from wstore.store_commons.utils.url import get_service_url
 
 
 class PriceEngine():
     def _download_pricing(self, pop_id):
-        catalog = urlparse(settings.CATALOG)
-        price_url = "{}://{}{}/{}".format(
-            catalog.scheme, catalog.netloc, catalog.path + "/productOfferingPrice", pop_id
-        )
-
+        price_url = get_service_url("catalog", "/productOfferingPrice/{}".format(pop_id))
         request = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
         pricing = request.json()
         return pricing

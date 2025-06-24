@@ -31,6 +31,7 @@ from wstore.models import Context, Resource
 from wstore.ordering.inventory_client import InventoryClient
 from wstore.ordering.models import Offering, Order
 from wstore.store_commons.database import DocumentLock
+from wstore.store_commons.utils.url import get_service_url
 
 logger = getLogger("wstore.default_logger")
 PAGE_LEN = 100.0
@@ -44,10 +45,11 @@ class InventoryUpgrader(Thread):
 
         # Get product name
         try:
-            prod_url = "{}/api/catalogManagement/v2/productSpecification/{}?fields=name".format(
-                settings.CATALOG, self._asset.product_id
+            prod_path = "/api/catalogManagement/v2/productSpecification/{}?fields=name".format(
+                self._asset.product_id
             )
 
+            prod_url = get_service_url("catalog", prod_path)
             resp = requests.get(prod_url)
             resp.raise_for_status()
 

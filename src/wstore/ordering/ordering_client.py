@@ -27,11 +27,14 @@ import requests
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
+from wstore.store_commons.utils.url import get_service_url
+
+
 logger = getLogger("wstore.default_logger")
 
 class OrderingClient:
     def __init__(self):
-        self._ordering_api = settings.ORDERING
+        pass
 
     def create_ordering_subscription(self):
         """
@@ -44,7 +47,8 @@ class OrderingClient:
 
         callback = {"callback": urljoin(site, "charging/api/orderManagement/orders")}
 
-        r = requests.post(self._ordering_api + "/productOrdering/v2/hub", callback)
+        url = get_service_url("ordering", "/productOrdering/v2/hub")
+        r = requests.post(url, callback)
 
         if r.status_code != 200 and r.status_code != 409:
             msg = "It hasn't been possible to create ordering subscription, "
@@ -54,8 +58,8 @@ class OrderingClient:
 
     def get_order(self, order_id):
         path = "/productOrder/" + str(order_id)
-        url = urljoin(self._ordering_api, path)
 
+        url = get_service_url("ordering", path)
         r = requests.get(url)
         r.raise_for_status()
 
@@ -76,8 +80,8 @@ class OrderingClient:
 
         # Make PATCH request
         path = "/productOrder/" + str(order["id"])
-        url = urljoin(self._ordering_api, path)
 
+        url = get_service_url("ordering", path)
         # Get the order first to avoid losing the order items
 
         try:
@@ -119,8 +123,8 @@ class OrderingClient:
 
         # Make PATCH request
         path = "/productOrder/" + str(order["id"])
-        url = urljoin(self._ordering_api, path)
 
+        url = get_service_url("ordering", path)
         try:
             response = requests.patch(url, json=patch)
             response.raise_for_status()

@@ -687,7 +687,7 @@ class OrderingManagementTestCase(TestCase):
             self.assertEquals(err_msg, str(error))
 
 
-@override_settings(ORDERING="http://localhost:8080/DSProductOrdering")
+@override_settings(ORDERING="http://localhost:8080/")
 class OrderingClientTestCase(TestCase):
     tags = ("ordering", "ordering-client")
 
@@ -710,7 +710,7 @@ class OrderingClientTestCase(TestCase):
 
         # Check calls
         ordering_client.requests.post.assert_called_once_with(
-            "http://localhost:8080/DSProductOrdering/productOrdering/v2/hub",
+            "http://localhost:8080/productOrdering/v2/hub",
             {"callback": "http://testdomain.com/charging/api/orderManagement/orders"},
         )
 
@@ -892,7 +892,11 @@ class OrderTestCase(TestCase):
         self.assertEquals([self._contract1, self._contract2], contracts)
 
 
-@override_settings(INVENTORY="http://localhost:8080")
+@override_settings(
+    INVENTORY="http://localhost:8080",
+    RESOURCE_INVENTORY="http://localhost:9090/resourceInventory",
+    SERVICE_INVENTORY="http://localhost:7070/serviceInventory"
+)
 class InventoryClientTestCase(TestCase):
     tags = ("inventory",)
     
@@ -916,8 +920,6 @@ class InventoryClientTestCase(TestCase):
         inventory_client.datetime = MagicMock()
         inventory_client.datetime.return_value.now.isoformat = MagicMock()
         inventory_client.datetime.utcnow.return_value = now
-        inventory_client.settings.RESOURCE_INVENTORY = "http://testing-resource-inventory:8080"
-        inventory_client.settings.SERVICE_INVENTORY = "http://testing-service-inventory:8080"
         inventory_client.settings.RESOURCE_CATALOG = "http://testing-resource-catalog:8080"
         inventory_client.settings.SERVICE_CATALOG = "http://testing-service-catalog:8080"
         inventory_client.settings.VERIFY_REQUESTS = True
@@ -1064,12 +1066,8 @@ class InventoryClientTestCase(TestCase):
         client.build_inventory_char = MagicMock()
         client.build_inventory_char.return_value = self.build_char_return
         client.create_resource(spec_id, party)
-        self.assertEquals(1, inventory_client.urlparse.call_count)
-        expected_calls_urlparse = [
-            call(inventory_client.settings.RESOURCE_INVENTORY),  
-            ]
-        inventory_client.urlparse.assert_has_calls(expected_calls_urlparse, any_order=True)
-        expected_calls_post = [call("scheme://netlocpath/resource", json={
+
+        expected_calls_post = [call("http://localhost:9090/resourceInventory/resource", json={
             # "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
             "relatedParty": [party],
             "resourceStatus": "reserved",
@@ -1105,12 +1103,8 @@ class InventoryClientTestCase(TestCase):
         client.build_inventory_char = MagicMock()
         client.build_inventory_char.return_value = self.build_char_return
         client.create_service(spec_id, party)
-        self.assertEquals(1, inventory_client.urlparse.call_count)
-        expected_calls_urlparse = [
-            call(inventory_client.settings.SERVICE_INVENTORY),  
-            ]
-        inventory_client.urlparse.assert_has_calls(expected_calls_urlparse, any_order=True)
-        expected_calls_post = [call("scheme://netlocpath/service", json={
+
+        expected_calls_post = [call("http://localhost:7070/serviceInventory/service", json={
             "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
             "relatedParty": [party],
             "state": "reserved",
