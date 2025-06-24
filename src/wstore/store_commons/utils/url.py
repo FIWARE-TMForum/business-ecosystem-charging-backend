@@ -19,10 +19,11 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from urllib.parse import quote, quote_plus, urlsplit, urlunsplit
+from urllib.parse import quote, quote_plus, urlsplit, urlunsplit, urlparse
 
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
+from django.conf import settings
 
 
 def is_valid_url(url):
@@ -50,3 +51,31 @@ def add_slash(url):
         url += "/"
 
     return url
+
+
+def get_service_url(api, path):
+    TMF_APIS = {
+        "catalog": settings.CATALOG,
+        "resource_catalog": settings.RESOURCE_CATALOG,
+        "service_catalog": settings.SERVICE_CATALOG,
+        "inventory": settings.INVENTORY,
+        "resource_inventory": settings.RESOURCE_INVENTORY,
+        "service_inventory": settings.SERVICE_INVENTORY,
+        "ordering": settings.ORDERING,
+        "account": settings.ACCOUNT,
+        "billing": settings.BILLING,
+        "usage": settings.USAGE
+    }
+
+    api_url = TMF_APIS.get(api, None)
+    if api_url is None:
+        raise ValueError(f"Invalid API name: {api}")
+
+    parsed_url = urlparse(api_url)
+    host = parsed_url.netloc
+    api_path = parsed_url.path
+
+    if api_path.endswith('/'):
+        api_path = api_path.rstrip('/')
+
+    return f"{parsed_url.scheme}://{host}{api_path}/{path.lstrip('/')}"

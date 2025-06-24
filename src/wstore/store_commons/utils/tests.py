@@ -117,3 +117,28 @@ class CurrencyCodeUnitsTestCase(TestCase):
             self.valid,
         ]
         self.assertEqual(CurrencyCode.to_json(), dict_expected)
+
+
+
+class URLTestCase(TestCase):
+    tags = ("url",)
+
+    @parameterized.expand(
+        [
+            ("catalog", "http://example.com", "/api/catalog", "http://example.com/api/catalog"),
+            ("catalog", "https://example.com/", "/api/catalog", "https://example.com/api/catalog"),
+            ("catalog", "https://example.com:8000", "/api/catalog", "https://example.com:8000/api/catalog"),
+            ("catalog", "https://example.com:8000/", "/api/catalog", "https://example.com:8000/api/catalog"),
+            ("catalog", "https://example.com:8000", "api/catalog", "https://example.com:8000/api/catalog"),
+            ("catalog", "https://example.com:8000/tmf/v4", "api/catalog", "https://example.com:8000/tmf/v4/api/catalog"),
+            ("catalog", "https://example.com:8000/tmf/v4/", "api/catalog", "https://example.com:8000/tmf/v4/api/catalog"),
+            ("catalog", "https://example.com:8000/tmf/v4/", "/api/catalog", "https://example.com:8000/tmf/v4/api/catalog"),
+        ]
+    )
+    def test_get_service_url(self, name, base_url, path, expected):
+        import wstore.store_commons.utils.url
+        wstore.store_commons.utils.url.settings.CATALOG = base_url
+
+        result = wstore.store_commons.utils.url.get_service_url('catalog', path)
+
+        self.assertEqual(result, expected)
