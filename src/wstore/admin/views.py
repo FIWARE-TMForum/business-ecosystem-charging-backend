@@ -2,6 +2,8 @@
 
 # Copyright (c) 2013 - 2017 CoNWeT Lab., Universidad Politécnica de Madrid
 
+# Copyright (c) 2025 Future Internet Consulting and Development Solutions S.L.
+
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
 
@@ -18,9 +20,15 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
+import requests
+
 from wstore.store_commons.resource import Resource
-from wstore.store_commons.utils.http import JsonResponse
+from wstore.store_commons.utils.http import JsonResponse, authentication_required, build_response, supported_request_mime_types
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
+from wstore.store_commons.utils.url import get_service_url
+
+from wstore.admin.users.notification_handler import NotificationsHandler
 
 
 class ChargePeriodCollection(Resource):
@@ -31,3 +39,58 @@ class ChargePeriodCollection(Resource):
 class CurrencyCodeCollection(Resource):
     def read(self, request):
         return JsonResponse(200, CurrencyCode.to_json())
+
+
+class NotificationCollection(Resource):
+
+    def get_party(self, party_id):
+        """
+        Get the party information from the party service.
+        """
+        try:
+            party_url = get_service_url('party', f"/organization/{party_id}")
+            response = requests.get(party_url)
+            response.raise_for_status()
+
+            return response.json()
+        except:
+            raise ValueError(f"Error fetching party information")
+
+    @authentication_required
+    @supported_request_mime_types(("application/json",))
+    def create(self, request):
+        # Get request data
+        try:
+            data = json.loads(request.body)
+
+            message = data["message"]
+            subject = data.get("subject", "Notification from Marketplace")
+            seller_id = data.get("seller")
+            customer_id = data.get("customer")
+        except:
+            return build_response(request, 400, "The provided data is not a valid JSON object")
+
+        try:
+            seller = self.get_party(seller_id)
+            customer = self.get_party(customer_id)
+        except:
+            return build_response(request, 400, "Error fetching party information")
+
+        # Get organization email from the party
+        party_email = None
+        if "contactMedium" in customer:
+            for medium in customer["contactMedium"]:
+                if medium["mediumType"].lower() == "email":
+                    party_email = medium["characteristic"]["emailAddress"]
+
+        if party_email is None:
+            return build_response(request, 400, "The customer does not have a valid email address")
+
+        # Call the notification service
+        try:
+            notif = NotificationsHandler()
+            notif.send_custom_email(party_email, subject, message)
+        except:
+            return build_response(request, 500, "Error sending notification email")
+
+        return build_response(request, 200, "Notification sent successfully")

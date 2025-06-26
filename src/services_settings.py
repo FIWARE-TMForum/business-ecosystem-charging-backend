@@ -25,10 +25,12 @@ VERIFY_REQUESTS = True
 SITE = "http://proxy.docker:8004/"
 LOCAL_SITE = "http://charging.docker:8006/"
 
+PARTY = "http://host.docker.internal:8633"
+
 CATALOG = "http://host.docker.internal:8632"
 
-RESOURCE_CATALOG = "http://tmforum-tm-forum-api-resource-catalog:8080"
-#RESOURCE_CATALOG = "http://host.docker.internal:8636"
+#RESOURCE_CATALOG = "http://tmforum-tm-forum-api-resource-catalog:8080"
+RESOURCE_CATALOG = "http://host.docker.internal:8636"
 
 #SERVICE_CATALOG = "http://tmforum-tm-forum-api-service-catalog:8080"
 SERVICE_CATALOG = "http://host.docker.internal:8637"
@@ -42,7 +44,6 @@ SERVICE_INVENTORY = "http://host.docker.internal:8640"
 ORDERING = "http://host.docker.internal:8634"
 
 ACCOUNT = "http://host.docker.internal:8639"
-
 BILLING = "http://host.docker.internal:8640"
 
 USAGE = "http://host.docker.internal:8637"

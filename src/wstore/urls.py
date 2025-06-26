@@ -149,4 +149,8 @@ urlpatterns = [
         r"^charging/api/revenueSharing/cdrs/?$",
         rss_views.CDRs(permitted_methods=("GET",)),
     ),
+    url(
+        r"^charging/api/orderManagement/notify/?$",
+        admin_views.NotificationCollection(permitted_methods=("POST",)),
+    )
 ]

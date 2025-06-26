@@ -309,3 +309,12 @@ class NotificationsTestCase(TestCase):
         notification_handler.MIMEText.assert_called_once_with(text)
 
         self._validate_mime_text_info("Product upgraded")
+
+    def test_custom_notification(self):
+        handler = notification_handler.NotificationsHandler()
+        text = "Custom message body"
+        handler.send_custom_email(
+            "user@email.com", "Custom Subject", text
+        )
+
+        notification_handler.MIMEText.assert_called_once_with(text)

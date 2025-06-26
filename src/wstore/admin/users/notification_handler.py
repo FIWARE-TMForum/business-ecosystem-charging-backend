@@ -2,6 +2,8 @@
 
 # Copyright (c) 2016 - 2017 CoNWeT Lab., Universidad Politécnica de Madrid
 
+# Copyright (c) 2025 Future Internet Consulting and Development Solutions S.L.
+
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
 
@@ -208,4 +210,8 @@ The error was: {}""".format(
             recipient, error_msg
         )
 
+        self._send_text_email(text, recipients, subject)
+
+    def send_custom_email(self, recipient, subject, text):
+        recipients = [recipient]
         self._send_text_email(text, recipients, subject)

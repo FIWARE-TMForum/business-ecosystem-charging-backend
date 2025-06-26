@@ -56,6 +56,7 @@ def add_slash(url):
 def get_service_url(api, path):
     TMF_APIS = {
         "catalog": settings.CATALOG,
+        "party": settings.PARTY,
         "resource_catalog": settings.RESOURCE_CATALOG,
         "service_catalog": settings.SERVICE_CATALOG,
         "inventory": settings.INVENTORY,
