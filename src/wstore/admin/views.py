@@ -65,21 +65,21 @@ class NotificationCollection(Resource):
 
             message = data["message"]
             subject = data.get("subject", "Notification from Marketplace")
-            seller_id = data.get("seller")
-            customer_id = data.get("customer")
+            sender_id = data.get("sender")
+            recipient_id = data.get("recipient")
         except:
             return build_response(request, 400, "The provided data is not a valid JSON object")
 
         try:
-            seller = self.get_party(seller_id)
-            customer = self.get_party(customer_id)
+            sender = self.get_party(sender_id)
+            recipient = self.get_party(recipient_id)
         except:
             return build_response(request, 400, "Error fetching party information")
 
         # Get organization email from the party
         party_email = None
-        if "contactMedium" in customer:
-            for medium in customer["contactMedium"]:
+        if "contactMedium" in recipient:
+            for medium in recipient["contactMedium"]:
                 if medium["mediumType"].lower() == "email":
                     party_email = medium["characteristic"]["emailAddress"]
 
