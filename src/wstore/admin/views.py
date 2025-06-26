@@ -65,7 +65,7 @@ class NotificationCollection(Resource):
 
             message = data["message"]
             subject = data.get("subject", "Notification from Marketplace")
-            sender_id = data.get("sender")
+            sender_id = data.get("sender", "")
             recipient_id = data.get("recipient")
         except:
             return build_response(request, 400, "The provided data is not a valid JSON object")
