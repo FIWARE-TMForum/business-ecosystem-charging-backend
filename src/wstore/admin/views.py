@@ -56,7 +56,6 @@ class NotificationCollection(Resource):
         except:
             raise ValueError(f"Error fetching party information")
 
-    @authentication_required
     @supported_request_mime_types(("application/json",))
     def create(self, request):
         # Get request data
