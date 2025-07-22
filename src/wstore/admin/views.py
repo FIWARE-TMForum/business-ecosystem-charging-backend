@@ -23,12 +23,16 @@
 import json
 import requests
 
+from logging import getLogger
+
 from wstore.store_commons.resource import Resource
 from wstore.store_commons.utils.http import JsonResponse, authentication_required, build_response, supported_request_mime_types
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 from wstore.store_commons.utils.url import get_service_url
 
 from wstore.admin.users.notification_handler import NotificationsHandler
+
+logger = getLogger("wstore.default_logger")
 
 
 class ChargePeriodCollection(Resource):
@@ -89,7 +93,8 @@ class NotificationCollection(Resource):
         try:
             notif = NotificationsHandler()
             notif.send_custom_email(party_email, subject, message)
-        except:
+        except Exception as e:
+            logger.error(f"Error sending notification email: {str(e)}")
             return build_response(request, 500, "Error sending notification email")
 
         return build_response(request, 200, "Notification sent successfully")
