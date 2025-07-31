@@ -33,7 +33,18 @@ class PriceEngine():
         pricing = request.json()
         return pricing
 
-    def _process_price_component(self, component, options, aggregated):
+    def _process_usage_value(self, component, usage):
+        for usage_item in usage:
+            if "usageSpecification" in usage_item and "id" in usage_item["usageSpecification"] and \
+                "usageSpecId" in component and usage_item["usageSpecification"]["id"] == component["usageSpecId"]:
+
+                for usage_char in usage_item["usageCharacteristic"]:
+                    if usage_char["name"] == component["unitOfMeasure"]["units"]:
+                        return Decimal(str(usage_char["value"])) * Decimal(str(component["price"]["value"]))
+
+        return Decimal('0')
+
+    def _process_price_component(self, component, options, aggregated, usage):
         # Check if the component needs to be applied
         tail_value = None
         if "prodSpecCharValueUse" in component:
@@ -67,18 +78,25 @@ class PriceEngine():
         if "recurringChargePeriodType" in component and "recurringChargePeriodLength" in component:
             period_key = "{} {}".format(component["recurringChargePeriodLength"], component["recurringChargePeriodType"])
 
+        if component["priceType"].lower() == "usage":
+            period_key = "month"
+
         if period_key not in aggregated[component["priceType"]]:
             aggregated[component["priceType"]][period_key] = {
                 "value": Decimal('0')
             }
 
+        component_value = Decimal(str(component["price"]["value"]))
+        if component["priceType"] == "usage" and len(usage) > 0:
+            component_value = self._process_usage_value(component, usage)
+
         if tail_value is None:
-            aggregated[component["priceType"]][period_key]["value"] += Decimal(str(component["price"]["value"]))
+            aggregated[component["priceType"]][period_key]["value"] += component_value
         else:
-            tailored_price = Decimal(str(component["price"]["value"])) * tail_value
+            tailored_price = component_value * tail_value
             aggregated[component["priceType"]][period_key]["value"] += tailored_price
 
-    def calculate_prices(self, data):
+    def calculate_prices(self, data, usage=[]):
         aggregated = {}
 
         item = data["productOrderItem"][0]
@@ -103,7 +121,7 @@ class PriceEngine():
             options = item["product"]["productCharacteristic"]
 
         for component in to_process:
-            self._process_price_component(component, options, aggregated)
+            self._process_price_component(component, options, aggregated, usage)
 
         # If the POP is not a bundle check the pricing
         # If the bundle is a pop download the models

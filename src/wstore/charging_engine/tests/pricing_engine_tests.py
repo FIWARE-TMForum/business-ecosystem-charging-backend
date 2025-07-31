@@ -114,6 +114,35 @@ MULTIPLE_POP_FILTER = {
     }]
 }
 
+USAGE_POP = {
+    "isBundle": False,
+    "priceType": "usage",
+    "price": {
+        "value": 0.5,
+        "unit": "EUR"
+    },
+    "unitOfMeasure": {
+        "units": "ram_gb"
+    },
+    "usageSpecId": "urn:ngsi-ld:usageSpecification:1"
+}
+
+USAGE_TAILORED_POP = {
+    "isBundle": False,
+    "priceType": "usage",
+    "price": {
+        "value": 0.01,
+        "unit": "EUR"
+    },
+    "unitOfMeasure": {
+        "units": "ram_gb"
+    },
+    "usageSpecId": "urn:ngsi-ld:usageSpecification:1",
+    "prodSpecCharValueUse": [{
+        "name": "tailored"
+    }]
+}
+
 BASE_DATA = {
     "productOrderItem": [{
         "itemTotalPrice": [{
@@ -221,8 +250,67 @@ RESULT_FILTER_POP = [{
     "priceAlteration": []
 }]
 
+RESULT_USAGE_POP = [{
+    "priceType": "usage",
+    "recurringChargePeriod": "month",
+    "price": {
+        "taxRate": 0,
+        "dutyFreeAmount": {
+            "unit": "EUR",
+            "value": "5.0"
+        },
+        "taxIncludedAmount": {
+            "unit": "EUR",
+            "value": "5.0"
+        }
+    },
+    "priceAlteration": []
+}]
+
+RESULT_MULTIPLE_USAGE_POP = [{
+    "priceType": "usage",
+    "recurringChargePeriod": "month",
+    "price": {
+        "taxRate": 0,
+        "dutyFreeAmount": {
+            "unit": "EUR",
+            "value": "2.50"
+        },
+        "taxIncludedAmount": {
+            "unit": "EUR",
+            "value": "2.50"
+        }
+    },
+    "priceAlteration": []
+}, {
+    "priceType": "onetime",
+    "recurringChargePeriod": "onetime",
+    "price": {
+        "taxRate": 0,
+        "dutyFreeAmount": {
+            "unit": "EUR",
+            "value": "10.0"
+        },
+        "taxIncludedAmount": {
+            "unit": "EUR",
+            "value": "10.0"
+        }
+    },
+    "priceAlteration": []
+}]
+
+USAGE_1 = [{
+    "usageSpecification": {
+        "id": "urn:ngsi-ld:usageSpecification:1"
+    },
+    "usageCharacteristic": [{
+        "name": "ram_gb",
+        "value": 10
+    }]
+}]
+
 class ChargingEngineTestCase(TestCase):
-    tags = ("ordering", "billing")
+    tags = ("ordering", "billing", "pricing")
     maxDiff = None
 
     def _mock_simple_pop(self):
@@ -267,16 +355,39 @@ class ChargingEngineTestCase(TestCase):
             filter_call2
         ]
 
+    def _mock_usage_pop(self):
+        pricing_engine.requests = MagicMock()
+        pricing_engine.requests.get.return_value.json.return_value = USAGE_POP
+
+    def _mock_multiple_usage_pop(self):
+        pricing_engine.requests = MagicMock()
+        plan_call = MagicMock()
+        plan_call.json.return_value = MULTIPLE_POP_FILTER
+
+        usage_call1 = MagicMock()
+        usage_call1.json.return_value = USAGE_TAILORED_POP
+
+        usage_call2 = MagicMock()
+        usage_call2.json.return_value = SIMPLE_POP
+
+        pricing_engine.requests.get.side_effect = [
+            plan_call,
+            usage_call1,
+            usage_call2
+        ]
+
     @parameterized.expand([
         ('single_component_no_options', BASE_DATA, _mock_simple_pop, RESULT_SIMPLE_POP),
         ('multiple_component_options', DATA_WITH_OPTIONS, _mock_multiple_pop, RESULT_MULTIPLE_POP),
         ('multiple_component_filter', DATA_WITH_OPTIONS, _mock_multiple_filter_pop, RESULT_FILTER_POP),
+        ('single_component_usage', BASE_DATA, _mock_usage_pop, RESULT_USAGE_POP, USAGE_1),
+        ('multiple_component_usage_tailored', DATA_WITH_OPTIONS, _mock_multiple_usage_pop, RESULT_MULTIPLE_USAGE_POP, USAGE_1)
     ])
-    def test_calculate_prices(self, name, data, mock_method, expected_result):
+    def test_calculate_prices(self, name, data, mock_method, expected_result, usage=[]):
 
         mock_method(self)
 
         to_test = pricing_engine.PriceEngine()
-        result = to_test.calculate_prices(data)
+        result = to_test.calculate_prices(data, usage=usage)
 
         self.assertEquals(result, expected_result)

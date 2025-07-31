@@ -326,10 +326,18 @@ class PaymentPreview(Resource):
         try:
             data = json.loads(request.body)
 
+            order = data
+            usage = []
+            if "productOrder" in data:
+                order = data["productOrder"]
+
+            if "usage" in data:
+                usage = data["usage"]
+
             price_engine = PriceEngine()
             response = {
-            "orderTotalPrice": price_engine.calculate_prices(data)
-        }
+                "orderTotalPrice": price_engine.calculate_prices(order, usage=usage)
+            }
         except:
             return build_response(request, 400, "Invalid order format")
 
