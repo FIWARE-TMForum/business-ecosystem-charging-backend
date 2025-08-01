@@ -196,12 +196,13 @@ class OfferingValidator(CatalogValidator):
 
             # Check if the pricing is included or if it is needed to download it
             for price in product_offering["productOfferingPrice"]:
-                if "id" in price and "href" in price and "priceType" not in price:
-                    # This field is different depending on whether the model is embedded
-                    price_model = self._get_price(price["id"])
-                else:
-                    # Embedded pricing not supported
-                    raise ValueError("Embedded pricing is not supported")
+                price_model = self._get_price(price["id"])
+                # if "id" in price and "href" in price and "priceType" not in price:
+                #     # This field is different depending on whether the model is embedded
+                #     price_model = self._get_price(price["id"])
+                # else:
+                #     # Embedded pricing not supported
+                #     raise ValueError("Embedded pricing is not supported")
 
                 if "name" not in price_model:
                     raise ValueError("Missing required field name in productOfferingPrice")
