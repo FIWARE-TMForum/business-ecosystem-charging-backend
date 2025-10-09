@@ -61,7 +61,7 @@ class BillingClient:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error("Error updating customer rate: " + str(e))
-            raise
+            #raise
 
     def set_acbrs_cb(self, batch_acbr, customer_bill_id):
 
@@ -80,7 +80,7 @@ class BillingClient:
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
                 logger.error("Error updating customer rate: " + str(e))
-                raise
+                #raise
 
     def create_customer_rate(self, rate_type, currency, tax_rate, tax, tax_included, tax_excluded, billing_account, coverage_period=None):
         # TODO: Billing address and dates

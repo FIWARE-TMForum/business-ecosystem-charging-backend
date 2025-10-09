@@ -21,6 +21,7 @@ class DpasClient(PaymentClient):
         self.api_url = DPAS_CLIENT_API_URL 
 
     def start_redirection_payment(self, transactions):
+        return None
         payment_items = []
         for t in transactions:
             payment_item = {
