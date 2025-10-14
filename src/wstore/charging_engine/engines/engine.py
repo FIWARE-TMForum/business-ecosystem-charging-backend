@@ -83,7 +83,8 @@ class Engine:
                     logger.info("creating acbrs")
                     # Create the Billing rates as not billed
                     created_rates, unbilled_to_auth = billing_client.create_batch_customer_rates(response)
-                    if len(created_rates)==0:
+                    # If there is no rates and no usages/postpaids
+                    if len(created_rates)==0 and not unbilled_to_auth:
                         return None
 
                     logger.info("creating customer bills")

@@ -221,19 +221,19 @@ class BillingClient:
         unit = None
         cb_aggr = {}
         for acbr in batch_acbr:
-            p_key = f"{acbr['periodCoverage']['startDateTime']}-{acbr['periodCoverage'].get('endDateTime')}"
+            period_key = f"{acbr['periodCoverage']['startDateTime']}-{acbr['periodCoverage'].get('endDateTime')}"
             if acbr["type"] not in cb_aggr:
                 cb_aggr[acbr["type"]] = {}
-            if p_key not in cb_aggr[acbr["type"]]:
-                cb_aggr[acbr["type"]][p_key] = {
+            if period_key not in cb_aggr[acbr["type"]]:
+                cb_aggr[acbr["type"]][period_key] = {
                     "taxIncludedAmount" : Decimal("0"),
                     "taxExcludedAmount" : Decimal("0"),
                     "periodCoverage": acbr["periodCoverage"],
                     "acbrRefs": []
                     }
-            cb_aggr[acbr["type"]][p_key]["taxIncludedAmount"] += Decimal(repr(acbr["taxIncludedAmount"]["value"]))
-            cb_aggr[acbr["type"]][p_key]["taxExcludedAmount"] += Decimal(repr(acbr["taxExcludedAmount"]["value"]))
-            cb_aggr[acbr["type"]][p_key]["acbrRefs"].append({"id": acbr["id"]})
+            cb_aggr[acbr["type"]][period_key]["taxIncludedAmount"] += Decimal(repr(acbr["taxIncludedAmount"]["value"]))
+            cb_aggr[acbr["type"]][period_key]["taxExcludedAmount"] += Decimal(repr(acbr["taxExcludedAmount"]["value"]))
+            cb_aggr[acbr["type"]][period_key]["acbrRefs"].append({"id": acbr["id"]})
             unit = acbr["taxExcludedAmount"]["unit"] if unit is None else unit
 
         for type_key , cb_type in cb_aggr.items():

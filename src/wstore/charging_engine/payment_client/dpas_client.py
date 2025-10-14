@@ -25,7 +25,7 @@ class DpasClient(PaymentClient):
         for t in transactions:
             payment_item = {
                 "productProviderExternalId": t["provider"], # This is the provider party ID
-                "currency": t['currency'],
+                "currency": t.get("currency", "EUR"),
                 "productProviderSpecificData": {}
             }
             if "billId" in t:
