@@ -81,6 +81,9 @@ class DpasClient(PaymentClient):
         }
 
         try:
+            logger.debug(f"Using access token: {self._order.customer.userprofile.access_token}")
+            logger.debug(f"Contacting DPAS with payload: {payload}")
+
             response = requests.post(self.api_url, json=payload, headers=headers)
             response.raise_for_status()
             self._checkout_url = response.json()["redirectUrl"]
