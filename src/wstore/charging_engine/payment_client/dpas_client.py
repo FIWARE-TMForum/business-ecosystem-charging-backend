@@ -31,7 +31,7 @@ class DpasClient(PaymentClient):
                 "productProviderSpecificData": {}
             }
             if "billId" in t:
-                payment_item["paymentItemExternalId"] = t["billId"], # this is the ID of the customer bill
+                payment_item["paymentItemExternalId"] = t["billId"] # this is the ID of the customer bill
 
             if "recurring" in t['related_model']:
                 payment_item.update({"recurring": True})
