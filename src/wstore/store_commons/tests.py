@@ -47,9 +47,9 @@ class AuthenticationMiddlewareTestCase(TestCase):
     def setUp(self):
         self.request = MagicMock()
         self.request.META = {
-            "HTTP_X_NICK_NAME": "test-user",
+            "HTTP_X_ACTOR_ID": "test-user",
             "HTTP_X_DISPLAY_NAME": "Test user",
-            "HTTP_X_ACTOR": "test-user",
+            "HTTP_X_USER_ID": "test-user",
         }
 
         self._user_model = MagicMock()
@@ -172,9 +172,9 @@ class AuthenticationMiddlewareTestCase(TestCase):
     )
     def test_get_api_user_no_token(self):
         self.request.META = {
-            "HTTP_X_NICK_NAME": "000000000000023",
+            "HTTP_X_ACTOR_ID": "000000000000023",
             "HTTP_X_DISPLAY_NAME": "Test Org",
-            "HTTP_X_ACTOR": "test-user",
+            "HTTP_X_USER_ID": "test-user",
             "HTTP_X_ROLES": "customer",
             "HTTP_X_EMAIL": "org@email.com",
             "HTTP_X_EXT_NAME": "",
@@ -197,9 +197,9 @@ class AuthenticationMiddlewareTestCase(TestCase):
 
     def test_get_api_user_org(self):
         self.request.META = {
-            "HTTP_X_NICK_NAME": "000000000000023",
+            "HTTP_X_ACTOR_ID": "000000000000023",
             "HTTP_X_DISPLAY_NAME": "Test Org",
-            "HTTP_X_ACTOR": "test-user",
+            "HTTP_X_USER_ID": "test-user",
             "HTTP_X_ROLES": "customer",
             "HTTP_AUTHORIZATION": "Bearer 1234567890abcdf",
             "HTTP_X_EMAIL": "org@email.com",
