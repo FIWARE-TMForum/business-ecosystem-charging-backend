@@ -41,12 +41,13 @@ class AuthenticationMiddleware:
             if settings.PROPAGATE_TOKEN:
                 token_info = request.META["HTTP_AUTHORIZATION"].split(" ")
 
-            nick_name = request.META["HTTP_X_NICK_NAME"]
+            actor_id = request.META["HTTP_X_ACTOR_ID"]
+            user_id = request.META["HTTP_X_USER_ID"]
+
             display_name = request.META["HTTP_X_DISPLAY_NAME"]
             email = request.META["HTTP_X_EMAIL"]
             roles = request.META["HTTP_X_ROLES"].split(",")
-            user_name = request.META["HTTP_X_ACTOR"]
-            external_username = request.META["HTTP_X_EXT_NAME"]
+
             idp = request.META["HTTP_X_IDP_ID"]
 
             party_id = request.META["HTTP_X_PARTY_ID"]
@@ -67,19 +68,16 @@ class AuthenticationMiddleware:
 
         # Check if the user already exist
         try:
-            user = User.objects.get(username=user_name)
+            user = User.objects.get(username=user_id)
         except:
-            user = User.objects.create(username=user_name)
+            user = User.objects.create(username=user_id)
 
-        if nick_name == user_name:
+        if actor_id == user_id:
             # Update user info
             user.email = email
             user.userprofile.complete_name = display_name
-            user.userprofile.actor_id = user_party_id
             user.is_staff = settings.ADMIN_ROLE.lower() in roles
             user.save()
-
-        user.userprofile.access_token = token_info[1]
 
         user_roles = []
 
@@ -91,11 +89,11 @@ class AuthenticationMiddleware:
 
         # Get or create current organization
         try:
-            org = Organization.objects.get(name=nick_name)
+            org = Organization.objects.get(name=actor_id)
         except:
-            org = Organization.objects.create(name=nick_name)
+            org = Organization.objects.create(name=actor_id)
 
-        org.private = nick_name == user_name
+        org.private = actor_id == user_id
         org.idp = idp
         org.issuerDid = issuerDid
         org.actor_id = party_id
@@ -103,9 +101,17 @@ class AuthenticationMiddleware:
 
         user.userprofile.current_roles = user_roles
         user.userprofile.current_organization = org
+        user.userprofile.access_token = token_info[1]
+        user.userprofile.actor_id = user_party_id
 
         # change user.userprofile.current_organization
         user.userprofile.save()
+
+        logger.debug(f"Current Actor: {actor_id}")
+        logger.debug(f"Current User: {user_id}")
+        logger.debug(f"Current Party ID: {party_id}")
+        logger.debug(f"Current User Party ID: {user_party_id}")
+        logger.debug(f"Current token: {token_info[1]}")
 
         return user
 
