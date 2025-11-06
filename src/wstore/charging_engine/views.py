@@ -307,20 +307,28 @@ class PaymentConfirmation(Resource):
         except HTTPError as e:
             response = 400, f"Invalid request: {str(e)}"
         except PaymentClientError as e:
+            logger.debug(f"Payment client error: {str(e)}")
+
             self._set_order_failed(order, raw_order)
             response = 503, f"Error with payment service provider: {str(e)}"
         # Error while accepting payment, timed out.
         except PaymentTimeoutError as e:
             # order and raw order are guaranteed to be defined here.
+            logger.debug(f"Payment timeout error: {str(e)}")
+
             self._set_order_failed(order, raw_order)
             response = 403, f"The payment has timed out: {str(e)}"
         # Error while accepting payment, usually no permissions.
         except PaymentError as e:
             # order and raw order are guaranteed to be defined here.
+            logger.debug(f"Payment error: {str(e)}")
+
             self._set_order_failed(order, raw_order)
             response = 403, f"The payment has been canceled: {str(e)}"
         # Server error, catches everything.
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error: {str(e)}")
+
             # order and raw order are guaranteed to be defined here.
             self._set_order_failed(order, raw_order)
             response = 500, "The payment has been canceled due to an unexpected error."
