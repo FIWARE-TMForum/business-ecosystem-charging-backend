@@ -610,11 +610,11 @@ class OrderingManager:
         if len(resources) > 0:
             product["realizingResource"] = [{"id": resource, "href": resource} for resource in resources]
 
-        # if len(services) > 0:
-        #     product["realizingService"] = [{"id": service, "href": service} for service in services]
+        if len(services) > 0:
+            product["realizingService"] = [{"id": service, "href": service} for service in services]
 
         # This cannot work until the Service Intentory API is published
-        product["productCharacteristic"].extend([{"name": "service", "value": service}] for service in services)
+        # product["productCharacteristic"].extend([{"name": "service", "value": service}] for service in services)
 
         if extra_char is not None:
             product["productCharacteristic"].extend(extra_char)

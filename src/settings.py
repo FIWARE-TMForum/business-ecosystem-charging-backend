@@ -190,7 +190,7 @@ WSGI_APPLICATION = "wsgi.application"
 
 # Payment method determines the payment gateway to be used
 # Allowed values: paypal (default), stripe, None
-PAYMENT_METHOD = "stripe"
+PAYMENT_METHOD = "dpas"
 
 AUTHENTICATION_BACKENDS = ("django.contrib.auth.backends.ModelBackend",)
 
