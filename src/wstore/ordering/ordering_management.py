@@ -648,6 +648,8 @@ class OrderingManager:
             "pending": 0,
             "failed": 0
         }
+
+        logger.debug("Processing completed order items")
         for orderItem in order["productOrderItem"]:
             contracts = [ cnt for cnt in order_model.get_contracts() if cnt.item_id == orderItem["id"] ]
             # filter out manual modes and custom price type
@@ -659,6 +661,7 @@ class OrderingManager:
 
             # Get product offering
             offering_info = self.get_offer_info(orderItem)
+            logger.debug("Read offering info")
 
             # filter out payment-automatic modes
             if "productOfferingTerm" in offering_info:
@@ -672,6 +675,7 @@ class OrderingManager:
                     item_states[orderItem.get("state", "unchecked")] += 1
                     continue
 
+            logger.debug("Creating inventory product")
             new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
 
             logger.info("updating acbr")

@@ -71,6 +71,7 @@ class PaymentConfirmation(Resource):
 
         # Notify order completed
         try:
+            logger.debug(f"Calling notify completed")
             om = OrderingManager()
             om.notify_completed(raw_order)
         except Exception as e:
@@ -184,6 +185,7 @@ class PaymentConfirmation(Resource):
         else:
             order.used = True
             logger.debug("signature validated and order marked as used")
+
         logger.debug(f"Payment confirmation request for order {order.order_id} OK")
         return confirm_action, reference, order
 
@@ -227,10 +229,14 @@ class PaymentConfirmation(Resource):
 
         transactions = pending_info["transactions"]
 
+        logger.debug(f"Transactions read for order {order.order_id}.")
+
         # build the payment client
         client = payment_client(order)
         order.sales_ids = client.end_redirection_payment(**payment_confirmation_data)
         order.save()
+
+        logger.debug(f"End redirection payment executed {order.order_id}.")
 
         charging_engine = ChargingEngine(order)
         charging_engine.end_charging(transactions, pending_info["free_contracts"], concept)
@@ -287,6 +293,7 @@ class PaymentConfirmation(Resource):
             raw_order = self.ordering_client.get_order(order.order_id)
 
             if confirm_action == "accept":
+                logger.debug(f"The confirm action is accept for order {order.order_id}.")
                 response = self._accept_confirmation_request(
                     reference, order, raw_order, request.user, payment_client, data
                 )
