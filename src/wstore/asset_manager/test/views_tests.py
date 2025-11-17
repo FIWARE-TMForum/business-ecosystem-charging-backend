@@ -408,14 +408,6 @@ class AssetCollectionTestCase(TestCase):
             (
                 RESOURCE_DATA,
                 False,
-                _no_provider_method,
-                True,
-                403,
-                "You don't have the seller role",
-            ),
-            (
-                RESOURCE_DATA,
-                False,
                 _creation_exception,
                 True,
                 400,
@@ -463,14 +455,6 @@ class AssetCollectionTestCase(TestCase):
         [
             (RESOURCE_DATA,),
             (RESOURCE_DATA, True),
-            (
-                RESOURCE_DATA,
-                False,
-                _no_provider_method,
-                True,
-                403,
-                "You don't have the seller role",
-            ),
             (
                 RESOURCE_DATA,
                 False,

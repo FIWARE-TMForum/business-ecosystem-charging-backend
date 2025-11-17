@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2013 - 2017 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2025 Future Internet Consulting and Development Solutions S.L.
+
+# Copyright (c) 2013 CoNWeT Lab., Universidad Politécnica de Madrid
 
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
@@ -137,11 +139,7 @@ class AssetEntryFromProduct(Resource):
 
 def _manage_digital_asset(request, manager):
     user = request.user
-    profile = user.userprofile
     content_type = get_content_type(request)[0]
-
-    if "provider" not in profile.get_current_roles() and not user.is_staff:
-        return build_response(request, 403, "You don't have the seller role")
 
     try:
         resource, data = manager(request, user, content_type)
