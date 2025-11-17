@@ -116,6 +116,7 @@ class Engine:
 
 
             if len(transactions) == 0:
+                logger.info("No transactions to process")
                 return None
 
             # Update the order with the new contracts
@@ -134,9 +135,8 @@ class Engine:
             except DatabaseError as e:
                 raise
 
-            # TODO: Check the local charging for info on the db objects that needs to be created for the payment
-
             # Load payment client
+            logger.debug("Loading payment client for {settings.PAYMENT_CLIENT}")
             payment_client = PaymentClient.get_payment_client_class()
 
             # build the payment client
