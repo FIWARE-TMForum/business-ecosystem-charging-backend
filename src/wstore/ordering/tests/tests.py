@@ -1042,7 +1042,7 @@ class InventoryClientTestCase(TestCase):
 
         self.assertEquals(inventory_client.requests.get().json(), products)
     
-    @parameterized.expand([("32", {'id': 'party:1'}, {
+    @parameterized.expand([("32", [{'id': 'party:1', 'role': 'Seller'}], {
         "name": "resource",
         "description": "testing",
         "resourceSpecCharacteristic": [{
@@ -1060,9 +1060,12 @@ class InventoryClientTestCase(TestCase):
         inventory_client.datetime.now.return_value = MagicMock()
         inventory_client.datetime.now.return_value.isoformat.return_value = "2024-03-19T11:49:50"
 
-        operator_party = {'id': 'operator:1'}
+        operator_party = {'id': 'operator:1', 'role': 'SellerOperator'}
         inventory_client.get_operator_party_roles = MagicMock()
         inventory_client.get_operator_party_roles.return_value = [operator_party]
+        inventory_client.normalize_party_ref = MagicMock()
+        norm_party = {'id': 'party:1', 'role': 'Seller'}
+        inventory_client.normalize_party_ref.return_value = norm_party
 
         client = inventory_client.InventoryClient()
         client.download_spec = MagicMock()
@@ -1073,7 +1076,7 @@ class InventoryClientTestCase(TestCase):
 
         expected_calls_post = [call("http://localhost:9090/resourceInventory/resource", json={
             "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
-            "relatedParty": [party, operator_party],
+            "relatedParty": [norm_party, operator_party],
             "resourceStatus": "reserved",
             "startOperatingDate": "2024-03-19T11:49:50Z",
             "name": spec_res["name"],
@@ -1084,7 +1087,7 @@ class InventoryClientTestCase(TestCase):
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
 
         
-    @parameterized.expand([("32", {'id': 'party:1'}, {
+    @parameterized.expand([("32", [{'id': 'party:1', 'role': 'Seller'}], {
         "name": "service",
         "description": "testing",
         "specCharacteristic": [{
@@ -1102,9 +1105,11 @@ class InventoryClientTestCase(TestCase):
         inventory_client.datetime.now.return_value = MagicMock()
         inventory_client.datetime.now.return_value.isoformat.return_value = "2024-03-19T11:49:50"
 
-        operator_party = {'id': 'operator:1'}
+        operator_party = {'id': 'operator:1', 'role': 'SellerOperator'}
         inventory_client.get_operator_party_roles = MagicMock()
         inventory_client.get_operator_party_roles.return_value = [operator_party]
+        norm_party = {'id': 'party:1', 'role': 'Seller'}
+        inventory_client.normalize_party_ref.return_value = norm_party
 
         client = inventory_client.InventoryClient()
         client.download_spec = MagicMock()
@@ -1115,7 +1120,7 @@ class InventoryClientTestCase(TestCase):
 
         expected_calls_post = [call("http://localhost:7070/serviceInventory/service", json={
             "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
-            "relatedParty": [party, operator_party],
+            "relatedParty": [norm_party, operator_party],
             "state": "reserved",
             "startDate": "2024-03-19T11:49:50Z",
             "name": spec_serv["name"],
