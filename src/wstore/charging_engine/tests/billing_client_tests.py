@@ -23,7 +23,7 @@ from django.test import TestCase
 from parameterized import parameterized
 from mock import MagicMock, patch
 
-from wstore.charging_engine.charging.billing_client import BillingClient
+from wstore.charging_engine.charging import billing_client
 
 
 # Test data for ACBRs (Applied Customer Billing Rates)
@@ -148,7 +148,11 @@ class BillingClientTestCase(TestCase):
         )
     ])
     def test_create_customer_bill_aggregation(self, name, acbrs, expected_cb):
-        client = BillingClient()
+        # Mock libs
+        billing_client.get_operator_party_roles = MagicMock(return_value={})
+        billing_client.normalize_party_ref = MagicMock(return_value={})
+
+        client = billing_client.BillingClient()
 
         billing_acc_ref = {"id": "billing-account-1"}
         party = [{"id": "party-1", "role": "Customer"}]
