@@ -3,7 +3,7 @@ name: Tests
 on:
   push:
     branches:
-      - feat/related-party
+      - master
 
   pull_request:
     branches:
@@ -67,8 +67,8 @@ jobs:
           context: .
           file: ./docker/Dockerfile
           tags: |
-            fiware/biz-ecosystem-charging-backend:11.0.0-PRE-3
-          push: ${{ github.ref == 'refs/heads/feat/related-party' }}
+            fiware/biz-ecosystem-charging-backend:master
+          push: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Image digest
         run: echo ${{ steps.docker_build.outputs.digest }}
