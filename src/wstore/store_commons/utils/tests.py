@@ -23,6 +23,7 @@ from django.conf import settings
 from django.test import TestCase
 from django.test.utils import override_settings
 from parameterized import parameterized
+from mock import MagicMock, call
 
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 
@@ -142,3 +143,176 @@ class URLTestCase(TestCase):
         result = wstore.store_commons.utils.url.get_service_url('catalog', path)
 
         self.assertEqual(result, expected)
+
+
+@override_settings(
+    PARTY='http://myparty.com',
+)
+class PartyTestCase(TestCase):
+    tags=("party-utils",)
+
+    def setUp(self):
+        from wstore.store_commons.utils import party
+        self._party = party
+
+        self._party.cache = MagicMock()
+        self._party.cache.get.return_value = None
+
+        return super().setUp()
+
+    def test_get_operator_party_id_cached(self):
+        self._party.cache = MagicMock()
+        self._party.cache.get.return_value = 'urn:partyid'
+
+        party_id = self._party.get_operator_party_id()
+
+        self.assertEquals('urn:partyid', party_id)
+        self._party.cache.get.assert_called_once_with("operator:party_id")
+
+    @override_settings(
+        OPERATOR_ID=None,
+    )
+    def test_get_operator_party_id_none(self):
+        party_id = self._party.get_operator_party_id()
+        self.assertTrue(party_id is None)
+
+    def _test_get_operator_party_id(self, responses, calls):
+        self._party.requests = MagicMock()
+        self._party.requests.get.side_effect = responses
+
+        party_id = self._party.get_operator_party_id()
+
+        self.assertEquals('urn:partyid', party_id)
+        self.assertEquals(calls, self._party.requests.get.call_args_list)
+
+    @override_settings(
+        OPERATOR_ID='VATES-123',
+    )
+    def test_get_operator_party_id_org_id(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = [{
+            'id': 'urn:partyid'
+        }]
+
+        self._test_get_operator_party_id([response], [
+            call('http://myparty.com/organization?organizationIdentification.identificationId=did:elsi:VATES-123')
+        ])
+
+    @override_settings(
+        OPERATOR_ID='VATES-123',
+    )
+    def test_get_operator_party_id_ext_ref(self):
+        response1 = MagicMock(status_code=200)
+        response1.json.return_value = []
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = [{
+            'id': 'urn:partyid'
+        }]
+
+        self._test_get_operator_party_id([response1, response], [
+            call('http://myparty.com/organization?organizationIdentification.identificationId=did:elsi:VATES-123'),
+            call('http://myparty.com/organization?externalReference.name=did:elsi:VATES-123')
+        ])
+
+    @override_settings(
+        OPERATOR_ID='VATES-123',
+    )
+    def test_get_operator_party_id_ext_ref_elsi(self):
+        response1 = MagicMock(status_code=200)
+        response1.json.return_value = []
+
+        response2 = MagicMock(status_code=200)
+        response2.json.return_value = []
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = [{
+            'id': 'urn:partyid'
+        }]
+
+        self._test_get_operator_party_id([response1, response2, response], [
+            call('http://myparty.com/organization?organizationIdentification.identificationId=did:elsi:VATES-123'),
+            call('http://myparty.com/organization?externalReference.name=did:elsi:VATES-123'),
+            call('http://myparty.com/organization?externalReference.name=VATES-123')
+        ])
+
+    def test_get_operator_party_roles_none(self):
+        self._party.get_operator_party_id = MagicMock(return_value=None)
+
+        roles = self._party.get_operator_party_roles()
+
+        self.assertEquals([], roles)
+
+    @override_settings(
+        OPERATOR_ID='VATES-123',
+        SELLER_OPERATOR_ROLE='SellerOperator',
+        BUYER_OPERATOR_ROLE='BuyerOperator'
+    )
+    def test_get_operator_party_roles_none(self):
+        self._party.get_operator_party_id = MagicMock(return_value='urn:partyId')
+
+        roles = self._party.get_operator_party_roles()
+
+        self.assertEquals([{
+            "id": 'urn:partyId',
+            "href": 'urn:partyId',
+            "name": 'VATES-123',
+            "role": 'SellerOperator',
+            "@referredType": "Organization"
+        }, {
+            "id": 'urn:partyId',
+            "href": 'urn:partyId',
+            "name": 'VATES-123',
+            "role": 'BuyerOperator',
+            "@referredType": "Organization"
+        }], roles)
+
+    def test_normalize_party_ref_cache(self):
+        self._party.cache = MagicMock()
+        self._party.cache.get.return_value = 'VAT-ext'
+
+        norm = self._party.normalize_party_ref({
+            'id': 'urn:organization:partyId',
+            'role': 'Seller'
+        })
+
+        self.assertEquals({
+            'id': 'urn:organization:partyId',
+            'href': 'urn:organization:partyId',
+            'name': 'VAT-ext',
+            'role': 'Seller',
+            '@referredType': 'Organization'
+        }, norm)
+
+    def test_normalize_party_ref_query(self):
+        self._party.cache = MagicMock()
+        self._party.cache.get.return_value = None
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            'id': 'urn:individual:partyId',
+            'externalReference': [{
+                'externalReferenceType': 'idm_id',
+                'name': 'VAT-ext'
+            }]
+        }
+
+        self._party.requests = MagicMock()
+        self._party.requests.get.return_value = response
+
+        norm = self._party.normalize_party_ref({
+            'id': 'urn:individual:partyId',
+            'role': 'Seller'
+        })
+
+        self.assertEquals({
+            'id': 'urn:individual:partyId',
+            'href': 'urn:individual:partyId',
+            'name': 'VAT-ext',
+            'role': 'Seller',
+            '@referredType': 'Individual'
+        }, norm)
+
+        self.assertEquals([
+            call('http://myparty.com/organization/urn:individual:partyId')
+        ], self._party.requests.get.call_args_list)
