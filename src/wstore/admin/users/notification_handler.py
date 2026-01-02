@@ -71,6 +71,43 @@ class NotificationsHandler:
 
         self._send_email(recipients, msg)
 
+    def _send_html_email(self, text, recipients, subject):
+        logger.debug("Sending email to " + ",".join(recipients) + "with subject " + subject)
+
+        html = f"""\
+            <!doctype html>
+            <html lang="en">
+                <body style="margin:0;padding:0;background-color:#f6f9fc;">
+                <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f6f9fc;padding:24px 0;">
+                    <tr>
+                    <td align="center">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="600"
+                        style="max-width:600px;background-color:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;">
+                    <tr>
+                        <td style="padding:18px 22px;background-color:#2e58a7;color:#ffffff;font-size:18px;font-weight:bold;">
+                            {subject}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:22px;color:#111827;font-size:14px;line-height:1.6;">
+                            {text}
+                        </td>
+                    </tr>
+                </table>
+                </td>
+            </tr>
+            </table>
+            </body>
+            </html>
+        """
+
+        msg = MIMEText(html, "html")
+        msg["Subject"] = subject
+        msg["From"] = self._fromaddr
+        msg["To"] = ",".join(recipients)
+
+        self._send_email(recipients, msg)
+
     def _send_multipart_email(self, text, recipients, subject, bills):
         msg = MIMEMultipart()
         msg["Subject"] = subject
@@ -221,4 +258,4 @@ The error was: {}""".format(
 
     def send_custom_email(self, recipient, subject, text):
         recipients = [recipient]
-        self._send_text_email(text, recipients, subject)
+        self._send_html_email(text, recipients, subject)

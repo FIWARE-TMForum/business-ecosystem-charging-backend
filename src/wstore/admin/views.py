@@ -87,7 +87,7 @@ class NotificationCollection(Resource):
                     party_email = medium["characteristic"]["emailAddress"]
 
         if party_email is None:
-            return build_response(request, 400, "The customer does not have a valid email address")
+            return build_response(request, 400, "The recipient does not have a valid email address")
 
         # Call the notification service
         try:
