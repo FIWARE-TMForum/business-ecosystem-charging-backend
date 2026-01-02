@@ -49,6 +49,27 @@ class CurrencyCodeCollection(Resource):
 
 class NotificationConfigCollection(Resource):
 
+    @authentication_required
+    def read(self, request):
+        if not request.user.is_staff:
+            return build_response(request, 403, "Only administrators can access this resource")
+
+        existing_configs = EmailConfig.objects.all()
+
+        if existing_configs.count() == 0:
+            return build_response(request, 404, "No notification configuration found")
+
+        email_config = existing_configs.first()
+
+        config_data = {
+            "smtpServer": email_config.smtp_server,
+            "smtpPort": email_config.smtp_port,
+            "email": email_config.email,
+            "emailUser": email_config.email_user
+        }
+
+        return JsonResponse(200, config_data)
+
     @supported_request_mime_types(("application/json",))
     @authentication_required
     def create(self, request):
