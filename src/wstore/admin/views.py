@@ -31,6 +31,8 @@ from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 from wstore.store_commons.utils.url import get_service_url
 
 from wstore.admin.users.notification_handler import NotificationsHandler
+from wstore.models import EmailConfig
+
 
 logger = getLogger("wstore.default_logger")
 
@@ -43,6 +45,51 @@ class ChargePeriodCollection(Resource):
 class CurrencyCodeCollection(Resource):
     def read(self, request):
         return JsonResponse(200, CurrencyCode.to_json())
+
+
+class NotificationConfigCollection(Resource):
+
+    @supported_request_mime_types(("application/json",))
+    @authentication_required
+    def create(self, request):
+        if not request.user.is_staff:
+            return build_response(request, 403, "Only administrators can access this resource")
+
+        try:
+            data = json.loads(request.body)
+            smtp_server = data["smtpServer"]
+            smtp_port = data["smtpPort"]
+            email = data["email"]
+            email_user = data["emailUser"]
+            email_password = data["emailPassword"]
+        except:
+            logger.error(f"Invalid email config")
+            return build_response(request, 400, "The provided data is not a valid JSON object")
+
+        # Check if the config already exists
+        existing_configs = EmailConfig.objects.all()
+
+        if existing_configs.count() > 0:
+            # Update the existing config
+            email_config = existing_configs.first()
+            email_config.smtp_server = smtp_server
+            email_config.smtp_port = smtp_port
+            email_config.email = email
+            email_config.email_user = email_user
+            email_config.email_password = email_password
+            email_config.save()
+        else:
+            # Create a new config
+            email_config = EmailConfig(
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+                email=email,
+                email_user=email_user,
+                email_password=email_password
+            )
+            email_config.save()
+
+        return build_response(request, 201, "Notification configuration created/updated successfully")
 
 
 class NotificationCollection(Resource):

@@ -34,7 +34,7 @@ from bson.objectid import ObjectId
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from wstore.models import User
+from wstore.models import User, EmailConfig
 from wstore.ordering.models import Offering
 
 logger = getLogger("wstore.default_logger")
@@ -43,14 +43,18 @@ logger = getLogger("wstore.default_logger")
 class NotificationsHandler:
     def __init__(self):
         # Read email configuration
-        self._mailuser = settings.WSTOREMAILUSER
-        self._password = settings.WSTOREMAILPASS
-        self._fromaddr = settings.WSTOREMAIL
-        self._server = settings.SMTPSERVER
-        self._port = settings.SMTPPORT
+        self._set_config()
 
-        if not len(self._mailuser) or not len(self._password) or not len(self._fromaddr) or not len(self._server):
+    def _set_config(self):
+        config = EmailConfig.objects.first()
+        if config is None:
             raise ImproperlyConfigured("Missing email configuration")
+
+        self._mailuser = config.email_user
+        self._password = config.email_password
+        self._fromaddr = config.email
+        self._server = config.smtp_server
+        self._port = config.smtp_port
 
     def _send_email(self, recipient, msg):
         logger.debug(f"Sending email with {self._server}, {self._port}, {self._mailuser}, {self._fromaddr}, {self._password}")

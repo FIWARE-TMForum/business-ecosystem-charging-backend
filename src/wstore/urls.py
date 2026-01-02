@@ -152,5 +152,9 @@ urlpatterns = [
     url(
         r"^charging/api/orderManagement/notify/?$",
         admin_views.NotificationCollection(permitted_methods=("POST",)),
+    ),
+    url(
+        r"^charging/api/orderManagement/notify/config/?$",
+        admin_views.NotificationConfigCollection(permitted_methods=("POST",)),
     )
 ]

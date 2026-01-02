@@ -28,6 +28,15 @@ from djongo import models
 from wstore.charging_engine.models import *
 
 
+class EmailConfig(models.Model):
+    _id = models.ObjectIdField()
+    smtp_server = models.CharField(max_length=100)
+    smtp_port = models.IntegerField()
+    email = models.CharField(max_length=100)
+    email_user = models.CharField(max_length=100)
+    email_password = models.CharField(max_length=100)
+
+
 class Context(models.Model):
     _id = models.ObjectIdField()
     failed_cdrs = models.JSONField(default=[])  # List
