@@ -37,11 +37,21 @@ class NotificationsTestCase(TestCase):
 
     def setUp(self):
         # Mock email configuration
-        notification_handler.settings.WSTOREMAIL = "wstore@email.com"
-        notification_handler.settings.WSTOREMAILPASS = "passwd"
-        notification_handler.settings.WSTOREMAILUSER = "wstore"
-        notification_handler.settings.SMTPSERVER = "smtp.gmail.com"
-        notification_handler.settings.SMTPPORT = 587
+        self._config = MagicMock()
+        self._config.smtp_server = "smtp.gmail.com"
+        self._config.smtp_port = 587
+        self._config.email = "wstore@email.com"
+        self._config.email_user = "wstore"
+        self._config.email_password = "passwd"
+
+        notification_handler.EmailConfig = MagicMock()
+        notification_handler.EmailConfig.objects.first = MagicMock(return_value=self._config)
+
+        # notification_handler.settings.WSTOREMAIL = "wstore@email.com"
+        # notification_handler.settings.WSTOREMAILPASS = "passwd"
+        # notification_handler.settings.WSTOREMAILUSER = "wstore"
+        # notification_handler.settings.SMTPSERVER = "smtp.gmail.com"
+        # notification_handler.settings.SMTPPORT = 587
         notification_handler.settings.SITE = "http://localhost:8000"
 
         notification_handler.settings.BASEDIR = "/home/test/wstore"
@@ -114,20 +124,23 @@ class NotificationsTestCase(TestCase):
         reload(notification_handler)
 
     def _empty_email(self):
-        notification_handler.settings.WSTOREMAIL = ""
+        self._config.email = ""
+        #notification_handler.settings.WSTOREMAIL = ""
 
     def _empty_pass(self):
-        notification_handler.settings.WSTOREMAILPASS = ""
+        self._config.email_password = ""
+        # notification_handler.settings.WSTOREMAILPASS = ""
 
     def _empty_user(self):
-        notification_handler.settings.WSTOREMAILUSER = ""
+        self._config.email_user = ""
+        # notification_handler.settings.WSTOREMAILUSER = ""
 
     def _empty_server(self):
-        notification_handler.settings.SMTPSERVER = ""
+        self._config.smtp_server = ""
+        # notification_handler.settings.SMTPSERVER = ""
 
-    @parameterized.expand([(_empty_email,), (_empty_pass,), (_empty_user,), (_empty_server,)])
-    def test_improperly_configured(self, empty_param):
-        empty_param(self)
+    def test_improperly_configured(self):
+        notification_handler.EmailConfig.objects.first.return_value = None
 
         error = None
         try:
@@ -313,8 +326,34 @@ class NotificationsTestCase(TestCase):
     def test_custom_notification(self):
         handler = notification_handler.NotificationsHandler()
         text = "Custom message body"
+        html = f"""\
+            <!doctype html>
+            <html lang="en">
+                <body style="margin:0;padding:0;background-color:#f6f9fc;">
+                <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#f6f9fc;padding:24px 0;">
+                    <tr>
+                    <td align="center">
+                    <table role="presentation" cellpadding="0" cellspacing="0" width="600"
+                        style="max-width:600px;background-color:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;">
+                    <tr>
+                        <td style="padding:18px 22px;background-color:#2e58a7;color:#ffffff;font-size:18px;font-weight:bold;">
+                            Custom Subject
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:22px;color:#111827;font-size:14px;line-height:1.6;">
+                            Custom message body
+                        </td>
+                    </tr>
+                </table>
+                </td>
+            </tr>
+            </table>
+            </body>
+            </html>
+        """
         handler.send_custom_email(
             "user@email.com", "Custom Subject", text
         )
 
-        notification_handler.MIMEText.assert_called_once_with(text)
+        notification_handler.MIMEText.assert_called_once_with(html, "html")

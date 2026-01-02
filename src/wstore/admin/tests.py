@@ -114,7 +114,7 @@ class AdminViewTestCase(TestCase):
         api = views.NotificationCollection(permitted_methods=("POST",))
         api.create(request)
 
-        views.build_response.assert_called_once_with(request, 400, "The customer does not have a valid email address")
+        views.build_response.assert_called_once_with(request, 400, "The recipient does not have a valid email address")
 
     def test_notifications_api_party_email_error(self):
         request = self._mock_request({
