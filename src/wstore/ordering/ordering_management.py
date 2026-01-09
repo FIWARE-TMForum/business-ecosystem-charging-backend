@@ -529,17 +529,14 @@ class OrderingManager:
         offering_info = self._download(offering_url, "product offering", orderItem["id"])
         return offering_info
 
-    def create_inventory_product(self, order, orderItem, offering_info, extra_char=None):
+    def complete_inventory_product(self, order, orderItem, offering_info, extra_char=None, contract=None):
         resources = []
         services = []
         inventory_client = InventoryClient()
 
-        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"])
-        customer_party = None
-        for party in product["relatedParty"]:
-            if party["role"].lower() == settings.CUSTOMER_ROLE.lower():
-                customer_party = party
-                break
+        # Check if automatical payment mode is enabled
+        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"]) if contract == None\
+            else inventory_client.get_product_for_patch(contract.product_id)
 
         # Instantiate services and resources if needed
         if "productSpecification" in offering_info:
@@ -575,8 +572,9 @@ class OrderingManager:
         if extra_char is not None:
             product["productCharacteristic"].extend(extra_char)
 
-        logger.info("Creating product in the inventory")
-        new_product = inventory_client.create_product(product)
+        logger.info("Creating/updating product in the inventory")
+        new_product = inventory_client.create_product(product) if contract == None\
+            else inventory_client.patch_product(contract.product_id, product)
 
         return new_product
 
@@ -632,7 +630,7 @@ class OrderingManager:
                     continue
 
             logger.debug("Creating inventory product")
-            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
+            new_product = self.complete_inventory_product(order, orderItem, offering_info, extra_char=extra_char, contract=contract)
 
             logger.info("updating acbr")
             # Update the billing for automatic procurement
@@ -666,8 +664,9 @@ class OrderingManager:
 
         logger.info("Items completed")
 
-    def process_order_completed(self, order):
+    def process_order_completed(self, order): # for manual procurement
         orders = Order.objects.filter(order_id=order["id"])
+        logger.debug('starting a non-automatic procurement handling')
 
         order_model = None
         if len(orders) > 0:
@@ -690,15 +689,10 @@ class OrderingManager:
 
             # Create the product for the orderItem
             offering_info = self.get_offer_info(orderItem)
-            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
+            new_product = self.complete_inventory_product(order, orderItem, offering_info, extra_char=extra_char, contract=contract)
 
-            # Update the billing for automatic procurement
+            # Update the billing for automatic payment
             if contract is not None:
-                logger.info("updating acbr")
-                for inv_id in contract.applied_rates:
-                    billing_client = BillingClient()
-                    billing_client.update_customer_rate(inv_id, new_product["id"])
-
                 logger.info("updating cb")
                 billing_client = BillingClient()
                 # TODO: propagate currency unit through the contract; TBD if it is needed or not
@@ -714,7 +708,7 @@ class OrderingManager:
 
                 self.activate_product(order["id"], new_product)
             else:
-                # Change product state to active
+                # Activate product for manual payment
                 inventory_client = InventoryClient()
                 inventory_client.activate_product(new_product["id"])
 

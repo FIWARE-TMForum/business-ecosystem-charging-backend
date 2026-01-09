@@ -117,7 +117,7 @@ class Order(models.Model):
     customer = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     owner_organization = models.ForeignKey(Organization, on_delete=models.DO_NOTHING, null=True, blank=True)
     date = models.DateTimeField()
-    sales_ids = models.JSONField(default=[])  # List
+    sales_ids = models.JSONField(default=[])  # List of preauthorization ids
 
     state = models.CharField(max_length=50)
     tax_address = models.JSONField(default={})  # Dict
