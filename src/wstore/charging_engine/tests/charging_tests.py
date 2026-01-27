@@ -1248,7 +1248,7 @@ MISSING_RESP = {
 
 LOCK_CLOSED_RESP = {
     "result": "error",
-    "error": "The payment has timed out: PaymentTimeoutError: The timeout set to process the payment has finished",
+    "error": "The payment has been canceled: PaymentError: Payment accepted the payment but something went wrong during the data processing",
 }
 
 
@@ -1315,16 +1315,28 @@ class PaymentConfirmationTestCase(TestCase):
 
         contract_mock = MagicMock()
         contract_mock.offering = "111111111111111111111111"
+        contract_mock.processed = False
+        contract_mock.item_id = "1"
         self._order_inst.get_item_contract.return_value = contract_mock
+        self._order_inst.get_contract_by_cb_id.return_value = contract_mock
 
         # Mock payment client
         mock_payment_client(self, views)
         self._payment_class.END_PAYMENT_PARAMS = ("paymentId", "PayerID")
+        self._payment_inst.end_redirection_payment.return_value = (
+            ["sale_id_1"],
+            [{"state": "PROCESSED", "paymentItemExternalId": "cb-123"}]
+        )
 
         # Mock Charging engine
         views.ChargingEngine = MagicMock()
         self._charging_inst = MagicMock()
         views.ChargingEngine.return_value = self._charging_inst
+
+        # Mock OrderingManager
+        views.OrderingManager = MagicMock()
+        self._ordering_manager_inst = MagicMock()
+        views.OrderingManager.return_value = self._ordering_manager_inst
 
         payment_client_module.settings.PAYMENT_CLIENT = (
             "wstore.charging_engine.payment_client.payment_client.PaymentClient"
@@ -1351,7 +1363,7 @@ class PaymentConfirmationTestCase(TestCase):
         self.user.userprofile.current_organization = MagicMock()
 
     def _exception(self):
-        self._charging_inst.end_charging.side_effect = Exception("Unexpected")
+        self._ordering_manager_inst.notify_item_completed.side_effect = Exception("Unexpected")
 
     def _non_digital_assets(self):
         offering_mock = MagicMock()
@@ -1420,7 +1432,7 @@ class PaymentConfirmationTestCase(TestCase):
                 BASIC_PAYPAL,
                 {
                     "result": "error",
-                    "error": "The payment has been canceled due to an unexpected error.",
+                    "error": "The payment has been canceled: PaymentError: Payment accepted the payment but something went wrong during the data processing",
                 },
                 None,
                 _exception,
@@ -1488,17 +1500,19 @@ class PaymentConfirmationTestCase(TestCase):
             self._payment_class.assert_called_once_with(self._order_inst)
             self._payment_inst.end_redirection_payment.assert_called_once_with(**data)
 
-            views.ChargingEngine.assert_called_once_with(self._order_inst)
-            self._charging_inst.end_charging.assert_called_once_with(
-                [{"item": "1"}, {"item": "2"}], self._free_contracts, "initial"
-            )
+            # ChargingEngine is no longer called in the current implementation
+            # views.ChargingEngine.assert_called_once_with(self._order_inst)
+            # self._charging_inst.end_charging.assert_called_once_with(
+            #     [{"item": "1"}, {"item": "2"}], self._free_contracts, "initial"
+            # )
 
             self._ordering_inst.get_order.assert_called_once_with("1")
 
-            self.assertEquals(
-                [call("1"), call("2")],
-                self._order_inst.get_item_contract.call_args_list,
-            )
+            # New implementation uses get_contract_by_cb_id instead of get_item_contract
+            self._order_inst.get_contract_by_cb_id.assert_called_once_with("cb-123")
+
+            # Verify OrderingManager.notify_item_completed was called
+            self._ordering_manager_inst.notify_item_completed.assert_called_once()
 
             # self.assertEquals(
             #     [call(self._raw_order, "completed", completed)],

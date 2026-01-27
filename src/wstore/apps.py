@@ -1,4 +1,7 @@
 from django.apps import AppConfig
+import logging
+
+logger = logging.getLogger("wstore.default_logger")
 
 
 def register_signals():
@@ -52,3 +55,42 @@ class WstoreConfig(AppConfig):
             # Create context object if it does not exists
             if not len(Context.objects.all()):
                 Context.objects.create(failed_cdrs=[], failed_upgrades=[])
+
+            self._create_indexes()
+            self._start_webhook_listener()
+
+    def _create_indexes(self):
+        """Create MongoDB indexes for performance optimization"""
+        try:
+            from wstore.store_commons.database import get_database_connection
+
+            db = get_database_connection()
+
+            existing_indexes = db.wstore_order.index_information()
+
+            if 'customer_bill_idx' not in existing_indexes:
+                # index the customerBill element inside Order.contract to speed up the searching
+                db.wstore_order.create_index(
+                [("contracts.customer_bill.id", 1)],
+                name="customer_bill_idx"
+                )
+                logger.info("Created customer_bill_idx index on wstore_order")
+
+        except Exception as e:
+            # Don't fail startup if index creation fails
+            logger.warning(f"Could not create indexes: {e}")
+
+    def _start_webhook_listener(self):
+        """Initialize customer bill webhook listener and workers"""
+        try:
+            from wstore.charging_engine.cb_webhook.cb_workers_service import CBWorkersService
+
+            service = CBWorkersService()
+            service.start()
+            service.listen()
+
+            logger.info("Customer bill webhook listener started successfully")
+
+        except Exception as e:
+            logger.warning(f"FAILED starting customer bill webhook listener: {e}")
+            raise Exception("Webhook startup failure")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2015 - 2016 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2025 Future Internet Consulting and Development Solutions S.L.
 
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
@@ -17,8 +17,3 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-from wstore.charging_engine.tests.charging_tests import *
-from wstore.charging_engine.cb_webhook.tests.test_views import *
-from wstore.charging_engine.cb_webhook.tests.test_cb_workers_service import *
-from wstore.charging_engine.cb_webhook.tests.test_integration import *

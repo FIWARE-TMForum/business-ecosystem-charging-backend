@@ -25,7 +25,7 @@ from djongo import models
 
 from wstore.models import Organization, Resource
 from wstore.ordering.errors import OrderingError
-
+from wstore.store_commons.database import get_database_connection
 
 class Offering(models.Model):
     _id = models.ObjectIdField()
@@ -73,6 +73,7 @@ class Contract(models.Model):
     options = models.JSONField(default={})  # Dict
     applied_rates = models.JSONField(default=[]) # List
     customer_bill = models.JSONField(default={}) # Dict
+    processed = models.BooleanField(default=False)
 
     # Date of the last charge to the customer
     last_charge = models.DateTimeField(blank=True, null=True)
@@ -117,7 +118,7 @@ class Order(models.Model):
     customer = models.ForeignKey(User, on_delete=models.DO_NOTHING)
     owner_organization = models.ForeignKey(Organization, on_delete=models.DO_NOTHING, null=True, blank=True)
     date = models.DateTimeField()
-    sales_ids = models.JSONField(default=[])  # List
+    sales_ids = models.JSONField(default=[])  # List of preauthorization ids
 
     state = models.CharField(max_length=50)
     tax_address = models.JSONField(default={})  # Dict
@@ -149,7 +150,8 @@ class Order(models.Model):
             terminated=contract_info["terminated"],
             options=contract_info["options"],
             applied_rates=contract_info["applied_rates"],
-            customer_bill = contract_info["customer_bill"]
+            customer_bill = contract_info["customer_bill"],
+            processed = contract_info["processed"]
         )
 
     def get_contracts(self):
@@ -177,5 +179,53 @@ class Order(models.Model):
 
         return self._build_contract(contract)
 
+    def get_contract_by_cb_id(self, cb_id):
+      # Filter with mongodb for more speed and eficiency thna  python iteration
+      # TODO: if necessary, change each python iteration here for the mongo's one (c++)
+
+      db = get_database_connection()
+      doc = db.wstore_order.find_one(
+          {"_id": self._id},
+          {"contracts": {"$elemMatch": {"customer_bill.id": cb_id}}}
+      )
+
+      if not doc or not doc.get("contracts"):
+          raise OrderingError("Order item (contract) not found.")
+
+      return self._build_contract(doc["contracts"][0])
+
+    def mark_contract_as_processed(self, item_id):
+        db = get_database_connection()
+        result = db.wstore_order.update_one(
+            {
+                "_id": self._id,
+                "contracts.item_id": item_id
+            },
+            {
+                "$set": {
+                    "contracts.$.processed": True
+                }})
+
+        # Should not happen when it was called by notification methods
+        if result.matched_count == 0:
+            raise OrderingError("Contract not found")
+
+        return result.modified_count > 0
+
+    @classmethod
+    def get_by_customer_bill_id(_, bill_id):
+        db = get_database_connection()
+        result = db.wstore_order.find_one({
+            "contracts": {
+                "$elemMatch": {
+                    "customer_bill.id": bill_id
+                }
+            }
+        })
+
+        if result is None:
+            raise OrderingError("Order not found.")
+
+        return Order.objects.get(pk=result["_id"])
     class Meta:
         app_label = "wstore"

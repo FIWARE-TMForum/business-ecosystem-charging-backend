@@ -28,6 +28,7 @@ from logging import getLogger
 
 from wstore.charging_engine.payment_client.payment_client import PaymentClient
 from wstore.charging_engine.charging.billing_client import BillingClient
+from wstore.ordering.inventory_client import InventoryClient
 
 logger = getLogger("wstore.default_logger")
 
@@ -55,12 +56,15 @@ class Engine:
             new_contracts = []
             transactions = []
             billing_client = BillingClient()
+            inventory_client = InventoryClient()
             for contract in self._order.contracts:
                 # TODO: In the future I will transform this _get_item that is O(n^2) to a hashmap o Dict in this case that is O(1) complexity
                 item = self._get_item(contract.item_id, raw_order)
 
-                response = self.execute_billing(item, raw_order)
+                product = inventory_client.build_product_model(item, raw_order["id"], raw_order["billingAccount"])
+                new_product = inventory_client.create_product(product)
 
+                response = self.execute_billing(item, raw_order)
                 if len(response) > 0:
                     logger.info("Received response " + json.dumps(response))
 
@@ -82,20 +86,24 @@ class Engine:
                     logger.info("creating acbrs")
                     # Create the Billing rates as not billed
 
-                    created_rates, recurring = billing_client.create_batch_customer_rates(response, curated_party)
+                    created_rates, recurring = billing_client.create_batch_customer_rates(response, curated_party, new_product)
 
                     # created_cb is {} if there is no billable rates
                     logger.info("creating customer bills")
                     created_cb = billing_client.create_customer_bill(created_rates, raw_order["billingAccount"], curated_party)
+                    if "id" not in created_cb:
+                        created_cb["id"] = str(uuid.uuid4())
+                        created_cb["internal"] = True
 
                     contract.applied_rates = [ n_rate["id"] for n_rate in created_rates ]
                     contract.customer_bill = created_cb
+                    contract.product_id = new_product["id"]
                     new_contracts.append(contract)
 
                     transactions.append({
                         "item": contract.item_id,
                         "provider": seller_id,
-                        "billId": created_cb.get("id", str(uuid.uuid4())),
+                        "billId": created_cb["id"],
                         "price": created_cb.get("taxIncludedAmount", 0),
                         "duty_free": created_cb.get("taxExcludedAmount", 0),
                         "description": '',
@@ -137,11 +145,6 @@ class Engine:
 
             # Call the payment gateway
             client.start_redirection_payment(transactions)
-            logger.info("customer bill setting to 'sent'")
-            for contract in new_contracts:
-                item_cb = contract.customer_bill
-                if "id" in item_cb:
-                    billing_client.set_customer_bill("sent", item_cb["id"])
 
             # Return the redirect URL to process the payment
             logger.info("Billing processed")

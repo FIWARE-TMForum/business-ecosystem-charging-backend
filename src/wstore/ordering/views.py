@@ -88,7 +88,7 @@ class OrderingCollection(Resource):
                     om.notify_completed(order)
                 except Exception as e:
                     # The order is correct so we cannot set is as failed
-                    logger.error("The products for order {} could not be created".format(order["id"]))
+                    logger.error("4. The products for order {} could not be created, probably because only manual offerings dont have order_model".format(order["id"]))
                     logger.error("reason: %s", e)
 
                 response = build_response(request, 200, "OK")
@@ -112,7 +112,7 @@ class NotifyOrderCollection(Resource):
         :param request:
         :return:
         """
-
+        logger.debug('NotifyCollection entered')
         oc = OrderingClient()
         try:
             order = oc.get_order(order_id)
@@ -123,14 +123,15 @@ class NotifyOrderCollection(Resource):
 
         # Check if the product already exists
         try:
+            logger.debug('the product already exists')
             iv = InventoryClient()
-            products = iv.get_products(query={"name": "oid-{}".format(order["id"])})
+            products = iv.get_products(query={"name": "oid-{}".format(order["id"]), "status":"active"})
 
             if len(products) > 0:
                 return build_response(request, 200, "OK")
 
         except Exception as e:
-            logger.error("The products for order {} could not be created {}".format(order["id"], str(e.value)))
+            logger.error("1. The products for order {} could not be created {}".format(order["id"], str(e.value)))
             return build_response(request, 400, 'Error creating product in the inventory')
 
         om = OrderingManager()
@@ -138,7 +139,7 @@ class NotifyOrderCollection(Resource):
             om.process_order_completed(order)
         except Exception as e:
             # The order is correct so we cannot set is as failed
-            logger.error("The products for order {} could not be created {}".format(order["id"], str(e.value)))
+            logger.error("2. The products for order {} could not be created {}".format(order["id"], str(e.value)))
             return build_response(request, 400, 'Error creating product in the inventory')
 
         return build_response(request, 200, "OK")

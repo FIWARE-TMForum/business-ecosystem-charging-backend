@@ -27,6 +27,7 @@ from wstore.asset_manager.resource_plugins import views as plugins_views
 from wstore.charging_engine import views as charging_views
 from wstore.charging_engine.accounting import views as accounting_views
 from wstore.ordering import views as ordering_views
+from wstore.charging_engine.cb_webhook import views as webhook_views
 from wstore.rss import views as rss_views
 from wstore.service import views as service_views
 
@@ -156,5 +157,9 @@ urlpatterns = [
     url(
         r"^charging/api/orderManagement/notify/config/?$",
         admin_views.NotificationConfigCollection(permitted_methods=("GET", "POST")),
+    ),
+    url(
+        r"^charging/webhook/customerBill/notify/?$",
+        webhook_views.CBListener(permitted_methods=("POST",)),
     )
 ]

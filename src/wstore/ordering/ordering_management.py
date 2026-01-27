@@ -40,6 +40,7 @@ from wstore.ordering.models import Contract, Offering, Order
 from wstore.ordering.ordering_client import OrderingClient
 from wstore.store_commons.rollback import rollback
 from wstore.store_commons.utils.url import get_service_url
+from wstore.store_commons.database import get_database_connection
 
 logger = getLogger("wstore.default_logger")
 
@@ -48,6 +49,7 @@ class OrderingManager:
     def __init__(self):
         self._customer = None
         self._validator = ProductValidator()
+        self.ordering_client = OrderingClient()
 
     def _download(self, url, element, item_id):
         r = requests.get(url, verify=settings.VERIFY_REQUESTS)
@@ -510,10 +512,9 @@ class OrderingManager:
                 # No contracts to process, all the items as manual
                 return None
 
-            ordering_client = OrderingClient()
             # Update status of items to be processed
-            ordering_client.update_items_state(order, "inProgress", items=[item["item"] for item in process_items])
-            ordering_client.update_state(order, "inProgress")
+            self.ordering_client.update_items_state(order, "inProgress", items=[item["item"] for item in process_items])
+            self.ordering_client.update_state(order, "inProgress")
 
             logger.info("Status of orders and items set to inProgress")
 
@@ -529,17 +530,20 @@ class OrderingManager:
         offering_info = self._download(offering_url, "product offering", orderItem["id"])
         return offering_info
 
-    def create_inventory_product(self, order, orderItem, offering_info, extra_char=None):
+    def get_offer_info_by_item_id(self, item_id):
+
+        offering_url = get_service_url("catalog", f"/productOffering/{item_id}")
+        offering_info = self._download(offering_url, "v2: product offering", item_id)
+        return offering_info
+
+    def complete_inventory_product(self, order, orderItem, offering_info, extra_char=None, contract=None):
         resources = []
         services = []
         inventory_client = InventoryClient()
 
-        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"])
-        customer_party = None
-        for party in product["relatedParty"]:
-            if party["role"].lower() == settings.CUSTOMER_ROLE.lower():
-                customer_party = party
-                break
+        # Check if automatical payment mode is enabled
+        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"]) if contract == None\
+            else inventory_client.get_product_for_patch(contract.product_id)
 
         # Instantiate services and resources if needed
         if "productSpecification" in offering_info:
@@ -575,8 +579,9 @@ class OrderingManager:
         if extra_char is not None:
             product["productCharacteristic"].extend(extra_char)
 
-        logger.info("Creating product in the inventory")
-        new_product = inventory_client.create_product(product)
+        logger.info("Creating/updating product in the inventory")
+        new_product = inventory_client.create_product(product) if contract == None\
+            else inventory_client.patch_product(contract.product_id, product)
 
         return new_product
 
@@ -588,7 +593,7 @@ class OrderingManager:
 
         # Process product order items to instantiate the inventory
         # Get order from the database
-        order_model = Order.objects.get(order_id=order["id"])
+        order_model: Order = Order.objects.get(order_id=order["id"])
 
         extra_char = []
         for sale_id in order_model.sales_ids:
@@ -613,13 +618,13 @@ class OrderingManager:
                 item_states[orderItem.get("state", "unchecked")] += 1
                 continue
 
-            contract = contracts[0]
+            contract: Contract = contracts[0]
 
             # Get product offering
             offering_info = self.get_offer_info(orderItem)
             logger.debug("Read offering info")
 
-            # filter out payment-automatic modes
+            # filter out non-automatic procurements
             if "productOfferingTerm" in offering_info:
                 mode = 'manual'
                 for term in offering_info["productOfferingTerm"]:
@@ -632,13 +637,7 @@ class OrderingManager:
                     continue
 
             logger.debug("Creating inventory product")
-            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
-
-            logger.info("updating acbr")
-            # Update the billing for automatic procurement
-            for inv_id in contract.applied_rates:
-                billing_client = BillingClient()
-                billing_client.update_customer_rate(inv_id, new_product["id"])
+            new_product = self.complete_inventory_product(order, orderItem, offering_info, extra_char=extra_char, contract=contract)
 
             logger.info("updating cb")
             billing_client = BillingClient()
@@ -647,27 +646,115 @@ class OrderingManager:
             if "id" in item_cb:
                 billing_client.set_customer_bill("settled", item_cb["id"])
 
-            logger.info("Rates and bill updated")
+            logger.info("customer bill updated")
             self.activate_product(order["id"], new_product)
+            order_model.mark_contract_as_processed(contract.item_id)
             processed_items.append(orderItem)
 
-        ordering_client = OrderingClient()
-        ordering_client.update_items_state(order, "completed", items=processed_items)
+        self.ordering_client.update_items_state(order, "completed", items=processed_items)
         item_states["completed"] += len(processed_items)
 
         if item_states["completed"] == len(order["productOrderItem"]):
-            ordering_client.update_state(order, "completed")
+            self.ordering_client.update_state(order, "completed")
         elif item_states["completed"] + item_states["cancelled"] + item_states["failed"] == len(order["productOrderItem"]):
-            ordering_client.update_state(order, "partial")
+            self.ordering_client.update_state(order, "partial")
         elif item_states["inProgress"] + item_states["completed"] + item_states["cancelled"] + item_states["failed"]  > 0:
-            ordering_client.update_state(order, "inProgress")
+            self.ordering_client.update_state(order, "inProgress")
         elif item_states["acknowledged"] > 0:
-            ordering_client.update_state(order, "acknowledged")
+            self.ordering_client.update_state(order, "acknowledged")
 
         logger.info("Items completed")
 
-    def process_order_completed(self, order):
-        orders = Order.objects.filter(order_id=order["id"])
+    def notify_item_completed(self, order_model: Order, contract: Contract, raw_order):
+
+        extra_char = []
+        for sale_id in order_model.sales_ids:
+            extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
+
+        # Get product offering
+        offering_info = self.get_offer_info_by_item_id(contract.item_id)
+
+        # process only automatic procurement
+        if "productOfferingTerm" in offering_info:
+                mode = 'manual'
+                for term in offering_info["productOfferingTerm"]:
+                    if term["name"].lower() == "procurement":
+                        mode = term["description"].lower()
+                        break
+
+                if mode != 'automatic':
+                    order_model.mark_contract_as_processed(contract.item_id)
+                    return
+
+        item_states = {
+            "unchecked": 0,
+            "acknowledged": 0,
+            "cancelled": 0,
+            "completed": 1,
+            "inProgress": 0,
+            "pending": 0,
+            "failed": 0
+        }
+        logger.debug("Processing an individual order item")
+        processed_items = []
+        for orderItem in raw_order["productOrderItem"]:
+            if contract.item_id == orderItem["id"]:
+                new_product = self.complete_inventory_product(raw_order, orderItem, offering_info, extra_char=extra_char, contract=contract)
+                logger.info("updating cb")
+                billing_client = BillingClient()
+                # TODO: propagate currency unit through the contract; TBD if it is needed or not
+                item_cb = contract.customer_bill
+                if "id" in item_cb and not item_cb.get("internal", False): # internal for cbs that are not stored in tmforum api (e.g usage/pospaid cbs)
+                    billing_client.set_customer_bill("settled", item_cb["id"])
+
+                logger.info("customer bill updated")
+                self.activate_product(raw_order["id"], new_product)
+                order_model.mark_contract_as_processed(contract.item_id)
+                processed_items.append(orderItem)
+            else:
+                item_states[orderItem.get("state", "unchecked")] += 1
+
+        root_state = None
+        if item_states["completed"] == len(raw_order["productOrderItem"]):
+            root_state = "completed"
+        elif item_states["completed"] + item_states["cancelled"] + item_states["failed"] == len(raw_order["productOrderItem"]):
+            root_state = "partial"
+        elif item_states["inProgress"] + item_states["completed"] + item_states["cancelled"] + item_states["failed"]  > 0:
+            root_state = "inProgress"
+        elif item_states["acknowledged"] > 0:
+            root_state = "acknowledged"
+        else:
+            raise OrderingError("error setting root state")
+        self.ordering_client.update_items_state(raw_order, "completed", items=processed_items, root_state=root_state)
+
+        logger.info("Item completed")
+
+    def complete_cb_webhook(self, customer_bill_id):
+        db = get_database_connection()
+        order_model = None
+
+        try:
+            order_model: Order = Order.get_by_customer_bill_id(customer_bill_id)
+
+            pre_value = db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": True}})
+            if not pre_value or "_lock" in pre_value and pre_value["_lock"]:
+                order_model = None
+                return {"locked": True}
+
+            contract: Contract = order_model.get_contract_by_cb_id(customer_bill_id) # throw exception for manual procs
+            if contract.processed == False:
+                order = self.ordering_client.get_order(order_model.order_id)
+                self.notify_item_completed(order_model, contract, order)
+        except Exception as e:
+            logger.error(f"Error processing customer bill {customer_bill_id}: {e}")
+        finally:
+            if order_model is not None:
+                db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})
+
+    def process_order_completed(self, raw_order): # for manual procurement
+        # TBD: It is easy to set a checking that only allows activation of product if it was paid previously
+        orders = Order.objects.filter(order_id=raw_order["id"])
+        logger.debug('starting a non-automatic procurement handling')
 
         order_model = None
         if len(orders) > 0:
@@ -680,7 +767,7 @@ class OrderingManager:
             for sale_id in order_model.sales_ids:
                 extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
 
-        for orderItem in order["productOrderItem"]:
+        for orderItem in raw_order["productOrderItem"]:
             contract = None
             if order_model is not None:
                 contracts = [ cnt for cnt in order_model.get_contracts() if cnt.item_id == orderItem["id"] ]
@@ -690,15 +777,10 @@ class OrderingManager:
 
             # Create the product for the orderItem
             offering_info = self.get_offer_info(orderItem)
-            new_product = self.create_inventory_product(order, orderItem, offering_info, extra_char=extra_char)
+            new_product = self.complete_inventory_product(raw_order, orderItem, offering_info, extra_char=extra_char, contract=contract)
 
-            # Update the billing for automatic procurement
+            # Update the billing for automatic payment
             if contract is not None:
-                logger.info("updating acbr")
-                for inv_id in contract.applied_rates:
-                    billing_client = BillingClient()
-                    billing_client.update_customer_rate(inv_id, new_product["id"])
-
                 logger.info("updating cb")
                 billing_client = BillingClient()
                 # TODO: propagate currency unit through the contract; TBD if it is needed or not
@@ -708,13 +790,13 @@ class OrderingManager:
 
                 # Activate asset
                 try:
-                    on_product_acquired(order, contract)
+                    on_product_acquired(raw_order, contract)
                 except:
                     return 400, "The asset has failed to be activated"
 
-                self.activate_product(order["id"], new_product)
+                self.activate_product(raw_order["id"], new_product)
             else:
-                # Change product state to active
+                # Activate product for manual payment
                 inventory_client = InventoryClient()
                 inventory_client.activate_product(new_product["id"])
 

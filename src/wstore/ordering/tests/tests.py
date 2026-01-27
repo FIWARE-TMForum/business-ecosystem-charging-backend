@@ -891,6 +891,65 @@ class OrderTestCase(TestCase):
         contracts = self._order.get_contracts()
         self.assertEquals([self._contract1, self._contract2], contracts)
 
+    def test_get_by_customer_bill_id_success(self):
+        from wstore.store_commons.database import get_database_connection
+        from bson import ObjectId
+
+        db = get_database_connection()
+
+        customer_bill_id = "urn:ngsi-ld:customer-bill:test-12345"
+
+        self._contract1.customer_bill = {"id": customer_bill_id, "href": "http://example.com"}
+        self._order.contracts = [self._contract1, self._contract2]
+        self._order.save()
+
+        found_order = Order.get_by_customer_bill_id(customer_bill_id)
+
+        self.assertIsNotNone(found_order)
+        self.assertEquals(self._order.order_id, found_order.order_id)
+        self.assertEquals(self._order.pk, found_order.pk)
+
+    def test_get_by_customer_bill_id_not_found(self):
+        customer_bill_id = "urn:ngsi-ld:customer-bill:nonexistent-99999"
+
+        error = None
+        try:
+            Order.get_by_customer_bill_id(customer_bill_id)
+        except OrderingError as e:
+            error = e
+
+        self.assertIsNotNone(error)
+        self.assertIn("Order not found", str(error))
+
+    def test_get_contract_by_cb_id_success(self):
+        from wstore.store_commons.database import get_database_connection
+
+        db = get_database_connection()
+
+        customer_bill_id = "urn:ngsi-ld:customer-bill:contract-test-456"
+
+        self._contract2.customer_bill = {"id": customer_bill_id, "href": "http://example.com"}
+        self._order.contracts = [self._contract1, self._contract2]
+        self._order.save()
+
+        found_contract = self._order.get_contract_by_cb_id(customer_bill_id)
+
+        self.assertIsNotNone(found_contract)
+        self.assertEquals(self._contract2.item_id, found_contract.item_id)
+        self.assertEquals(customer_bill_id, found_contract.customer_bill["id"])
+
+    def test_get_contract_by_cb_id_not_found(self):
+        customer_bill_id = "urn:ngsi-ld:customer-bill:nonexistent-contract"
+
+        error = None
+        try:
+            self._order.get_contract_by_cb_id(customer_bill_id)
+        except OrderingError as e:
+            error = e
+
+        self.assertIsNotNone(error)
+        self.assertIn("Order item (contract) not found", str(error))
+
 @override_settings(
     INVENTORY="http://localhost:8080",
     RESOURCE_INVENTORY="http://localhost:9090/resourceInventory",
@@ -1129,5 +1188,289 @@ class InventoryClientTestCase(TestCase):
             }, verify = inventory_client.settings.VERIFY_REQUESTS)]
         client.build_inventory_char.assert_called_once()
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
-        
-        
+
+
+class NotifyItemCompletedTestCase(TestCase):
+    tags = ("ordering", "notify-item")
+
+    def setUp(self):
+        # Mock order model
+        self._order_model = MagicMock()
+        self._order_model.sales_ids = ["sale_123", "sale_456"]
+        self._order_model.mark_contract_as_processed = MagicMock()
+
+        # Mock contract
+        self._contract = MagicMock()
+        self._contract.item_id = "item_1"
+        self._contract.customer_bill = {"id": "cb_123", "href": "http://cb.com/123"}
+        self._contract.product_id = None
+
+        # Mock raw order
+        self._raw_order = {
+            "id": "order_123",
+            "billingAccount": {"id": "ba_123"},
+            "productOrderItem": [
+                {
+                    "id": "item_1",
+                    "state": "inProgress",
+                    "productOffering": {"id": "offering_1"},
+                    "product": {}
+                }
+            ]
+        }
+
+        # Mock OrderingClient
+        ordering_management.OrderingClient = MagicMock()
+        self._ordering_client_inst = MagicMock()
+        ordering_management.OrderingClient.return_value = self._ordering_client_inst
+
+        # Mock InventoryClient
+        ordering_management.InventoryClient = MagicMock()
+        self._inventory_client_inst = MagicMock()
+        ordering_management.InventoryClient.return_value = self._inventory_client_inst
+
+        # Mock BillingClient
+        ordering_management.BillingClient = MagicMock()
+        self._billing_client_inst = MagicMock()
+        ordering_management.BillingClient.return_value = self._billing_client_inst
+
+        # Mock requests
+        ordering_management.requests = MagicMock()
+        self._response = MagicMock()
+        self._response.status_code = 200
+        ordering_management.requests.get.return_value = self._response
+
+    def _offering_automatic(self):
+        return {
+            "id": "offering_1",
+            "name": "Test Offering",
+            "productOfferingTerm": [
+                {"name": "procurement", "description": "automatic"}
+            ]
+        }
+
+    def _offering_manual(self):
+        return {
+            "id": "offering_1",
+            "name": "Test Offering",
+            "productOfferingTerm": [
+                {"name": "procurement", "description": "manual"}
+            ]
+        }
+
+    def _offering_no_terms(self):
+        return {
+            "id": "offering_1",
+            "name": "Test Offering"
+        }
+
+    @parameterized.expand([
+        (
+            "automatic_procurement",
+            _offering_automatic,
+            True,
+            "completed"
+        ),
+        (
+            "manual_procurement",
+            _offering_manual,
+            False,
+            None
+        ),
+        (
+            "no_terms",
+            _offering_no_terms,
+            True,
+            "completed"
+        ),
+        (
+            "multiple_items_partial",
+            _offering_automatic,
+            True,
+            "inProgress",
+            [
+                {"id": "item_1", "state": "inProgress"},
+                {"id": "item_2", "state": "inProgress"}
+            ]
+        ),
+        (
+            "all_completed",
+            _offering_automatic,
+            True,
+            "completed",
+            [
+                {"id": "item_1", "state": "completed"}
+            ]
+        ),
+        (
+            "with_cancelled",
+            _offering_automatic,
+            True,
+            "partial",
+            [
+                {"id": "item_1", "state": "inProgress"},
+                {"id": "item_2", "state": "cancelled"}
+            ]
+        ),
+    ])
+    def test_notify_item_completed(
+        self,
+        name,
+        offering_getter,
+        should_process,
+        expected_root_state,
+        order_items=None
+    ):
+        # Setup offering response
+        offering = offering_getter(self)
+        self._response.json.return_value = offering
+
+        # Setup order items if provided
+        if order_items:
+            self._raw_order["productOrderItem"] = order_items
+
+        # Setup inventory client response
+        self._inventory_client_inst.build_product_model.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"},
+            "relatedParty": []
+        }
+        self._inventory_client_inst.get_product_for_patch.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"},
+            "relatedParty": []
+        }
+        self._inventory_client_inst.patch_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        # Mock activate_product
+        ordering_manager = ordering_management.OrderingManager()
+        ordering_manager.activate_product = MagicMock()
+        ordering_manager.complete_inventory_product = MagicMock()
+        ordering_manager.complete_inventory_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        # Execute
+        ordering_manager.notify_item_completed(
+            self._order_model,
+            self._contract,
+            self._raw_order
+        )
+
+        # Verify offering was fetched
+        ordering_management.requests.get.assert_called_once()
+
+        if should_process:
+            # Verify inventory product was created
+            ordering_manager.complete_inventory_product.assert_called_once()
+
+            # Verify billing was updated
+            self._billing_client_inst.set_customer_bill.assert_called_once_with(
+                "settled",
+                "cb_123"
+            )
+
+            # Verify product was activated
+            ordering_manager.activate_product.assert_called_once_with(
+                self._raw_order["id"],
+                {"id": "product_123", "productOffering": {"id": "offering_1"}}
+            )
+
+            # Verify contract was marked as processed
+            self._order_model.mark_contract_as_processed.assert_called_once_with(
+                self._contract.item_id
+            )
+
+            # Verify ordering client was called with correct state
+            if expected_root_state:
+                self._ordering_client_inst.update_items_state.assert_called_once()
+                call_args = self._ordering_client_inst.update_items_state.call_args
+                self.assertEqual(call_args[1]["root_state"], expected_root_state)
+        else:
+            # For manual procurement, only contract should be marked as processed
+            self._order_model.mark_contract_as_processed.assert_called_once_with(
+                self._contract.item_id
+            )
+
+            # No inventory or billing operations should occur
+            ordering_manager.complete_inventory_product.assert_not_called()
+            self._billing_client_inst.set_customer_bill.assert_not_called()
+            ordering_manager.activate_product.assert_not_called()
+
+    def test_notify_item_completed_with_internal_bill(self):
+        # Setup for internal customer bill (should not be updated)
+        self._contract.customer_bill = {
+            "id": "cb_internal",
+            "href": "http://cb.com/internal",
+            "internal": True
+        }
+
+        offering = self._offering_automatic()
+        self._response.json.return_value = offering
+
+        # Setup inventory client
+        self._inventory_client_inst.patch_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        ordering_manager = ordering_management.OrderingManager()
+        ordering_manager.activate_product = MagicMock()
+        ordering_manager.complete_inventory_product = MagicMock()
+        ordering_manager.complete_inventory_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        # Execute
+        ordering_manager.notify_item_completed(
+            self._order_model,
+            self._contract,
+            self._raw_order
+        )
+
+        # Verify internal bill was NOT updated
+        self._billing_client_inst.set_customer_bill.assert_not_called()
+
+        # But product should still be activated
+        ordering_manager.activate_product.assert_called_once()
+
+    def test_notify_item_completed_without_customer_bill_id(self):
+        # Setup contract without customer bill id
+        self._contract.customer_bill = {"href": "http://cb.com/123"}
+
+        offering = self._offering_automatic()
+        self._response.json.return_value = offering
+
+        # Setup inventory client
+        self._inventory_client_inst.patch_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        ordering_manager = ordering_management.OrderingManager()
+        ordering_manager.activate_product = MagicMock()
+        ordering_manager.complete_inventory_product = MagicMock()
+        ordering_manager.complete_inventory_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        # Execute
+        ordering_manager.notify_item_completed(
+            self._order_model,
+            self._contract,
+            self._raw_order
+        )
+
+        # Verify billing was NOT called (no id)
+        self._billing_client_inst.set_customer_bill.assert_not_called()
+
+        # But product should still be activated
+        ordering_manager.activate_product.assert_called_once()
+
+

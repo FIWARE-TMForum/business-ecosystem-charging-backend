@@ -34,7 +34,7 @@ class DpasClient(PaymentClient):
                 "productProviderSpecificData": {},
                 "paymentItemExternalId" : t["billId"], # this is the ID of the customer bill
                 "recurring": t["recurring"],
-                "amount": float(t['price'])
+                **({ "amount": float(t['price'])} if t['price'] else {})
             }
 
             payment_items.append(payment_item)
@@ -83,18 +83,24 @@ class DpasClient(PaymentClient):
             logger.debug(f"Error contacting payment API: {e}")
             raise PaymentError(f"Failed to initiate DPAS payment: {str(e)}") from e
 
+    #TODO: change the return values in other payment_clients when we start using it.
     def end_redirection_payment(self, **kwargs):
         token = kwargs.get("jwt", None)
-
-        result = []
+        logger.debug("end redirecting...")
+        pre_auth_id = None
         if token is not None:
-            # TODO: We will need to be checking the different items one by one
-            decoded = jwt.decode(token, options={"verify_signature": False})
-
+            unverified_header = jwt.get_unverified_header(token)
+            algorithm = unverified_header['alg']
+            try:
+                # decode() throws a exception, so it will not set the order as failed. This is a desired behaviour
+                decoded = jwt.decode(token, settings.DPAS_KEY, algorithms=[algorithm])
+            except:
+                logger.error("dpas decode failed")
+                raise PaymentError("DPAS sign is incorrect")
             if 'paymentPreAuthorizationExternalId' in decoded:
-                result.append(decoded['paymentPreAuthorizationExternalId'])
-
-        return result
+                pre_auth_id = decoded['paymentPreAuthorizationExternalId']
+        logger.debug("finish end redirection with:" + pre_auth_id)
+        return [pre_auth_id], decoded['payoutList']
 
     def refund(self, sale_id):
         pass

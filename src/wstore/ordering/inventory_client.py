@@ -80,6 +80,20 @@ class InventoryClient:
 
         return r.json()
 
+    def get_product_for_patch(self, product_id):
+        """
+        Retrieves a product and removes read-only fields that should not be included in PATCH requests
+        :param product_id: Id of the product to retrieve
+        :return: Product object without read-only fields
+        """
+        product = self.get_product(product_id)
+
+        # Remove read-only fields that should not be sent in PATCH requests
+        product.pop('id', None)
+        product.pop('href', None)
+
+        return product
+
     def get_products(self, query={}):
         """
         Retrieves a set of products that can be filtered providing a query dict

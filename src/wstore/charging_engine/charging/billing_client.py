@@ -82,8 +82,7 @@ class BillingClient:
                 logger.error("Error updating customer rate: " + str(e))
                 raise
 
-    def create_customer_rate(self, rate_type, currency, tax_rate, tax, tax_included, tax_excluded, billing_account, coverage_period=None, party=[]):
-        # TODO: Billing address and dates
+    def create_customer_rate(self, rate_type, currency, tax_rate, tax, tax_included, tax_excluded, billing_account, product_id, coverage_period=None, party=[]):
         data = {
             # "appliedBillingRateType": rate_type,
             "name": "INITIAL PAYMENT",
@@ -107,7 +106,11 @@ class BillingClient:
                 "unit": currency,
                 "value": tax_excluded
             },
-            "billingAccount": billing_account
+            "billingAccount": billing_account,
+            "product": {
+                "id": product_id,
+                "href": product_id
+            }
         }
 
         if coverage_period is not None:
@@ -129,7 +132,7 @@ class BillingClient:
 
         return response.json()
 
-    def create_batch_customer_rates(self, rates, party):
+    def create_batch_customer_rates(self, rates, party, product):
         created_rates = []
         recurring = False
         for rate in rates:
@@ -152,7 +155,7 @@ class BillingClient:
 
             new_rate = self.create_customer_rate(
                 rate_type, currency, tax_rate, tax, tax_included, tax_excluded,
-                billing_account, coverage_period=coverage_period, party=party)
+                billing_account, product["id"], coverage_period=coverage_period, party=party)
 
             created_rates.append(new_rate)
 
@@ -274,7 +277,7 @@ class BillingClient:
                 "unit": unit,
                 "value": taxExcluded
             },
-            "state": "new",
+            "state": "sent",
             "relatedParty": party
         }
         url = get_service_url("billing", "customerBill")
