@@ -83,6 +83,7 @@ class BillingClient:
                 raise
 
     def create_customer_rate(self, rate_type, currency, tax_rate, tax, tax_included, tax_excluded, billing_account, product_id, coverage_period=None, party=[]):
+        decimal_rate = Decimal(repr(tax_rate / 100))
         data = {
             # "appliedBillingRateType": rate_type,
             "name": "INITIAL PAYMENT",
@@ -92,7 +93,7 @@ class BillingClient:
             "date": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
             "appliedTax": [{
                 "taxCategory": "VAT",
-                "taxRate": tax_rate,
+                "taxRate": decimal_rate,
                 "taxAmount": {
                     "unit": currency,
                     "value": tax
