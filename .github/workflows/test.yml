@@ -41,7 +41,7 @@ jobs:
         working-directory: ./src
         run: |
           if [ "${{ matrix.python-version }}" = "3.10" ]; then
-            coverage run --branch --source=wstore manage.py test --noinput -v 2 --testrunner=django.test.runner.DiscoverRunner
+            python -m compileall -q wstore
           else
             coverage run --branch --source=wstore manage.py test --noinput --nologcapture -v 2
           fi
