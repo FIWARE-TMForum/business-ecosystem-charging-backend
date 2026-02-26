@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import datetime
+from decimal import Decimal
 from django.test import TestCase
 from parameterized import parameterized
 from mock import MagicMock, patch
@@ -184,3 +185,36 @@ class BillingClientTestCase(TestCase):
 
         # Verify set_acbrs_cb was called correctly
         client.set_acbrs_cb.assert_called_once()
+
+    @parameterized.expand([
+        ("percentage_string", "21.0", "0.21"),
+        ("percentage_decimal", "21", "0.21"),
+        ("already_decimal", "0.21", "0.21"),
+    ])
+    @patch("wstore.charging_engine.charging.billing_client.requests.post")
+    @patch("wstore.charging_engine.charging.billing_client.get_service_url")
+    def test_create_customer_rate_normalizes_tax_rate(self, name, input_tax_rate, expected_decimal_rate, mock_get_service_url, mock_post):
+        mock_get_service_url.return_value = "http://billing.test/appliedCustomerBillingRate"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"id": "acbr-1"}
+        mock_post.return_value = mock_response
+
+        client = billing_client.BillingClient()
+        result = client.create_customer_rate(
+            rate_type="one time",
+            currency="EUR",
+            tax_rate=input_tax_rate,
+            tax="2.10",
+            tax_included="12.10",
+            tax_excluded="10.00",
+            billing_account={"id": "ba-1"},
+            product_id="urn:ngsi-ld:product:1",
+            party=None,
+        )
+
+        self.assertEqual(result, {"id": "acbr-1"})
+        mock_get_service_url.assert_called_once_with("billing", "appliedCustomerBillingRate")
+        mock_post.assert_called_once()
+
+        sent_body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent_body["appliedTax"][0]["taxRate"], Decimal(expected_decimal_rate))
