@@ -67,6 +67,7 @@ class Contract(models.Model):
 
     offering = models.CharField(max_length=50)  # Offering.pk as Foreing Key is not working for EmbeddedFields
     # offering = models.ForeignKey(Offering, on_delete=models.DO_NOTHING)
+    prd_after_paid = models.JSONField(default = {})
 
     # Parsed version of the pricing model used to calculate charges
     pricing_model = models.JSONField(default={})  # Dict
@@ -151,7 +152,8 @@ class Order(models.Model):
             options=contract_info["options"],
             applied_rates=contract_info["applied_rates"],
             customer_bill = contract_info["customer_bill"],
-            processed = contract_info["processed"]
+            processed = contract_info["processed"],
+            prd_after_paid = contract_info["prd_after_paid"]
         )
 
     def get_contracts(self):
@@ -194,6 +196,48 @@ class Order(models.Model):
 
       return self._build_contract(doc["contracts"][0])
 
+    def claim_contract_for_termination(self, product_id):
+        db = get_database_connection()
+        result = db.wstore_order.find_one_and_update(
+            {
+                "_id": self._id,
+                "contracts": {
+                    "$elemMatch": {
+                        "product_id": product_id,
+                        "processed": True,
+                        "terminated": False
+                    }
+                }
+            },
+            {
+                "$set": {
+                    "contracts.$.terminated": True
+                }
+            }
+        )
+        return result is not None
+
+    def claim_contract_for_modification(self, product_id):
+        db = get_database_connection()
+        result = db.wstore_order.find_one_and_update(
+            {
+                "_id": self._id,
+                "contracts": {
+                    "$elemMatch": {
+                        "product_id": product_id,
+                        "processed": True,
+                        "terminated": False
+                    }
+                }
+            },
+            {
+                "$set": {
+                    "contracts.$.processed": False
+                }
+            }
+        )
+        return result is not None
+
     def mark_contract_as_processed(self, item_id):
         db = get_database_connection()
         result = db.wstore_order.update_one(
@@ -227,5 +271,22 @@ class Order(models.Model):
             raise OrderingError("Order not found.")
 
         return Order.objects.get(pk=result["_id"])
+
+    @classmethod
+    def get_by_product_id(_, prd_id):
+        db = get_database_connection()
+        result = db.wstore_order.find_one({
+            "contracts": {
+                "$elemMatch": {
+                    "product_id": prd_id
+                }
+            }
+        })
+
+        if result is None:
+            raise OrderingError("Order with the specific product id not found.")
+
+        return Order.objects.get(pk=result["_id"])
+
     class Meta:
         app_label = "wstore"

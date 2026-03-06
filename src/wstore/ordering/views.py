@@ -97,6 +97,7 @@ class OrderingCollection(Resource):
             response = build_response(request, 400, str(e.value))
             client.update_all_states(order, "failed")
         except Exception as e:
+            logger.error("reason: %s", e)
             response = build_response(request, 500, "Your order could not be processed")
             client.update_all_states(order, "failed")
 

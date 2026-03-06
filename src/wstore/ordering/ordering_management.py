@@ -387,31 +387,37 @@ class OrderingManager:
         return charging_engine.resolve_charging(raw_order=order)
 
     def _get_existing_contract(self, inv_client, product_id):
+        logger.debug("get existing contract")
         # Get product info
         raw_product = inv_client.get_product(product_id)
+        if raw_product["status"].lower() != "active":
+            raise OrderingError("It is not possible to modify a product without been activated previously")
+        logger.debug(f"raw product name: {raw_product['name']}")
 
         # Get related order
-        order = Order.objects.get(order_id=raw_product["name"].split("=")[1])
+        order = Order.get_by_product_id(product_id)
 
         # Get the existing contract
         contract = order.get_product_contract(product_id)
 
         # TODO: Process pay per use case
-        if "subscription" in contract.pricing_model:
-            # Check if there are a pending subscription
-            now = datetime.utcnow()
+        # TODO: uncomment this snippet when recurring support is needed. SRS
+        # if "subscription" in contract.pricing_model:
+        #     # Check if there are a pending subscription (pending recurring)
+        #     now = datetime.utcnow()
 
-            for subs in contract.pricing_model["subscription"]:
-                timedelta = subs["renovation_date"] - now
-                if timedelta.days > 0:
-                    logger.error(f"Subscription for {product_id} has not expired yet")
-                    raise OrderingError(
-                        "You cannot modify a product with a recurring payment until the subscription expires"
-                    )
+        #     for subs in contract.pricing_model["subscription"]:
+        #         timedelta = subs["renovation_date"] - now
+        #         if timedelta.days > 0:
+        #             logger.error(f"Subscription for {product_id} has not expired yet")
+        #             raise OrderingError(
+        #                 "You cannot modify a product with a recurring payment until the subscription expires"
+        #             )
 
+        logger.debug("get existing contract end")
         return order, contract
 
-    def _process_modify_items(self, items):
+    def _process_modify_items(self, items, raw_order):
         if len(items) > 1:
             logger.error("Only a modify item is supported per order item")
             raise OrderingError("Only a modify item is supported per order item")
@@ -430,17 +436,32 @@ class OrderingManager:
         client = InventoryClient()
         order, contract = self._get_existing_contract(client, product["id"])
 
-        # Build the new contract
-        new_contract = self._build_contract(item)
-        if new_contract.pricing_model != {}:
-            contract.pricing_model = new_contract.pricing_model
-            contract.revenue_class = new_contract.revenue_class
+        # Atomically verify processed=True and set to False (prevents race conditions)
+        if not order.claim_contract_for_modification(product["id"]):
+            logger.error("Only activated products are modifiable")
+            raise OrderingError("Only activated products are modifiable")
 
+        # Refresh and rebuild contracts to reflect the atomic update
+        order.refresh_from_db()
+        order.contracts = order.get_contracts()
+        contract = next(c for c in order.contracts if c.product_id == product["id"])
+        logger.debug(f"contract product id: {contract.product_id}")
+
+        # Build the new contract
+        # TODO: Maybe needed in the future. SRS
+        # new_contract = self._build_contract(item)
+        # if new_contract.pricing_model != {}:
+        #     contract.pricing_model = new_contract.pricing_model
+        #     contract.revenue_class = new_contract.revenue_class
+
+        order.order_id = raw_order["id"]
         order.save()
+
+        mod_order = {**raw_order, "productOrderItem": items}
 
         # The modified item is treated as an initial payment
         charging_engine = ChargingEngine(order)
-        return charging_engine.resolve_charging(type_="initial", related_contracts=[contract])
+        return charging_engine.resolve_charging(type_="initial", related_contracts=[contract], raw_order=mod_order)
 
     def _process_delete_items(self, items):
         for item in items:
@@ -458,11 +479,12 @@ class OrderingManager:
             client = InventoryClient()
             order, contract = self._get_existing_contract(client, product["id"])
 
+            if not order.claim_contract_for_termination(product["id"]):
+                logger.error("Only activated products are deletable")
+                raise OrderingError("Only activated products are deletable")
+
             # Suspend the access to the service
             on_product_suspended(order, contract)
-
-            contract.terminated = True
-            order.save()
 
             # Terminate product in the inventory
             client.terminate_product(product["id"])
@@ -483,9 +505,11 @@ class OrderingManager:
         for item in order["productOrderItem"]:
             items[item["action"].lower()].append(item)
 
-        if len(items["add"]) and len(items["modify"]):
-            logger.error("It is not possible to process add and modify items in the same order")
-            raise OrderingError("It is not possible to process add and modify items in the same order")
+        total_len= len(order["productOrderItem"])
+
+        if len(items["add"]) != total_len and len(items["modify"]) != total_len and len(items["delete"]) != total_len :
+            logger.error("It is not possible to process mixed actions in the same order")
+            raise OrderingError("It is not possible to process mixed actions in the same order")
 
         # Process order items separately depending on its action. no_change items are not processed
         if len(items["delete"]):
@@ -493,7 +517,7 @@ class OrderingManager:
 
         redirection_url = None
         if len(items["modify"]):
-            redirection_url = self._process_modify_items(items["modify"])
+            redirection_url = self._process_modify_items(items["modify"], order)
 
         # Process add items
         if len(items["add"]):
@@ -513,12 +537,16 @@ class OrderingManager:
                 return None
 
             # Update status of items to be processed
-            self.ordering_client.update_items_state(order, "inProgress", items=[item["item"] for item in process_items])
-            self.ordering_client.update_state(order, "inProgress")
+            self.ordering_client.update_items_state(order, "inProgress", root_state="inProgress", items=[item["item"] for item in process_items])
 
             logger.info("Status of orders and items set to inProgress")
 
             redirection_url = self._process_add_items(process_items, order, description, terms_accepted)
+        if len(items["modify"]):
+            self.ordering_client.update_items_state(order, "inProgress", root_state="inProgress", items=items["modify"])
+        if len(items["delete"]):
+            deleteState = "completed" if len(items["delete"]) == len(order["productOrderItem"]) else "inProgress"
+            self.ordering_client.update_items_state(order, "completed", root_state=deleteState, items=items["delete"])
 
         return redirection_url
 
@@ -546,7 +574,7 @@ class OrderingManager:
             else inventory_client.get_product_for_patch(contract.product_id)
 
         # Instantiate services and resources if needed
-        if "productSpecification" in offering_info:
+        if "productSpecification" in offering_info and f"oid-{order['id']}" == product["name"]:
 
             spec_id = offering_info["productSpecification"]["id"]
             spec_url = get_service_url("catalog", f"/productSpecification/{spec_id}")
@@ -576,8 +604,17 @@ class OrderingManager:
         # This cannot work until the Service Intentory API is published
         # product["productCharacteristic"].extend([{"name": "service", "value": service}] for service in services)
 
+        # ready to overwrite product characteristic
+        product["productCharacteristic"] = []
+        product["productPrice"] = []
+        logger.debug("product characteristic treatment")
+
         if extra_char is not None:
             product["productCharacteristic"].extend(extra_char)
+
+        if contract and contract.prd_after_paid is not None:
+            product["productCharacteristic"].extend(contract.prd_after_paid["product_characteristic"])
+            product["productPrice"].extend(contract.prd_after_paid["product_price"])
 
         logger.info("Creating/updating product in the inventory")
         new_product = inventory_client.create_product(product) if contract == None\

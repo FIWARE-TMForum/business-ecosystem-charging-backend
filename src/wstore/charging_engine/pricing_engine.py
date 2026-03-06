@@ -354,7 +354,6 @@ class PriceEngine:
                 self._process_price_component(component, spec_chars, aggregated, usage)
             else:
                 self._proccess_price_component_indv(component, spec_chars, indv, usage)
-                pass
 
         # If the POP is not a bundle check the pricing
         # If the bundle is a pop download the models

@@ -29,11 +29,12 @@ from logging import getLogger
 from wstore.charging_engine.payment_client.payment_client import PaymentClient
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.ordering.inventory_client import InventoryClient
+from wstore.ordering.models import Order
 
 logger = getLogger("wstore.default_logger")
 
 class Engine:
-    def __init__(self, order):
+    def __init__(self, order: Order):
         self._order = order
 
     def _get_item(self, item_id, raw_order):
@@ -50,19 +51,25 @@ class Engine:
     def execute_billing(self, item, raw_order):
         pass
 
-    def process_initial_charging(self, raw_order):
+    def process_initial_charging(self, raw_order, related_contract= None):
         try:
             # The billing engine processes the products one by one
-            new_contracts = []
             transactions = []
             billing_client = BillingClient()
             inventory_client = InventoryClient()
-            for contract in self._order.contracts:
+            contracts = self._order.contracts if related_contract is None else related_contract
+            for contract in contracts:
+
+                logger.debug(f"contract: {contract.product_id}")
+
                 # TODO: In the future I will transform this _get_item that is O(n^2) to a hashmap o Dict in this case that is O(1) complexity
                 item = self._get_item(contract.item_id, raw_order)
 
                 product = inventory_client.build_product_model(item, raw_order["id"], raw_order["billingAccount"])
-                new_product = inventory_client.create_product(product)
+                # attributes that needs to be set after the payments
+                contract.prd_after_paid = {"product_price": product.pop("productPrice", None), "product_characteristic": product.pop("productCharacteristic", None)}
+                # TODO: reset product to created and before this method, terminate cb and acbrs (I think it is not needed based on what Stefania said in dc).
+                new_product = inventory_client.create_product(product) if related_contract is None else inventory_client.get_product(contract.product_id)
 
                 response = self.execute_billing(item, raw_order)
                 if len(response) > 0:
@@ -86,7 +93,9 @@ class Engine:
                     logger.info("creating acbrs")
                     # Create the Billing rates as not billed
 
-                    created_rates, recurring = billing_client.create_batch_customer_rates(response, curated_party, new_product)
+                    #TODO: if related_contract exists, set another name in acbrs.
+                    message = None if related_contract is None else "INITIAL MODIFICATION PAYMENT"
+                    created_rates, recurring = billing_client.create_batch_customer_rates(response, curated_party, new_product, message)
 
                     # created_cb is {} if there is no billable rates
                     logger.info("creating customer bills")
@@ -98,7 +107,6 @@ class Engine:
                     contract.applied_rates = [ n_rate["id"] for n_rate in created_rates ]
                     contract.customer_bill = created_cb
                     contract.product_id = new_product["id"]
-                    new_contracts.append(contract)
 
                     transactions.append({
                         "item": contract.item_id,
@@ -117,7 +125,6 @@ class Engine:
                 return None
 
             # Update the order with the new contracts
-            self._order.contracts = new_contracts
             pending_payment = {  # Payment model
                 "transactions": transactions,
                 "concept": 'initial',
@@ -160,4 +167,4 @@ class Engine:
 
         # TODO: Process other types of charging, renewal, usage, etc.
         if type_ == "initial":
-            return self.process_initial_charging(raw_order)
+            return self.process_initial_charging(raw_order, related_contracts)
