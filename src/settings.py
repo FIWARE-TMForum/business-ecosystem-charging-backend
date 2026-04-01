@@ -215,13 +215,15 @@ CLIENTS = {
 
 NOTIF_CERT_FILE = None
 NOTIF_CERT_KEY_FILE = None
+NOTIFICATION_RECIPIENT_EMAIL = None
 
 PROPAGATE_TOKEN = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 
 OPERATOR_ID = ''
-RELATED_PARTY_SCHEMA_LOCATION="https://raw.githubusercontent.com/Ficodes/tmf-schemas/refs/heads/main/schemas/relatedPartyRef.schema.json"
+RELATED_PARTY_SCHEMA_LOCATION="https://raw.githubusercontent.com/DOME-Marketplace/tmf-api/refs/heads/main/DOME/ShareableEntity.schema.json"
+
 
 # =====================================
 # ENVIRONMENT SETTINGS
@@ -262,6 +264,7 @@ WSTOREMAIL = environ.get("BAE_CB_EMAIL", WSTOREMAIL)
 WSTOREMAILPASS = environ.get("BAE_CB_EMAIL_PASS", WSTOREMAILPASS)
 SMTPSERVER = environ.get("BAE_CB_EMAIL_SMTP_SERVER", SMTPSERVER)
 SMTPPORT = environ.get("BAE_CB_EMAIL_SMTP_PORT", SMTPPORT)
+NOTIFICATION_RECIPIENT_EMAIL = environ.get("BAE_CB_NOTIFICATION_RECIPIENT_EMAIL", NOTIFICATION_RECIPIENT_EMAIL)
 
 PAYMENT_METHOD = environ.get("BAE_CB_PAYMENT_METHOD", PAYMENT_METHOD)
 

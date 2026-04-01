@@ -230,3 +230,4 @@ RESOURCE_INDEX_DIR = path.join(BASEDIR, path.join("wstore", path.join("admin", "
 
 NOTIF_CERT_FILE = None
 NOTIF_CERT_KEY_FILE = None
+NOTIFICATION_RECIPIENT_EMAIL = None

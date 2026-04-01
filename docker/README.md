@@ -62,6 +62,7 @@ services:
           # - BAE_CB_EMAIL_PASS=pass
           # - BAE_CB_EMAIL_SMTP_SERVER=smtp.server.com
           # - BAE_CB_EMAIL_SMTP_PORT=587
+          # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL=alerts@example.com
 
           - BAE_CB_VERIFY_REQUESTS=True  # Whether or not the BAE validates SSL certificates on requests to external components 
 

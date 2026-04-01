@@ -25,6 +25,8 @@ import requests
 
 from logging import getLogger
 
+from django.conf import settings
+
 from wstore.store_commons.resource import Resource
 from wstore.store_commons.utils.http import JsonResponse, authentication_required, build_response, supported_request_mime_types
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
@@ -115,6 +117,19 @@ class NotificationConfigCollection(Resource):
 
 class NotificationCollection(Resource):
 
+    def _get_notification_data(self, request):
+        try:
+            data = json.loads(request.body)
+
+            return {
+                "message": data["message"],
+                "subject": data.get("subject", "Notification from Marketplace"),
+                "sender": data.get("sender", ""),
+                "recipient": data.get("recipient"),
+            }
+        except (TypeError, ValueError, KeyError):
+            raise ValueError("The provided data is not a valid JSON object")
+
     def get_party(self, party_id):
         """
         Get the party information from the party service.
@@ -128,21 +143,28 @@ class NotificationCollection(Resource):
         except:
             raise ValueError(f"Error fetching party information")
 
+    def _send_notification_email(self, request, recipient_email, subject, message):
+        try:
+            notif = NotificationsHandler()
+            notif.send_custom_email(recipient_email, subject, message)
+        except Exception as e:
+            logger.error(f"Error sending notification email: {str(e)}")
+            return build_response(request, 500, "Error sending notification email")
+
+        return build_response(request, 200, "Notification sent successfully")
+
     @supported_request_mime_types(("application/json",))
     def create(self, request):
-        # Get request data
         try:
-            data = json.loads(request.body)
-
+            data = self._get_notification_data(request)
             message = data["message"]
-            subject = data.get("subject", "Notification from Marketplace")
-            sender_id = data.get("sender", "")
-            recipient_id = data.get("recipient")
-        except:
+            subject = data["subject"]
+            sender_id = data["sender"]
+            recipient_id = data["recipient"]
+        except ValueError:
             return build_response(request, 400, "The provided data is not a valid JSON object")
 
         try:
-            sender = self.get_party(sender_id)
             recipient = self.get_party(recipient_id)
         except:
             return build_response(request, 400, "Error fetching party information")
@@ -157,12 +179,24 @@ class NotificationCollection(Resource):
         if party_email is None:
             return build_response(request, 400, "The recipient does not have a valid email address")
 
-        # Call the notification service
-        try:
-            notif = NotificationsHandler()
-            notif.send_custom_email(party_email, subject, message)
-        except Exception as e:
-            logger.error(f"Error sending notification email: {str(e)}")
-            return build_response(request, 500, "Error sending notification email")
+        return self._send_notification_email(request, party_email, subject, message)
 
-        return build_response(request, 200, "Notification sent successfully")
+
+class ConfiguredNotificationCollection(NotificationCollection):
+
+    @supported_request_mime_types(("application/json",))
+    def create(self, request):
+        try:
+            data = self._get_notification_data(request)
+            message = data["message"]
+            subject = data["subject"]
+        except ValueError:
+            return build_response(request, 400, "The provided data is not a valid JSON object")
+
+        recipient_email = settings.NOTIFICATION_RECIPIENT_EMAIL
+
+        if recipient_email is None or recipient_email == "":
+            logger.error("Configured notification recipient email is not set")
+            return build_response(request, 500, "Configured notification recipient email is not set")
+
+        return self._send_notification_email(request, recipient_email, subject, message)
