@@ -987,6 +987,8 @@ class InventoryClientTestCase(TestCase):
         now.isoformat.return_value = "2016-01-22T04:10:25.176751+00:00"
         inventory_client.datetime = MagicMock()
         inventory_client.datetime.now.return_value = now
+
+        inventory_client.PendingTermination = MagicMock()
         inventory_client.settings.RESOURCE_CATALOG = "http://testing-resource-catalog:8080"
         inventory_client.settings.SERVICE_CATALOG = "http://testing-service-catalog:8080"
         inventory_client.settings.VERIFY_REQUESTS = True

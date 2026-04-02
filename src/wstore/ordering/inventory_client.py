@@ -20,6 +20,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import logging
 import requests
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -31,6 +32,9 @@ from django.core.exceptions import ImproperlyConfigured
 
 from wstore.store_commons.utils.url import get_service_url
 from wstore.store_commons.utils.party import get_operator_party_roles, normalize_party_ref
+from wstore.ordering.models import PendingTermination
+
+logger = logging.getLogger(__name__)
 
 
 class InventoryClient:
@@ -160,15 +164,34 @@ class InventoryClient:
         # except:
         #     pass
 
-        # TODO: Create a rollback system (probably saving in mongo rollback pendings) in case the apis are shut down
         product = self.get_product(product_id)
 
-        for resource in product.get("realizingResource", []):
-            resource_url = get_service_url("resource_inventory", "/resource/" + str(resource["id"]))
+        resource_ids = [r["id"] for r in product.get("realizingResource", [])]
+        service_ids = [s["id"] for s in product.get("realizingService", [])]
+
+        pending = PendingTermination(
+            product_id=product_id,
+            realizing_resources=resource_ids,
+            realizing_services=service_ids,
+            created_at=datetime.now(timezone.utc),
+        )
+        pending.save()
+
+        try:
+            self._do_terminate(product_id, resource_ids, service_ids)
+        except Exception:
+            logger.exception("terminate_product failed for product %s; PendingTermination kept for recovery", product_id)
+            raise
+
+        pending.delete()
+
+    def _do_terminate(self, product_id, resource_ids, service_ids):
+        for resource_id in resource_ids:
+            resource_url = get_service_url("resource_inventory", "/resource/" + str(resource_id))
             requests.patch(resource_url, json={"resourceStatus": "suspended"}, verify=settings.VERIFY_REQUESTS)
 
-        for service in product.get("realizingService", []):
-            service_url = get_service_url("service_inventory", "/service/" + str(service["id"]))
+        for service_id in service_ids:
+            service_url = get_service_url("service_inventory", "/service/" + str(service_id))
             requests.patch(service_url, json={"state": "terminated"}, verify=settings.VERIFY_REQUESTS)
 
         patch_body = {

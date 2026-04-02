@@ -204,6 +204,7 @@ CRONJOBS = [
     ("0 5 * * *", "django.core.management.call_command", ["pending_charges_daemon"]),
     ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
     ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
+    ("0 3 * * *", "django.core.management.call_command", ["retry_pending_terminations"]),
 ]
 
 CLIENTS = {
