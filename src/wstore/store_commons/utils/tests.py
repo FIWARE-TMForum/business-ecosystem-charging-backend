@@ -25,6 +25,7 @@ from django.test.utils import override_settings
 from parameterized import parameterized
 from mock import MagicMock, call
 
+from wstore.store_commons.request_context import reset_current_party_id, set_current_party_id
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 
 
@@ -143,6 +144,93 @@ class URLTestCase(TestCase):
         result = wstore.store_commons.utils.url.get_service_url('catalog', path)
 
         self.assertEqual(result, expected)
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+        PARTY="https://party.example/tmf-api/party/v4",
+    )
+    def test_get_service_url_federated(self):
+        from wstore.store_commons.utils import party, url
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "partyCharacteristic": [
+                {
+                    "name": "tmforumEndpoint",
+                    "value": "http://federated.example:8443",
+                }
+            ]
+        }
+
+        old_requests = party.requests
+        old_cache = party.cache
+        party.requests = MagicMock()
+        party.requests.get.return_value = response
+        party.cache = MagicMock()
+        party.cache.get.return_value = None
+
+        token = set_current_party_id("urn:organization:test-party")
+        try:
+            result = url.get_service_url("catalog", "/productOffering/123")
+        finally:
+            reset_current_party_id(token)
+            party.requests = old_requests
+            party.cache = old_cache
+
+        self.assertEqual(
+            "http://federated.example:8443/tmf/v4/productOffering/123",
+            result,
+        )
+        party.requests.get.assert_called_once_with(
+            "https://party.example/tmf-api/party/v4/organization/urn:organization:test-party"
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_federated_without_party_context(self):
+        from wstore.store_commons.utils import url
+
+        result = url.get_service_url("catalog", "/productOffering/123")
+
+        self.assertEqual("https://example.com:8000/tmf/v4/productOffering/123", result)
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+        PARTY="https://party.example/tmf-api/party/v4",
+    )
+    def test_get_service_url_federated_without_tmforum_endpoint(self):
+        from wstore.store_commons.utils import party, url
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "partyCharacteristic": [
+                {
+                    "name": "otherCharacteristic",
+                    "value": "https://federated.example:8443",
+                }
+            ]
+        }
+
+        old_requests = party.requests
+        old_cache = party.cache
+        party.requests = MagicMock()
+        party.requests.get.return_value = response
+        party.cache = MagicMock()
+        party.cache.get.return_value = None
+
+        token = set_current_party_id("urn:organization:test-party")
+        try:
+            result = url.get_service_url("catalog", "/productOffering/123")
+        finally:
+            reset_current_party_id(token)
+            party.requests = old_requests
+            party.cache = old_cache
+
+        self.assertEqual("https://example.com:8000/tmf/v4/productOffering/123", result)
 
 
 @override_settings(

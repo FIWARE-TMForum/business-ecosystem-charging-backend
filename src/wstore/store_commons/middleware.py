@@ -23,6 +23,8 @@ from logging import getLogger
 
 from django.utils.functional import SimpleLazyObject
 
+from wstore.store_commons.request_context import reset_current_party_id, set_current_party_id
+
 
 logger = getLogger("wstore.default_logger")
 
@@ -116,7 +118,10 @@ class AuthenticationMiddleware:
         return user
 
     def __call__(self, request):
-        request.user = SimpleLazyObject(lambda: self._get_api_user(request))
-
-        response = self.get_response(request)
-        return response
+        token = set_current_party_id(request.META.get("HTTP_X_PARTY_ID"))
+        try:
+            request.user = SimpleLazyObject(lambda: self._get_api_user(request))
+            response = self.get_response(request)
+            return response
+        finally:
+            reset_current_party_id(token)

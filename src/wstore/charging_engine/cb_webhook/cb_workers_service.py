@@ -27,6 +27,7 @@ import settings
 
 from wstore.ordering.ordering_management import OrderingManager
 from wstore.store_commons.database import get_database_connection
+from wstore.store_commons.utils.url import get_local_service_url
 
 logger = getLogger("wstore.charging_engine.cb_workers_service")
 
@@ -45,12 +46,13 @@ class CBWorkersService:
             "callback": f"{settings.LOCAL_SITE}charging/webhook/customerBill/notify",
             "query": "eventType=CustomerBillStateChangeEvent"
         }
+        billing_hub_url = get_local_service_url("billing", "/hub")
         max_retries = 10
         for attempt in range(1, max_retries + 1):
             try:
-                result = requests.post(f"{settings.BILLING}/hub", json=payload, verify=settings.VERIFY_REQUESTS)
+                result = requests.post(billing_hub_url, json=payload, verify=settings.VERIFY_REQUESTS)
                 if result.status_code == 201 or result.status_code == 409:
-                    logger.info(f"start listening to {settings.BILLING}")
+                    logger.info(f"start listening to {billing_hub_url}")
                     return
                 logger.warning(f"Attempt {attempt}/{max_retries}: customerBill API returned {result.status_code}")
             except requests.exceptions.RequestException as e:

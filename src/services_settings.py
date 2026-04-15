@@ -25,28 +25,28 @@ VERIFY_REQUESTS = True
 SITE = "http://proxy.docker:8004/"
 LOCAL_SITE = "http://charging.docker:8006/"
 
-PARTY = "http://host.docker.internal:8633/tmf-api/party/v4"
+PARTY = "http://host.docker.internal:8632/tmf-api/party/v4"
 
 CATALOG = "http://host.docker.internal:8632/tmf-api/productCatalogManagement/v4"
 
 #RESOURCE_CATALOG = "http://tmforum-tm-forum-api-resource-catalog:8080"
-RESOURCE_CATALOG = "http://host.docker.internal:8636"
+RESOURCE_CATALOG = "http://host.docker.internal:8632"
 
 #SERVICE_CATALOG = "http://tmforum-tm-forum-api-service-catalog:8080"
-SERVICE_CATALOG = "http://host.docker.internal:8637"
+SERVICE_CATALOG = "http://host.docker.internal:8632"
 
-INVENTORY = "http://host.docker.internal:8635"
+INVENTORY = "http://host.docker.internal:8632"
 #RESOURCE_INVENTORY = "http://tmforum-tm-forum-api-resource-inventory:8080"
-RESOURCE_INVENTORY = "http://host.docker.internal:8641"
+RESOURCE_INVENTORY = "http://host.docker.internal:8632"
 
-SERVICE_INVENTORY = "http://host.docker.internal:8651"
+SERVICE_INVENTORY = "http://host.docker.internal:8632"
 
-ORDERING = "http://host.docker.internal:8634"
+ORDERING = "http://host.docker.internal:8632"
 
-ACCOUNT = "http://host.docker.internal:8639"
-BILLING = "http://host.docker.internal:8640/tmf-api/customerBillManagement/v4"
+ACCOUNT = "http://host.docker.internal:8632"
+BILLING = "http://host.docker.internal:8632/tmf-api/customerBillManagement/v4"
 
-USAGE = "http://host.docker.internal:8637"
+USAGE = "http://host.docker.internal:8632"
 AUTHORIZE_SERVICE = "http://proxy.docker:8004/authorizeService/apiKeys"
 
 #DOME_BILLING_URL = "http://host.docker.internal:8099"

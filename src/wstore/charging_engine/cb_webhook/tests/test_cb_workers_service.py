@@ -31,12 +31,15 @@ class CBWorkersServiceTestCase(TestCase):
     @patch('wstore.charging_engine.cb_webhook.cb_workers_service.get_database_connection')
     @patch('wstore.charging_engine.cb_webhook.cb_workers_service.OrderingManager')
     @patch('wstore.charging_engine.cb_webhook.cb_workers_service.requests.post')
-    def test_listen_registers_webhook(self, mock_post, mock_om, mock_db):
+    @patch('wstore.charging_engine.cb_webhook.cb_workers_service.get_local_service_url')
+    def test_listen_registers_webhook(self, mock_get_local_service_url, mock_post, mock_om, mock_db):
+        mock_get_local_service_url.return_value = 'http://billing.example/hub'
         mock_post.return_value = MagicMock(status_code=201)
 
         service = CBWorkersService()
         service.listen()
 
+        mock_get_local_service_url.assert_called_once_with('billing', '/hub')
         mock_post.assert_called_once()
         call_kwargs = mock_post.call_args.kwargs
 

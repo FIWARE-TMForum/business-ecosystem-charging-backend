@@ -18,6 +18,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from urllib.parse import urlparse
+
 import requests
 from django.conf import settings
 from django.core.cache import cache
@@ -32,8 +34,14 @@ PARTY_TTL = 2 * 3600  # 2 hours
 
 class PartyClient:
 
+    def _build_local_party_url(self, path):
+        parsed_url = urlparse(settings.PARTY)
+        api_path = parsed_url.path.rstrip("/")
+
+        return f"{parsed_url.scheme}://{parsed_url.netloc}{api_path}/{path.lstrip('/')}"
+
     def _get_party_id(self, query):
-        party_url = get_service_url('party', f'/organization{query}')
+        party_url = get_service_url("party", f"/organization{query}")
         response = requests.get(party_url)
 
         party_id = None
@@ -71,7 +79,7 @@ class PartyClient:
         return party_id
 
     def get_party_ext_id(self, party_id):
-        party_url = get_service_url('party', f'/organization/{party_id}')
+        party_url = get_service_url("party", f"/organization/{party_id}")
 
         response = requests.get(party_url)
 
@@ -85,6 +93,26 @@ class PartyClient:
                     break
 
         return party_ext_id
+
+    def get_local_party(self, party_id):
+        cache_key = f"party_obj:{party_id}"
+        party = cache.get(cache_key)
+        if party is not None:
+            return party
+
+        party_url = self._build_local_party_url(f"/organization/{party_id}")
+
+        try:
+            response = requests.get(party_url)
+        except requests.RequestException:
+            return None
+
+        if response.status_code != 200:
+            return None
+
+        party = response.json()
+        cache.set(cache_key, party, PARTY_TTL)
+        return party
 
 
 def get_operator_party_id():

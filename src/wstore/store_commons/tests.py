@@ -30,6 +30,7 @@ from mock import MagicMock, call
 from parameterized import parameterized
 
 from wstore.store_commons import database, middleware, rollback
+from wstore.store_commons.request_context import get_current_party_id
 from wstore.store_commons.utils.url import is_valid_url
 
 __test__ = False
@@ -231,6 +232,32 @@ class AuthenticationMiddlewareTestCase(TestCase):
 
         self._org_instance.save.assert_called_once_with()
         self._user_inst.userprofile.save.assert_called_once_with()
+
+    def test_current_party_id_available_during_request(self):
+        self.request.META = {
+            "HTTP_X_ACTOR_ID": "000000000000023",
+            "HTTP_X_DISPLAY_NAME": "Test Org",
+            "HTTP_X_USER_ID": "test-user",
+            "HTTP_X_ROLES": "buyer",
+            "HTTP_AUTHORIZATION": "Bearer 1234567890abcdf",
+            "HTTP_X_EMAIL": "org@email.com",
+            "HTTP_X_EXT_NAME": "",
+            "HTTP_X_IDP_ID": "local",
+            "HTTP_X_PARTY_ID": "urn:party:local:test-org",
+            "HTTP_X_USER_PARTY_ID": "urn:party:local:test-user"
+        }
+
+        response = MagicMock()
+
+        def get_response(request):
+            self.assertEqual("urn:party:local:test-org", get_current_party_id())
+            return response
+
+        middleware_class = middleware.AuthenticationMiddleware(get_response)
+        resp = middleware_class(self.request)
+
+        self.assertEqual(response, resp)
+        self.assertIsNone(get_current_party_id())
 
 
 @override_settings(BASEDIR="/base/dir")
