@@ -27,6 +27,7 @@ from logging import getLogger
 
 from django.conf import settings
 
+from wstore.store_commons.database import get_database_connection
 from wstore.store_commons.resource import Resource
 from wstore.store_commons.utils.http import JsonResponse, authentication_required, build_response, supported_request_mime_types
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
@@ -47,6 +48,18 @@ class ChargePeriodCollection(Resource):
 class CurrencyCodeCollection(Resource):
     def read(self, request):
         return JsonResponse(200, CurrencyCode.to_json())
+
+
+class HealthCollection(Resource):
+    def read(self, request):
+        try:
+            db = get_database_connection()
+            db.command("ping")
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return build_response(request, 503, "database unavailable")
+
+        return JsonResponse(200, {"status": "ok"})
 
 
 class NotificationConfigCollection(Resource):
