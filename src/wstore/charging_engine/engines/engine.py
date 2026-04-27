@@ -65,48 +65,39 @@ class Engine:
                 # TODO: In the future I will transform this _get_item that is O(n^2) to a hashmap o Dict in this case that is O(1) complexity
                 item = self._get_item(contract.item_id, raw_order)
 
-                product = inventory_client.build_product_model(item, raw_order["id"], raw_order["billingAccount"])
+                acbr_models, cb_model, product_model = self.execute_billing(item, raw_order)
+                logger.info("triple s")
                 # attributes that needs to be set after the payments
-                contract.prd_after_paid = {"product_price": product.pop("productPrice", None), "product_characteristic": product.pop("productCharacteristic", None)}
+                contract.prd_after_paid = {"product_price": product_model.pop("productPrice", None), "product_characteristic": product_model.pop("productCharacteristic", None)}
                 # TODO: reset product to created and before this method, terminate cb and acbrs (I think it is not needed based on what Stefania said in dc).
-                new_product = inventory_client.create_product(product) if related_contract is None else inventory_client.get_product(contract.product_id)
+                created_product = inventory_client.create_product(product_model) if related_contract is None else inventory_client.get_product(contract.product_id)
 
-                response = self.execute_billing(item, raw_order)
-                if len(response) > 0:
-                    logger.info("Received response " + json.dumps(response))
+                if len(acbr_models) > 0:
+                    logger.info("Received acbr models " + json.dumps(acbr_models))
+                    logger.info("Received cb models " + json.dumps(cb_model))
 
                     seller_id = None
-                    curated_party = []
+                    curated_party = created_product["relatedParty"]
 
                     logger.info("setting curated party")
-                    for party in item["product"]["relatedParty"]:
-                        curated_party.append({
-                            "id": party["id"],
-                            "href": party["href"],
-                            "role": party["role"],
-                            "@referredType": "organization"
-                        })
-
-                        if party["role"].lower() == settings.PROVIDER_ROLE.lower():
-                            seller_id = party["id"]
 
                     logger.info("creating acbrs")
                     # Create the Billing rates as not billed
 
                     #TODO: if related_contract exists, set another name in acbrs.
                     message = None if related_contract is None else "INITIAL MODIFICATION PAYMENT"
-                    created_rates, recurring = billing_client.create_batch_customer_rates(response, curated_party, new_product, message)
+                    created_acbrs, recurring = billing_client.create_batch_customer_rates(acbr_models, curated_party, created_product, message)
 
                     # created_cb is {} if there is no billable rates
                     logger.info("creating customer bills")
-                    created_cb = billing_client.create_customer_bill(created_rates, raw_order["billingAccount"], curated_party)
+                    created_cb = billing_client.create_customer_bill(created_acbrs, cb_model)
                     if "id" not in created_cb:
                         created_cb["id"] = str(uuid.uuid4())
                         created_cb["internal"] = True
 
-                    contract.applied_rates = [ n_rate["id"] for n_rate in created_rates ]
+                    contract.applied_rates = [ n_rate["id"] for n_rate in created_acbrs ]
                     contract.customer_bill = created_cb
-                    contract.product_id = new_product["id"]
+                    contract.product_id = created_product["id"]
 
                     transactions.append({
                         "item": contract.item_id,

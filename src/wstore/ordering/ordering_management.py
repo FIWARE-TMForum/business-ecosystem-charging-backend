@@ -21,7 +21,7 @@
 
 
 import re
-from datetime import datetime
+import datetime
 from decimal import Decimal
 from logging import getLogger
 from urllib.parse import urlparse
@@ -372,7 +372,7 @@ class OrderingManager:
             order_id=order_id,
             customer=self._customer,
             owner_organization=current_org,
-            date=datetime.utcnow(),
+            date=datetime.datetime.utcnow(),
             state="pending",
             tax_address=self._get_billing_address(billing_account),
             contracts=new_contracts,
@@ -570,7 +570,7 @@ class OrderingManager:
         inventory_client = InventoryClient()
 
         # Check if automatical payment mode is enabled
-        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"]) if contract == None\
+        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"], datetime.datetime.now(datetime.timezone.utc).isoformat()) if contract == None\
             else inventory_client.get_product_for_patch(contract.product_id)
 
         # Instantiate services and resources if needed

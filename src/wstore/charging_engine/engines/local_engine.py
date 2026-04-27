@@ -24,6 +24,7 @@ import datetime
 
 from wstore.charging_engine.engines.engine import Engine
 from wstore.charging_engine.pricing_engine import PriceEngine
+from wstore.ordering.inventory_client import InventoryClient
 
 
 logger = getLogger("wstore.default_logger")
@@ -59,7 +60,7 @@ class LocalEngine(Engine):
                 excl = Decimal(price["price"]["dutyFreeAmount"]["value"])
                 rate_type = price["priceType"].lower()
 
-                tax = str(inc - excl)
+                tax_amount = str(inc - excl)
                 rates.append({
                     "name": price["name"],
                     "description": price["description"],
@@ -71,7 +72,7 @@ class LocalEngine(Engine):
                             "taxRate": price["price"]["taxRate"],
                             "taxAmount": {
                                 "unit": currency,
-                                "value": tax
+                                "value": tax_amount
                             }
                         }
                     ],
@@ -134,5 +135,46 @@ class LocalEngine(Engine):
         return result
 
 
+    def _build_customer_bill(self, acbr_models, billing_acc_ref, party):
+        if len(acbr_models) == 0:
+            return {}
+        unit = None
+        cb = {
+            "taxIncludedAmount" : Decimal("0"),
+            "taxExcludedAmount" : Decimal("0"),
+        }
+        for acbr in acbr_models:
+            rate_type = acbr.get("appliedBillingRateType") or acbr["type"] # at this point there are only one times and recurring prepaids
+            if rate_type in ["recurring", "usage"]:
+                continue
+            logger.info("---ACBR--- %s", acbr)
+            cb["taxExcludedAmount"] += Decimal(acbr["taxExcludedAmount"]["value"])
+            cb["taxIncludedAmount"] += Decimal(acbr["taxIncludedAmount"]["value"])
+            unit = acbr["taxExcludedAmount"]["unit"] if unit is None else unit
+            logger.info("after cb build")
+        return {
+            "appliedPayment": [],
+            "billDate": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+            # "billNo": "", # same as customer bill id
+            "billingAccount": billing_acc_ref,
+            "taxIncludedAmount" : {
+                "unit": unit,
+                "value": float(cb["taxIncludedAmount"])
+            },
+            "taxExcludedAmount": {
+                "unit": unit,
+                "value": float(cb["taxExcludedAmount"])
+            },
+            "state": "new",
+            "relatedParty": party
+        }
+
+
     def execute_billing(self, item, raw_order):
-        return self._build_charges(item, raw_order["billingAccount"])
+        inventory = InventoryClient()
+
+        product = inventory.build_product_model(
+                    item, raw_order["id"], raw_order["billingAccount"], datetime.datetime.now(datetime.timezone.utc).isoformat())
+        rates = self._build_charges(item, raw_order["billingAccount"])
+        cb = self._build_customer_bill(rates, raw_order["billingAccount"], product["relatedParty"])
+        return rates, cb, product

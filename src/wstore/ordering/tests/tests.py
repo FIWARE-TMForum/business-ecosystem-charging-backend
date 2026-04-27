@@ -110,7 +110,7 @@ class OrderingManagementTestCase(TestCase):
 
         ordering_management.datetime = MagicMock()
         self._now = datetime(2016, 12, 3)
-        ordering_management.datetime.utcnow.return_value = self._now
+        ordering_management.datetime.datetime.utcnow.return_value = self._now
 
         # Mock offering
         ordering_management.Offering.objects.filter.return_value = [self._offering_inst]

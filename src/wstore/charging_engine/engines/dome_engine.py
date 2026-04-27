@@ -20,9 +20,11 @@
 
 import requests
 import json
+from datetime import datetime, timezone
 
 from django.conf import settings
 from logging import getLogger
+from wstore.charging_engine.pricing_engine import PriceEngine
 
 from wstore.charging_engine.engines.engine import Engine
 from wstore.ordering.inventory_client import InventoryClient
@@ -58,18 +60,37 @@ class DomeEngine(Engine):
             }
         }
 
+    def normalize_charges(self, acbrs: list, product_price_refs):
+        logger.info(f"normalize product price refs: {product_price_refs}")
+        for price_ref in product_price_refs:
+            pop_id = price_ref["productOfferingPrice"]["id"]
+            logger.info(f"pop_id: {pop_id}")
+            pop = PriceEngine().download_pricing(pop_id)
+            logger.debug(pop)
+            rate_type = pop.get("priceType", "").lower()
+            if rate_type in ["usage", "recurring"]:
+                acbrs.append({
+                    "appliedBillingRateType": rate_type
+                })
+
+
     def execute_billing(self, item, raw_order):
         inventory = InventoryClient()
+        start_date = datetime.now(timezone.utc).isoformat()
 
         product = inventory.build_product_model(
-                    item, raw_order["id"], raw_order["billingAccount"])
+                    item, raw_order["id"], raw_order["billingAccount"], start_date)
 
         logger.info("Calling the billing engine with " + json.dumps(product))
 
         # Use the dome billing engine to resolve the charging
         url = settings.DOME_BILLING_URL + "/billing/instantBill"
 
-        resp = requests.post(url, json=product)
+        logger.debug({"product": product, "date": start_date})
+        resp = requests.post(url, json={"product": product, "date": start_date})
         resp.raise_for_status()
+        instant = resp.json()
+        acbrs = instant[0]["acbrs"]
+        self.normalize_charges(acbrs, product["productPrice"])
 
-        return resp.json()
+        return acbrs, instant[0]["customerBill"], product

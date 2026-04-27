@@ -52,7 +52,7 @@ jobs:
           PROXY_REPO="FIWARE-TMForum/business-ecosystem-logic-proxy"
           PROXY_BRANCH="master"
           FRONTEND_REPO="Ficodes/BAE-Frontend"
-          FRONTEND_BRANCH="master"
+          FRONTEND_BRANCH="main"
           TM_VERSION="${TM_VERSION:-1.10.2}"
 
           # Process PROXY location if specified
@@ -117,7 +117,8 @@ jobs:
                 \"branch_frontend\": \"$FRONTEND_BRANCH\",
                 \"tm_version\": \"$TM_VERSION\",
                 \"cypress_branch\": \"$E2E_BRANCH\",
-                \"pull_request_url\": \"${{ github.event.pull_request.html_url }}\"
+                \"pull_request_url\": \"${{ github.event.pull_request.html_url }}\",
+                \"from\": \"charging\"
               }
             }" \
             https://api.github.com/repos/Ficodes/E2E-DOME-BAE/dispatches)
