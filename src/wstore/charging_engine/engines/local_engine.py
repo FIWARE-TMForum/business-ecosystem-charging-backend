@@ -62,7 +62,7 @@ class LocalEngine(Engine):
                 tax = str(inc - excl)
                 rates.append({
                     "name": price["name"],
-                    "description": price["description"],
+                    "description": price.get("description", ""),
                     "appliedBillingRateType": rate_type,
                     "isBilled": False,
                     "appliedTax": [

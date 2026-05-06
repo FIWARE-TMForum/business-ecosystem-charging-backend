@@ -381,7 +381,7 @@ class PriceEngine:
                     )
         else:
             for priceComp in indv:
-                result.append(self._build_price_result(priceComp["priceType"], priceComp["period"], Decimal(priceComp["price"]), tax, name=priceComp["name"], description=priceComp["description"]))
+                result.append(self._build_price_result(priceComp["priceType"], priceComp["period"], Decimal(priceComp["price"]), tax, name=priceComp["name"], description=priceComp.get("description")))
         return result
 
     def _build_price_result(self, price_type, period, duty_free: Decimal, tax_rate: Decimal, name = None, description = None):
