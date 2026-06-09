@@ -200,6 +200,82 @@ class URLTestCase(TestCase):
     @override_settings(
         FEDERATION_ENABLED=True,
         CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_federated_with_source_endpoint_override(self):
+        from wstore.store_commons.utils import url
+
+        result = url.get_service_url(
+            "catalog",
+            "/productOffering/123",
+            federation_context={"source_endpoint": "http://federated.example:8443"},
+        )
+
+        self.assertEqual(
+            "http://federated.example:8443/tmf/v4/productOffering/123",
+            result,
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+        PARTY="https://party.example/tmf-api/party/v4",
+    )
+    def test_get_service_url_federated_with_party_id_override(self):
+        from wstore.store_commons.utils import party, url
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "partyCharacteristic": [
+                {
+                    "name": "tmforumEndpoint",
+                    "value": "http://federated.example:8443",
+                }
+            ]
+        }
+
+        old_requests = party.requests
+        old_cache = party.cache
+        party.requests = MagicMock()
+        party.requests.get.return_value = response
+        party.cache = MagicMock()
+        party.cache.get.return_value = None
+
+        try:
+            result = url.get_service_url(
+                "catalog",
+                "/productOffering/123",
+                federation_context={"party_id": "urn:organization:source-party"},
+            )
+        finally:
+            party.requests = old_requests
+            party.cache = old_cache
+
+        self.assertEqual(
+            "http://federated.example:8443/tmf/v4/productOffering/123",
+            result,
+        )
+        party.requests.get.assert_called_once_with(
+            "https://party.example/tmf-api/party/v4/organization/urn:organization:source-party"
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_federated_with_local_override(self):
+        from wstore.store_commons.utils import url
+
+        result = url.get_service_url(
+            "catalog",
+            "/productOffering/123",
+            federation_context={"mode": "local"},
+        )
+
+        self.assertEqual("https://example.com:8000/tmf/v4/productOffering/123", result)
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
         PARTY="https://party.example/tmf-api/party/v4",
     )
     def test_get_service_url_federated_without_tmforum_endpoint(self):
@@ -231,6 +307,20 @@ class URLTestCase(TestCase):
             party.cache = old_cache
 
         self.assertEqual("https://example.com:8000/tmf/v4/productOffering/123", result)
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_federated_with_invalid_source_endpoint(self):
+        from wstore.store_commons.utils import url
+
+        with self.assertRaises(ValueError):
+            url.get_service_url(
+                "catalog",
+                "/productOffering/123",
+                federation_context={"source_endpoint": "not-a-valid-url"},
+            )
 
 
 @override_settings(

@@ -102,15 +102,35 @@ def _get_party_tmforum_endpoint(party_id):
     return None
 
 
-def _get_federated_api_url(api_url):
-    if not settings.FEDERATION_ENABLED:
-        return api_url
+def _resolve_federated_endpoint(federation_context=None):
+    if federation_context is None:
+        federation_context = {}
+
+    if federation_context.get("mode") == "local":
+        return None
+
+    source_endpoint = federation_context.get("source_endpoint")
+    if source_endpoint is not None:
+        if not isinstance(source_endpoint, str) or not is_valid_url(source_endpoint):
+            raise ValueError("Invalid source_endpoint in federation context")
+        return source_endpoint
+
+    party_id = federation_context.get("party_id")
+    if party_id is not None:
+        return _get_party_tmforum_endpoint(party_id)
 
     party_id = get_current_party_id()
     if not party_id:
+        return None
+
+    return _get_party_tmforum_endpoint(party_id)
+
+
+def _get_federated_api_url(api_url, federation_context=None):
+    if not settings.FEDERATION_ENABLED:
         return api_url
 
-    endpoint = _get_party_tmforum_endpoint(party_id)
+    endpoint = _resolve_federated_endpoint(federation_context)
     if endpoint is None:
         return api_url
 
@@ -129,9 +149,9 @@ def _get_federated_api_url(api_url):
     )
 
 
-def get_service_url(api, path):
+def get_service_url(api, path, federation_context=None):
     api_url = _get_tmf_api_url(api)
-    api_url = _get_federated_api_url(api_url)
+    api_url = _get_federated_api_url(api_url, federation_context=federation_context)
     return _build_service_url(api_url, path)
 
 
