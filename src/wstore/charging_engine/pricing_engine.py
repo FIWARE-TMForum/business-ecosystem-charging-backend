@@ -26,7 +26,7 @@ from zeep import Client, Settings
 
 from django.conf import settings
 
-from wstore.store_commons.utils.url import get_service_url
+from wstore.store_commons.utils.federation import get_service_url_from_ref, resolve_party_ref
 
 WSDL_URL = "https://ec.europa.eu/taxation_customs/tedb/ws/VatRetrievalService.wsdl"
 ENDPOINT_URL = "https://ec.europa.eu/taxation_customs/tedb/ws/"
@@ -37,7 +37,7 @@ class PriceEngine:
     PERIOD_ONETIME = "onetime"
     PERIOD_MONTH = "month"
     def download_pricing(self, pop_id):
-        price_url = get_service_url("catalog", "/productOfferingPrice/{}".format(pop_id))
+        price_url = get_service_url_from_ref("catalog", "/productOfferingPrice", pop_id)
         request = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
         pricing = request.json()
         return pricing
@@ -203,17 +203,13 @@ class PriceEngine:
         indv.append(indv_price)
 
     def _get_party_char(self, party_id):
-        # Check if the party is an individual or an organization
-        user_type = party_id.rsplit(sep=":")[2]
-        # Even though party_id is provided by the proxy, we validate it here to save an API call in case of invalid
-        if user_type != "individual" and user_type != "organization":
-            raise ValueError(f"Invalid user type: {user_type}")
         try:
-            party_url = get_service_url("party", f"/{user_type}/{party_id}")
+            resolved_party = resolve_party_ref(party_id)
+            party_url = resolved_party["url"]
             response = requests.get(party_url)
             response.raise_for_status()
             result = response.json()
-            return result["partyCharacteristic"],  user_type
+            return result["partyCharacteristic"], resolved_party["user_type"]
         except Exception as e:
             logger.error(f"Error in process_price_component: {type(e).__name__}: {str(e)}")
             raise ValueError("Error fetching party information")

@@ -323,6 +323,151 @@ class URLTestCase(TestCase):
             )
 
 
+class FederationUtilsTestCase(TestCase):
+    tags = ("federation",)
+
+    @override_settings(FEDERATION_ENABLED=False)
+    def test_resolve_federation_ref_disabled(self):
+        from wstore.store_commons.utils.federation import resolve_federation_ref
+
+        federation_ref = (
+            "federationRef::"
+            "eyJzb3VyY2VFbmRwb2ludCI6ICJodHRwOi8vaG9zdC5kb2NrZXIuaW50ZXJuYWw6ODYzMyIsICJpZCI6ICJ1cm46bmdzaS1sZDpwcm9kdWN0LW9mZmVyaW5nOjEyMyJ9"
+        )
+
+        result = resolve_federation_ref(federation_ref)
+
+        self.assertEqual(
+            {
+                "id": federation_ref,
+                "source_endpoint": None,
+            },
+            result,
+        )
+
+    @override_settings(FEDERATION_ENABLED=True)
+    def test_resolve_federation_ref_enabled(self):
+        from wstore.store_commons.utils.federation import resolve_federation_ref
+
+        result = resolve_federation_ref(
+            "federationRef::"
+            "eyJzb3VyY2VFbmRwb2ludCI6ICJodHRwOi8vaG9zdC5kb2NrZXIuaW50ZXJuYWw6ODYzMyIsICJpZCI6ICJ1cm46bmdzaS1sZDpwcm9kdWN0LW9mZmVyaW5nOjEyMyJ9"
+        )
+
+        self.assertEqual(
+            {
+                "id": "urn:ngsi-ld:product-offering:123",
+                "source_endpoint": "http://host.docker.internal:8633",
+            },
+            result,
+        )
+
+    @override_settings(FEDERATION_ENABLED=True)
+    def test_resolve_federation_ref_non_federated_id(self):
+        from wstore.store_commons.utils.federation import resolve_federation_ref
+
+        result = resolve_federation_ref("urn:ngsi-ld:product-offering:123")
+
+        self.assertEqual(
+            {
+                "id": "urn:ngsi-ld:product-offering:123",
+                "source_endpoint": None,
+            },
+            result,
+        )
+
+    @override_settings(FEDERATION_ENABLED=True)
+    def test_resolve_federation_ref_invalid_payload(self):
+        from wstore.store_commons.utils.federation import resolve_federation_ref
+
+        with self.assertRaises(ValueError):
+            resolve_federation_ref("federationRef::invalid")
+
+    @override_settings(FEDERATION_ENABLED=True)
+    def test_resolve_federation_ref_invalid_source_endpoint(self):
+        from wstore.store_commons.utils.federation import resolve_federation_ref
+
+        with self.assertRaises(ValueError):
+            resolve_federation_ref(
+                "federationRef::"
+                "eyJzb3VyY2VFbmRwb2ludCI6ICJub3QtYS11cmwiLCAiaWQiOiAidXJuOm5nc2ktbGQ6cHJvZHVjdC1vZmZlcmluZzoxMjMifQ"
+            )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_from_ref_non_federated_id(self):
+        from wstore.store_commons.utils.federation import get_service_url_from_ref
+
+        result = get_service_url_from_ref("catalog", "/productOfferingPrice", "urn:ngsi-ld:product-offering-price:123")
+
+        self.assertEqual(
+            "https://example.com:8000/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering-price:123",
+            result,
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_from_ref_federated_id(self):
+        from wstore.store_commons.utils.federation import get_service_url_from_ref
+
+        result = get_service_url_from_ref(
+            "catalog",
+            "/productOfferingPrice",
+            "federationRef::"
+            "eyJzb3VyY2VFbmRwb2ludCI6ICJodHRwOi8vaG9zdC5kb2NrZXIuaW50ZXJuYWw6ODYzMyIsICJpZCI6ICJ1cm46bmdzaS1sZDpwcm9kdWN0LW9mZmVyaW5nOjEyMyJ9",
+        )
+
+        self.assertEqual(
+            "http://host.docker.internal:8633/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering:123",
+            result,
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        PARTY="https://example.com:8000/tmf-api/party/v4",
+    )
+    def test_resolve_party_ref_non_federated_id(self):
+        from wstore.store_commons.utils.federation import resolve_party_ref
+
+        result = resolve_party_ref("urn:ngsi-ld:organization:123")
+
+        self.assertEqual(
+            {
+                "id": "urn:ngsi-ld:organization:123",
+                "source_endpoint": None,
+                "user_type": "organization",
+                "url": "https://example.com:8000/tmf-api/party/v4/organization/urn:ngsi-ld:organization:123",
+            },
+            result,
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        PARTY="https://example.com:8000/tmf-api/party/v4",
+    )
+    def test_resolve_party_ref_federated_id(self):
+        from wstore.store_commons.utils.federation import resolve_party_ref
+
+        result = resolve_party_ref(
+            "federationRef::"
+            "eyJzb3VyY2VFbmRwb2ludCI6ICJodHRwOi8vaG9zdC5kb2NrZXIuaW50ZXJuYWw6ODYzMyIsICJpZCI6ICJ1cm46bmdzaS1sZDpvcmdhbml6YXRpb246MTIzIn0"
+        )
+
+        self.assertEqual(
+            {
+                "id": "urn:ngsi-ld:organization:123",
+                "source_endpoint": "http://host.docker.internal:8633",
+                "user_type": "organization",
+                "url": "http://host.docker.internal:8633/tmf-api/party/v4/organization/urn:ngsi-ld:organization:123",
+            },
+            result,
+        )
+
+
 @override_settings(
     PARTY='http://myparty.com',
 )
