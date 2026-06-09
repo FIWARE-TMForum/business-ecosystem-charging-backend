@@ -65,7 +65,7 @@ class DomeEngine(Engine):
         for price_ref in product_price_refs:
             pop_id = price_ref["productOfferingPrice"]["id"]
             logger.info(f"pop_id: {pop_id}")
-            pop = PriceEngine().download_pricing(pop_id)
+            pop, _ = PriceEngine().download_pricing(pop_id)
             logger.debug(pop)
             rate_type = pop.get("priceType", "").lower()
             if rate_type in ["usage", "recurring"]:

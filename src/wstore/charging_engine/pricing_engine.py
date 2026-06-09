@@ -36,11 +36,16 @@ class PriceEngine:
     # Period constants
     PERIOD_ONETIME = "onetime"
     PERIOD_MONTH = "month"
-    def download_pricing(self, pop_id):
-        price_url = get_service_url_from_ref("catalog", "/productOfferingPrice", pop_id)
-        request = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
+    def download_pricing(self, pop_id, source_endpoint=None):
+        pricing_ref = get_service_url_from_ref(
+            "catalog",
+            "/productOfferingPrice",
+            pop_id,
+            source_endpoint=source_endpoint,
+        )
+        request = requests.get(pricing_ref["url"], verify=settings.VERIFY_REQUESTS)
         pricing = request.json()
-        return pricing
+        return pricing, pricing_ref["source_endpoint"]
 
     def _process_usage_value(self, component, usage):
         for usage_item in usage:
@@ -334,12 +339,15 @@ class PriceEngine:
 
         pop_id = item["itemTotalPrice"][0]["productOfferingPrice"]["id"] # always 1 (price plan)
 
-        pricing = self.download_pricing(pop_id)
+        pricing, source_endpoint = self.download_pricing(pop_id)
 
         # If the price is a bundle download the components
         to_process = []
         if pricing["isBundle"]:
-            to_process = [self.download_pricing(pop["id"]) for pop in pricing["bundledPopRelationship"]]
+            to_process = [
+                self.download_pricing(pop["id"], source_endpoint=source_endpoint)[0]
+                for pop in pricing["bundledPopRelationship"]
+            ]
         else:
             to_process = [pricing]
 

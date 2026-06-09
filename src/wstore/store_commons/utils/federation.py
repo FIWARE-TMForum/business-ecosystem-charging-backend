@@ -60,23 +60,40 @@ def resolve_federation_ref(entity_id):
     return {"id": resolved_id, "source_endpoint": source_endpoint}
 
 
-def get_service_url_from_ref(api, collection_path, entity_id):
+def _get_effective_reference(entity_id, source_endpoint=None):
     resolved_ref = resolve_federation_ref(entity_id)
+    effective_source_endpoint = resolved_ref["source_endpoint"]
+
+    if effective_source_endpoint is None and settings.FEDERATION_ENABLED:
+        effective_source_endpoint = source_endpoint
+
+    return {
+        "id": resolved_ref["id"],
+        "source_endpoint": effective_source_endpoint,
+    }
+
+
+def get_service_url_from_ref(api, collection_path, entity_id, source_endpoint=None):
+    resolved_ref = _get_effective_reference(entity_id, source_endpoint=source_endpoint)
 
     federation_context = None
     if resolved_ref["source_endpoint"] is not None:
         federation_context = {"source_endpoint": resolved_ref["source_endpoint"]}
 
     normalized_path = collection_path.rstrip("/")
-    return get_service_url(
-        api,
-        f"{normalized_path}/{resolved_ref['id']}",
-        federation_context=federation_context,
-    )
+    return {
+        "id": resolved_ref["id"],
+        "source_endpoint": resolved_ref["source_endpoint"],
+        "url": get_service_url(
+            api,
+            f"{normalized_path}/{resolved_ref['id']}",
+            federation_context=federation_context,
+        ),
+    }
 
 
-def resolve_party_ref(party_id):
-    resolved_ref = resolve_federation_ref(party_id)
+def resolve_party_ref(party_id, source_endpoint=None):
+    resolved_ref = _get_effective_reference(party_id, source_endpoint=source_endpoint)
     resolved_party_id = resolved_ref["id"]
 
     party_parts = resolved_party_id.rsplit(sep=":")
@@ -87,17 +104,15 @@ def resolve_party_ref(party_id):
     if user_type not in ("individual", "organization"):
         raise ValueError(f"Invalid user type: {user_type}")
 
-    federation_context = None
-    if resolved_ref["source_endpoint"] is not None:
-        federation_context = {"source_endpoint": resolved_ref["source_endpoint"]}
-
+    service_ref = get_service_url_from_ref(
+        "party",
+        f"/{user_type}",
+        resolved_party_id,
+        source_endpoint=resolved_ref["source_endpoint"],
+    )
     return {
         "id": resolved_party_id,
-        "source_endpoint": resolved_ref["source_endpoint"],
+        "source_endpoint": service_ref["source_endpoint"],
         "user_type": user_type,
-        "url": get_service_url(
-            "party",
-            f"/{user_type}/{resolved_party_id}",
-            federation_context=federation_context,
-        ),
+        "url": service_ref["url"],
     }

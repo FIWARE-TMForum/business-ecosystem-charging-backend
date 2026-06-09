@@ -403,7 +403,11 @@ class FederationUtilsTestCase(TestCase):
         result = get_service_url_from_ref("catalog", "/productOfferingPrice", "urn:ngsi-ld:product-offering-price:123")
 
         self.assertEqual(
-            "https://example.com:8000/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering-price:123",
+            {
+                "id": "urn:ngsi-ld:product-offering-price:123",
+                "source_endpoint": None,
+                "url": "https://example.com:8000/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering-price:123",
+            },
             result,
         )
 
@@ -422,7 +426,34 @@ class FederationUtilsTestCase(TestCase):
         )
 
         self.assertEqual(
-            "http://host.docker.internal:8633/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering:123",
+            {
+                "id": "urn:ngsi-ld:product-offering:123",
+                "source_endpoint": "http://host.docker.internal:8633",
+                "url": "http://host.docker.internal:8633/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering:123",
+            },
+            result,
+        )
+
+    @override_settings(
+        FEDERATION_ENABLED=True,
+        CATALOG="https://example.com:8000/tmf/v4",
+    )
+    def test_get_service_url_from_ref_inherited_source_endpoint(self):
+        from wstore.store_commons.utils.federation import get_service_url_from_ref
+
+        result = get_service_url_from_ref(
+            "catalog",
+            "/productOfferingPrice",
+            "urn:ngsi-ld:product-offering-price:123",
+            source_endpoint="http://host.docker.internal:8633",
+        )
+
+        self.assertEqual(
+            {
+                "id": "urn:ngsi-ld:product-offering-price:123",
+                "source_endpoint": "http://host.docker.internal:8633",
+                "url": "http://host.docker.internal:8633/tmf/v4/productOfferingPrice/urn:ngsi-ld:product-offering-price:123",
+            },
             result,
         )
 
