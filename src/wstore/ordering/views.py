@@ -140,7 +140,8 @@ class NotifyOrderCollection(Resource):
             om.process_order_completed(order)
         except Exception as e:
             # The order is correct so we cannot set is as failed
-            logger.error("2. The products for order {} could not be created {}".format(order["id"], str(e.value)))
+            logger.error("2. The products for order {} could not be created".format(order.get("id", "undefined")))
+            logger.error("reason: %s", e)
             return build_response(request, 400, 'Error creating product in the inventory')
 
         return build_response(request, 200, "OK")

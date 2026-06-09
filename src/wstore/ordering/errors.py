@@ -26,6 +26,13 @@ class OrderingError(Exception):
     def __str__(self):
         return "OrderingError: " + self.value
 
+class InventoryError(Exception):
+    def __init__(self, msg):
+        self.value = msg
+
+    def __str__(self):
+        return "InventoryError: " + self.value
+
 
 class PaymentTimeoutError(Exception):
     def __init__(self, msg):

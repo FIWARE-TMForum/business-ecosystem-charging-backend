@@ -183,7 +183,6 @@ class Order(models.Model):
 
     def get_contract_by_cb_id(self, cb_id):
       # Filter with mongodb for more speed and eficiency thna  python iteration
-      # TODO: if necessary, change each python iteration here for the mongo's one (c++)
 
       db = get_database_connection()
       doc = db.wstore_order.find_one(

@@ -87,6 +87,10 @@ urlpatterns = [
         admin_views.CurrencyCodeCollection(permitted_methods=("GET",)),
     ),
     url(
+        r"^charging/api/health/?$",
+        admin_views.HealthCollection(permitted_methods=("GET",)),
+    ),
+    url(
         r"^charging/api/orderManagement/orders/?$",
         ordering_views.OrderingCollection(permitted_methods=("POST",)),
     ),

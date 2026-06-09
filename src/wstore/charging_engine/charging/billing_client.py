@@ -134,11 +134,11 @@ class BillingClient:
 
         return response.json()
 
-    def create_batch_customer_rates(self, rates, party, product, message=None):
+    def create_batch_customer_rates(self, acbr_models, party, product, message=None):
         created_rates = []
         recurring = False
-        for rate in rates:
-            rate_type = rate.get("appliedBillingRateType") or rate["type"] # error if rate["type"] is called and it doesn't exist
+        for acbr_model in acbr_models:
+            rate_type = acbr_model.get("appliedBillingRateType") or acbr_model["type"] # error if rate["type"] is called and it doesn't exist
 
             if rate_type == "recurring-prepaid":
                 recurring = True
@@ -146,23 +146,23 @@ class BillingClient:
                 recurring = True
                 continue
 
-            currency = rate["taxIncludedAmount"]["unit"]
-            tax_rate = rate["appliedTax"][0]["taxRate"]
-            tax = rate["appliedTax"][0]["taxAmount"]["value"]
-            tax_included = rate["taxIncludedAmount"]["value"]
-            tax_excluded = rate["taxExcludedAmount"]["value"]
-            billing_account = rate["billingAccount"]
+            currency = acbr_model["taxIncludedAmount"]["unit"]
+            tax_rate = acbr_model["appliedTax"][0]["taxRate"]
+            tax = acbr_model["appliedTax"][0]["taxAmount"]["value"]
+            tax_included = acbr_model["taxIncludedAmount"]["value"]
+            tax_excluded = acbr_model["taxExcludedAmount"]["value"]
+            billing_account = acbr_model["billingAccount"]
 
-            coverage_period = rate["periodCoverage"] if "periodCoverage" in rate else None
+            coverage_period = acbr_model["periodCoverage"] if "periodCoverage" in acbr_model else None
 
             new_rate = self.create_customer_rate(
-                rate["name"], rate["description"],
+                acbr_model["name"], acbr_model["description"],
                 rate_type, currency, tax_rate, tax, tax_included, tax_excluded,
                 billing_account, product["id"], coverage_period=coverage_period, party=party, message= message)
 
             created_rates.append(new_rate)
 
-        logger.info('--BATCH RATES-- %s, unbilled currency %s', created_rates, recurring)
+        logger.info('--BATCH RATES-- %s, recurring payment %s', created_rates, recurring)
 
         return created_rates, recurring
 
@@ -217,36 +217,19 @@ class BillingClient:
         # resp = session.send(prepped)
         # resp.raise_for_status()
 
-    def create_customer_bill(self, batch_acbr, billing_acc_ref, party):
-        if len(batch_acbr) == 0:
+    def create_customer_bill(self, created_acbrs, cb_model):
+        if len(created_acbrs) == 0:
             return {}
-        # bill generation time, not the period coverage
-        current_time = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-        unit = None
-        cb = {
-            "taxIncludedAmount" : Decimal("0"),
-            "taxExcludedAmount" : Decimal("0"),
-            "acbrRefs": []
-        }
-        for acbr in batch_acbr: # at this point there are only one times and recurring prepaids
-            logger.info("---ACBR--- %s", acbr)
-            cb["taxExcludedAmount"] += Decimal(repr(acbr["taxExcludedAmount"]["value"]))
-            cb["taxIncludedAmount"] += Decimal(repr(acbr["taxIncludedAmount"]["value"])) # I need to discuss this incosistency with Fran
-            cb["acbrRefs"].append({"id": acbr["id"]})
-            unit = acbr["taxExcludedAmount"]["unit"] if unit is None else unit
 
-        normalized_parties = [normalize_party_ref(party_ref) for party_ref in party]
-        normalized_parties.extend(get_operator_party_roles())
+        created_cb = self._create_cb_api(cb_model)
+        self.set_acbrs_cb(created_acbrs, created_cb["id"])
 
-        created_cb = self._create_cb_api(unit, float(cb["taxIncludedAmount"]), float(cb["taxExcludedAmount"]),
-                            billing_acc_ref, current_time, normalized_parties)
-        self.set_acbrs_cb(cb["acbrRefs"], created_cb["id"])
-
+        cb = {}
         cb["id"] = created_cb["id"]
         # Remove Decimal type
         cb["taxIncludedAmount"] = created_cb["taxIncludedAmount"]["value"]
         cb["taxExcludedAmount"] = created_cb["taxExcludedAmount"]["value"]
-        cb["unit"] = unit
+        cb["unit"] = cb_model["taxIncludedAmount"]["unit"]
         logger.info("---CUSTOMER BILL EXTRA DATA--- %s", cb)
         return cb
 
@@ -266,27 +249,12 @@ class BillingClient:
             logger.error("Error patching customer bill: " + str(e) + " data:" + str(data))
             raise
 
-    def _create_cb_api(self, unit, taxIncluded, taxExcluded, billing_acc_ref, current_time, party):
-        data = {
-            "appliedPayment": [],
-            "billDate": current_time,
-            # "billNo": "", # same as customer bill id
-            "billingAccount": billing_acc_ref,
-            "taxIncludedAmount" : {
-                "unit": unit,
-                "value": taxIncluded
-            },
-            "taxExcludedAmount": {
-                "unit": unit,
-                "value": taxExcluded
-            },
-            "state": "sent",
-            "relatedParty": party
-        }
+    def _create_cb_api(self, cb_model):
+        cb_model["state"] = "sent"
         url = get_service_url("billing", "customerBill")
 
         try:
-            response = requests.post(url, json=data, verify=settings.VERIFY_REQUESTS)
+            response = requests.post(url, json=cb_model, verify=settings.VERIFY_REQUESTS)
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error("Error creating customer bill: " + str(e))

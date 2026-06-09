@@ -33,7 +33,7 @@ from parameterized import parameterized
 
 from wstore.models import Organization
 from wstore.ordering import inventory_client, ordering_client, ordering_management
-from wstore.ordering.errors import OrderingError
+from wstore.ordering.errors import OrderingError, InventoryError
 from wstore.ordering.models import Contract, Offering, Order
 from wstore.ordering.tests.test_data import *
 
@@ -110,7 +110,7 @@ class OrderingManagementTestCase(TestCase):
 
         ordering_management.datetime = MagicMock()
         self._now = datetime(2016, 12, 3)
-        ordering_management.datetime.utcnow.return_value = self._now
+        ordering_management.datetime.datetime.utcnow.return_value = self._now
 
         # Mock offering
         ordering_management.Offering.objects.filter.return_value = [self._offering_inst]
@@ -1072,6 +1072,39 @@ class InventoryClientTestCase(TestCase):
             },
         )
         inventory_client.requests.patch().raise_for_status.assert_called_once_with()
+
+    def test_terminate_product_with_resource_and_service(self):
+        inventory_client.requests.get.return_value.json.return_value = {
+            "realizingResource": [{"id": "res-1"}],
+            "realizingService": [{"id": "svc-1"}],
+        }
+        client = inventory_client.InventoryClient()
+        client.terminate_product("1")
+
+        calls = inventory_client.requests.patch.call_args_list
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], call("http://localhost:9090/resourceInventory/resource/res-1", json={"resourceStatus": "suspended"}, verify=True))
+        self.assertEqual(calls[1], call("http://localhost:7070/serviceInventory/service/svc-1", json={"state": "terminated"}, verify=True))
+        self.assertEqual(calls[2][0][0], "http://localhost:8080/product/1")
+
+    def test_terminate_product_rollback(self):
+        inventory_client.requests.get.return_value.json.return_value = {
+            "realizingResource": [{"id": "res-1"}],
+            "realizingService": [{"id": "svc-1"}],
+        }
+        ok_response = MagicMock()
+        fail_response = MagicMock()
+        fail_response.raise_for_status.side_effect = Exception("api error")
+        inventory_client.requests.patch.side_effect = [ok_response, ok_response, fail_response, ok_response, ok_response]
+
+        client = inventory_client.InventoryClient()
+        with self.assertRaises(inventory_client.InventoryError):
+            client.terminate_product("1")
+
+        calls = inventory_client.requests.patch.call_args_list
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls[3], call("http://localhost:9090/resourceInventory/resource/res-1", json={"resourceStatus": "reserved"}, verify=True))
+        self.assertEqual(calls[4], call("http://localhost:7070/serviceInventory/service/svc-1", json={"state": "reserved"}, verify=True))
 
     def test_get_product(self):
         client = inventory_client.InventoryClient()

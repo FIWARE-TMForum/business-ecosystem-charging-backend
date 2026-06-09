@@ -28,6 +28,7 @@ from urllib.parse import urljoin, urlparse
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from wstore.ordering.errors import InventoryError
 
 from wstore.store_commons.utils.url import get_service_url
 from wstore.store_commons.utils.party import get_operator_party_roles, normalize_party_ref
@@ -163,19 +164,30 @@ class InventoryClient:
         # TODO: Create a rollback system (probably saving in mongo rollback pendings) in case the apis are shut down
         product = self.get_product(product_id)
 
-        for resource in product.get("realizingResource", []):
-            resource_url = get_service_url("resource_inventory", "/resource/" + str(resource["id"]))
-            requests.patch(resource_url, json={"resourceStatus": "suspended"}, verify=settings.VERIFY_REQUESTS)
+        resource_url=None
+        service_url=None
+        try:
+            for resource in product.get("realizingResource", []):
+                resource_url = get_service_url("resource_inventory", "/resource/" + str(resource["id"]))
+                requests.patch(resource_url, json={"resourceStatus": "suspended"}, verify=settings.VERIFY_REQUESTS)
 
-        for service in product.get("realizingService", []):
-            service_url = get_service_url("service_inventory", "/service/" + str(service["id"]))
-            requests.patch(service_url, json={"state": "terminated"}, verify=settings.VERIFY_REQUESTS)
 
-        patch_body = {
-            "status": "terminated",
-            "terminationDate": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-        self.patch_product(product_id, patch_body)
+            for service in product.get("realizingService", []):
+                service_url = get_service_url("service_inventory", "/service/" + str(service["id"]))
+                requests.patch(service_url, json={"state": "terminated"}, verify=settings.VERIFY_REQUESTS)
+
+            patch_body = {
+                "status": "terminated",
+                "terminationDate": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            self.patch_product(product_id, patch_body)
+        except Exception as e:
+
+            if resource_url != None:
+                requests.patch(resource_url, json={"resourceStatus": "reserved"}, verify=settings.VERIFY_REQUESTS)
+            if service_url != None:
+                requests.patch(service_url, json={"state": "reserved"}, verify=settings.VERIFY_REQUESTS)
+            raise InventoryError(f"TMF api error - {e}")
 
     def create_product(self, product):
         url = get_service_url("inventory", "/product")
@@ -289,9 +301,10 @@ class InventoryClient:
 
         return result
 
-    def build_product_model(self, order_item, order_id, billing_account):
+    def build_product_model(self, order_item, order_id, billing_account, start_date):
         product = deepcopy(order_item["product"])
 
+        product["startDate"] = start_date
         product["name"] = "oid-{}".format(order_id)
         product["status"] = "created"
         product["productOffering"] = order_item["productOffering"]
