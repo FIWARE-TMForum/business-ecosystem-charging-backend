@@ -19,6 +19,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+import hashlib
+import hmac
 import os
 
 # import random
@@ -30,7 +32,8 @@ from logging import getLogger
 from decimal import Decimal
 
 from wstore.charging_engine.payment_client.payment_client import PaymentClient, PaymentClientError
-from wstore.ordering.models import Offering
+from wstore.ordering.errors import PaymentError
+from wstore.ordering.models import Offering, PaymentRecord
 
 
 logger = getLogger("wstore.default_logger")
@@ -40,6 +43,8 @@ MODE = "sandbox"  # sandbox or live
 stripe.api_key = os.environ.get(
     "BAE_CB_STRIPE_API_KEY", "sk_test_CGGvfNiIPwLXiDwaOfZ3oX6Y"  # PUBLIC SAMPLE API KEY DO NOT USE!!!
 )
+if _test_api_base := os.environ.get("BAE_CB_STRIPE_TEST_API_BASE"):
+    stripe.api_base = _test_api_base
 
 
 class StripeClient(PaymentClient):
@@ -70,41 +75,48 @@ class StripeClient(PaymentClient):
         if url[-1] != "/":
             url += "/"
 
-        url += "payment?client=stripe&session_id={CHECKOUT_SESSION_ID}"
-        return_url = url + "&action=accept&ref=" + str(self._order.pk)
-        cancel_url = url + "&action=cancel&ref=" + str(self._order.pk)
+        accept_param = f"client=stripe&action=accept&ref={self._order.order_id}"
+        cancel_param = f"client=stripe&action=cancel&ref={self._order.order_id}"
 
-        if not self._order.owner_organization.private:
-            # The request has been made on behalf an organization
-            return_url += "&organization=" + self._order.owner_organization.name
-            cancel_url += "&organization=" + self._order.owner_organization.name
+        success_sig = hmac.new(self._order.hash_key, accept_param.encode() , hashlib.sha256).hexdigest()
+        cancel_sig = hmac.new(self._order.hash_key, cancel_param.encode() , hashlib.sha256).hexdigest()
+        logger.debug("success signature:" + success_sig) # It is supposed that in production debug() method will not print in the logs.
+        logger.debug("cancel signature:" + cancel_sig) # It is supposed that in production debug() method will not print in the logs.
 
-        products = {contract.item_id: Offering.objects.get(_id=contract.offering) for contract in self._order.contracts}
+        url += "checkout?session_id={CHECKOUT_SESSION_ID}&"
+        return_url = url + accept_param + f"&sig={success_sig}"
+        cancel_url = url + cancel_param + f"&sig={cancel_sig}"
+
+        products = {contract.item_id: Offering.objects.get(off_id=contract.offering) for contract in self._order.contracts}
 
         # Build payment object
+        has_recurring = False
+        line_items = []
+        for t in transactions:
+            if t.get("recurring"):
+                has_recurring = True
+            line_items.append({
+                "quantity": 1,
+                "metadata": {"paymentItemExternalId": t["billId"]},
+                "price_data": {
+                    "currency": t["currency"],
+                    "unit_amount": int(Decimal(t["price"]) * Decimal(100)),
+                    "product_data": {
+                        "name": products[t["item"]].name,
+                        "description": products[t["item"]].description or "No description",
+                    },
+                },
+            })
+
         try:
             logger.debug(f"Creating checkout session for order {self._order.order_id}")
             checkout = stripe.checkout.Session.create(
                 success_url=return_url,
                 cancel_url=cancel_url,
-                client_reference_id=str(self._order.pk),
+                client_reference_id=str(self._order.order_id),
                 mode="payment",
-                line_items=[
-                    {
-                        "quantity": 1,
-                        "price_data": {
-                            "currency": t["currency"],
-                            "unit_amount": int(Decimal(t["price"]) * Decimal(100)),
-                            "product_data": {
-                                "name": products[t["item"]].name,
-                                "description": products[t["item"]].description
-                                if products[t["item"]].description
-                                else "No description",
-                            },
-                        },
-                    }
-                    for t in transactions
-                ],
+                **({"customer_creation": "always", "payment_intent_data": {"setup_future_usage": "off_session"}} if has_recurring else {}),
+                line_items=line_items,
             )
 
         # Check for errors in session
@@ -113,9 +125,8 @@ class StripeClient(PaymentClient):
             raise PaymentClientError(self.NAME, "The checkout session cannot be created.") from e
 
         # Extract URL where redirecting the customer
-        self._order._sales_id = [checkout.id]
-        self._order.save()
         self._checkout_url = checkout.url
+        logger.info("PAYMENT URL: %s", self._checkout_url)
         return checkout.url
 
     def direct_payment(self, currency, price, credit_card):
@@ -127,8 +138,31 @@ class StripeClient(PaymentClient):
         Keyword Args:
             session_id: The checkout session id
         """
+        session_id = kwargs["session_id"]
         logger.debug(f"Stripe payment for order {self._order.order_id} completed")
-        return [kwargs["session_id"]]
+
+        session = stripe.checkout.Session.retrieve(session_id)
+
+        if self._order.order_id != session.client_reference_id:
+            raise PaymentError('Stripe redirection was manipulated')
+
+        state = "processed" if session.payment_status == "paid" else "pending"
+
+        payout_list = []
+        page = stripe.checkout.Session.list_line_items(session_id, limit=100)
+        while True:
+            for item in page.data:
+                cb_id = item.metadata.get("paymentItemExternalId")
+                payout_list.append({
+                    "paymentItemExternalId": cb_id,
+                    "state": state,
+                })
+                PaymentRecord.create(cb_id, payment_type=self.NAME, payment_reference=session_id)
+            if not page.has_more:
+                break
+            page = stripe.checkout.Session.list_line_items(session_id, limit=100, starting_after=page.data[-1].id)
+
+        return [session_id], payout_list
 
     def refund(self, session_id):
         try:
@@ -143,6 +177,60 @@ class StripeClient(PaymentClient):
 
     def get_checkout_url(self):
         return self._checkout_url
+
+    def check_payment_status(self, payment_reference):
+        if payment_reference.startswith('pi_'):
+            pi = stripe.PaymentIntent.retrieve(payment_reference)
+            if pi.status == 'succeeded':
+                return 'succeeded'
+            if pi.status in ('processing', 'requires_action', 'requires_confirmation'):
+                return 'pending'
+            return 'failed'
+
+        session = stripe.checkout.Session.retrieve(payment_reference)
+        if session.payment_status == 'paid':
+            return 'succeeded'
+        if session.payment_status == 'unpaid':
+            return 'pending'
+        return 'failed'
+
+    def charge_recurring(self, payment_reference, amount, currency):
+        try:
+            if payment_reference.startswith('pi_'):
+                pi = stripe.PaymentIntent.retrieve(payment_reference)
+                customer_id = pi.customer
+                payment_method = pi.payment_method
+            else:
+                session = stripe.checkout.Session.retrieve(payment_reference)
+                customer_id = session.customer
+                pi = stripe.PaymentIntent.retrieve(session.payment_intent)
+                payment_method = pi.payment_method
+
+            if not customer_id or not payment_method:
+                logger.error(f"Missing customer or payment method for reference {payment_reference}")
+                return None, 'failed'
+
+            new_pi = stripe.PaymentIntent.create(
+                amount=int(Decimal(str(amount)) * 100),
+                currency=currency.lower(),
+                customer=customer_id,
+                payment_method=payment_method,
+                off_session=True,
+                confirm=True,
+            )
+
+            if new_pi.status == 'succeeded':
+                return new_pi.id, 'succeeded'
+            if new_pi.status in ('processing', 'requires_action'):
+                return new_pi.id, 'pending'
+            return new_pi.id, 'failed'
+
+        except stripe.error.CardError as e:
+            logger.error(f"Card error during recurring charge for {payment_reference}: {e}")
+            return None, 'failed'
+        except Exception as e:
+            logger.error(f"Error during recurring charge for {payment_reference}: {e}")
+            return None, 'failed'
 
     def batch_payout(self, payouts):
         # TODO: Translate to Stripe API.

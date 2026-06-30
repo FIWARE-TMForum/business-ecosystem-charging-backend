@@ -13,7 +13,7 @@ COPY requirements.txt requirements.txt
 COPY dev-requirements.txt dev-requirements.txt
 COPY src/ src/
 
-RUN apt-get update && apt-get -y install python3 python3-pip gcc git wkhtmltopdf xvfb wget && \
+RUN apt-get update && apt-get -y install python3 python3-pip gcc git wkhtmltopdf xvfb wget cron && \
     pip3 install -r requirements.txt && pip3 install -r dev-requirements.txt && \
     mkdir ./src/media && mkdir ./src/media/bills && mkdir ./src/media/assets && mkdir ./src/plugins
 

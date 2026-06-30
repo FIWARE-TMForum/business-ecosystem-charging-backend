@@ -113,6 +113,44 @@ class UsageClient:
         # Filter only the usage belonging to the specified product
         return [usage_doc for usage_doc in raw_usage if self._belongs_to_product(usage_doc, product_id)]
 
+    def get_customer_usage_in_period(self, product_id, start_datetime, end_datetime, page_size=100):
+        """
+        Retrieves all usages for a product within a billing period using pagination.
+        Filters by usageDate via query params and matches via ratedProductUsage.productRef.id.
+        :param product_id: id of the inventory product
+        :param start_datetime: period start (datetime)
+        :param end_datetime: period end (datetime)
+        :param page_size: number of results per page (default 100)
+        :return: List of usage documents whose usageDate falls within [start_datetime, end_datetime)
+        """
+        result = []
+        offset = 0
+        base_url = get_service_url("usage", f"usage?usageDate.gte={start_datetime}&usageDate.lt={end_datetime}")
+
+        while True:
+            url = f"{base_url}&limit={page_size}&offset={offset}"
+            r = requests.get(url, headers={"Accept": "application/json"})
+            r.raise_for_status()
+
+            page = r.json()
+            if not page:
+                break
+
+            result.extend(
+                usage_doc for usage_doc in page
+                if any(
+                    rpu.get("productRef", {}).get("id") == product_id
+                    for rpu in usage_doc.get("ratedProductUsage", [])
+                )
+            )
+
+            if len(page) < page_size:
+                break
+
+            offset += page_size
+
+        return result
+
     def _patch_usage(self, usage_id, patch):
         path = "usage/" + str(usage_id)
         url = get_service_url("usage", path)

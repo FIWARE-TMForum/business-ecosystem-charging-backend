@@ -32,6 +32,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from wstore.store_commons.utils.url import get_service_url
 from wstore.store_commons.utils.party import get_operator_party_roles, normalize_party_ref
+from wstore.charging_engine.utils import to_utc_z
 from wstore.ordering.models import PendingTermination
 from wstore.ordering.errors import InventoryError
 
@@ -141,7 +142,7 @@ class InventoryClient:
         """
         patch_body = {
             "status": "active",
-            "startDate": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "startDate": to_utc_z(datetime.now(timezone.utc))
         }
         self.patch_product(product_id, patch_body)
 
@@ -334,10 +335,10 @@ class InventoryClient:
 
         return result
 
-    def build_product_model(self, order_item, order_id, billing_account, start_date):
+    def build_product_model(self, order_item, order_id, billing_account, order_date):
         product = deepcopy(order_item["product"])
 
-        product["startDate"] = start_date
+        product["orderDate"] = order_date
         product["name"] = "oid-{}".format(order_id)
         product["status"] = "created"
         product["productOffering"] = order_item["productOffering"]

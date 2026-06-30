@@ -29,6 +29,7 @@ from logging import getLogger
 from django.conf import settings
 from wstore.store_commons.utils.url import get_service_url
 from wstore.store_commons.utils.party import get_operator_party_roles, normalize_party_ref
+from wstore.charging_engine.utils import to_utc_z, utc_z_to_dt
 
 
 logger = getLogger("wstore.default_logger")
@@ -36,6 +37,52 @@ logger = getLogger("wstore.default_logger")
 class BillingClient:
     def __init__(self):
         pass
+
+    def get_customer_bills_by_state(self, state, limit=100, offset=0):
+        url = get_service_url("billing", "customerBill")
+        response = requests.get(url, params={"state": state, "limit": limit, "offset": offset}, verify=settings.VERIFY_REQUESTS)
+        response.raise_for_status()
+        return response.json()
+
+    def get_product_id_by_cb(self, bill_id):
+        url = get_service_url("billing", "appliedCustomerBillingRate")
+        response = requests.get(url, params={"bill.id": bill_id, "limit": 1}, verify=settings.VERIFY_REQUESTS)
+        response.raise_for_status()
+        acbrs = response.json()
+        if not acbrs:
+            return None
+        return acbrs[0].get("product", {}).get("id")
+
+    def get_acbrs(self, product_id, pop_id, limit=100):
+        url = get_service_url("billing", "appliedCustomerBillingRate")
+        for characteristic_key in ("characteristic.value", "characteristic.tmfValue"):
+            params = {
+                "product.id": product_id,
+                characteristic_key: pop_id,
+                "characteristic.name": "popid",
+                "isBilled": "true",
+                "limit": limit,
+                "offset": 0,
+            }
+            acbrs = []
+            try:
+                while True:
+                    response = requests.get(url, params=params, verify=settings.VERIFY_REQUESTS)
+                    response.raise_for_status()
+                    page = response.json()
+                    if not page:
+                        break
+                    acbrs.extend(page)
+                    if len(page) < limit:
+                        break
+                    params["offset"] += limit
+            except requests.exceptions.HTTPError as e:
+                # Only fall back to tmfValue on a 500; re-raise anything else or the last attempt.
+                if characteristic_key == "characteristic.tmfValue" or e.response is None or e.response.status_code != 500:
+                    raise
+                continue
+            break
+        return sorted(acbrs, key=lambda x: utc_z_to_dt(x["date"]))
 
     def get_billing_account(self, account_id):
         url = get_service_url("account", f"billingAccount/{account_id}")
@@ -82,7 +129,10 @@ class BillingClient:
                 logger.error("Error updating customer rate: " + str(e))
                 raise
 
-    def create_customer_rate(self, name, description, rate_type, currency, tax_rate, tax, tax_included, tax_excluded, billing_account, product_id, coverage_period=None, party=[], message= None):
+    def create_customer_rate(self, name, description, rate_type, currency, tax_rate, tax, tax_included,
+                             tax_excluded, billing_account, product_id, coverage_period=None, party=[], message= None, priceId=None):
+        if settings.BILLING_ENGINE == "local" and priceId is None:
+            raise ValueError("priceId is required to link the ACBR to a POP via product.name")
         raw_rate = Decimal(str(tax_rate))
         decimal_rate = raw_rate / Decimal("100") if raw_rate > Decimal("1") else raw_rate
         data = {
@@ -91,7 +141,7 @@ class BillingClient:
             "description": description,
             "type": rate_type,
             "isBilled": False,
-            "date": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+            "date": to_utc_z(datetime.datetime.now(datetime.timezone.utc)),
             "appliedTax": [{
                 "taxCategory": "VAT",
                 "taxRate": decimal_rate,
@@ -112,7 +162,8 @@ class BillingClient:
             "product": {
                 "id": product_id,
                 "href": product_id
-            }
+            },
+            **{"characteristic": {"name": "popid", "value": priceId} if priceId else {}}
         }
 
         if coverage_period is not None:
@@ -158,7 +209,7 @@ class BillingClient:
             new_rate = self.create_customer_rate(
                 acbr_model["name"], acbr_model["description"],
                 rate_type, currency, tax_rate, tax, tax_included, tax_excluded,
-                billing_account, product["id"], coverage_period=coverage_period, party=party, message= message)
+                billing_account, product["id"], coverage_period=coverage_period, party=party, message= message, priceId=acbr_model.get("priceId"))
 
             created_rates.append(new_rate)
 
@@ -217,11 +268,11 @@ class BillingClient:
         # resp = session.send(prepped)
         # resp.raise_for_status()
 
-    def create_customer_bill(self, created_acbrs, cb_model):
+    def create_customer_bill(self, created_acbrs, cb_model, cb_state=None):
         if len(created_acbrs) == 0:
             return {}
 
-        created_cb = self._create_cb_api(cb_model)
+        created_cb = self._create_cb_api(cb_model, cb_state=cb_state)
         self.set_acbrs_cb(created_acbrs, created_cb["id"])
 
         cb = {}
@@ -249,8 +300,8 @@ class BillingClient:
             logger.error("Error patching customer bill: " + str(e) + " data:" + str(data))
             raise
 
-    def _create_cb_api(self, cb_model):
-        cb_model["state"] = "sent"
+    def _create_cb_api(self, cb_model, cb_state=None):
+        cb_model["state"] = cb_state if cb_state is not None else "sent"
         url = get_service_url("billing", "customerBill")
 
         try:

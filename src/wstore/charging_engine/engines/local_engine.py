@@ -22,8 +22,11 @@ from logging import getLogger
 from decimal import Decimal
 import datetime
 
+from dateutil.relativedelta import relativedelta
+
 from wstore.charging_engine.engines.engine import Engine
 from wstore.charging_engine.pricing_engine import PriceEngine
+from wstore.charging_engine.utils import to_utc_z
 from wstore.ordering.inventory_client import InventoryClient
 
 
@@ -41,9 +44,7 @@ class LocalEngine(Engine):
         # Update applied customer billing rates
         pass
 
-    def _build_charges(self, item, billing_account):
-        now = datetime.datetime.now(datetime.timezone.utc)
-        now = now.replace(hour=0, minute=0, second=0, microsecond=0) # Rounded to ensure consistent periods over all the rates
+    def _build_charges(self, item, billing_account, now= datetime.datetime.now(datetime.timezone.utc)):
 
         prices = self._price_engine.calculate_prices({
             "productOrderItem": [item],
@@ -53,12 +54,12 @@ class LocalEngine(Engine):
         # Only prices to be paid now are considered
         rates = []
         for price in prices:
-            if price["priceType"].lower() == "one time" or price["priceType"].lower() == "recurring-prepaid":
+            rate_type = price["priceType"].lower()
 
+            if rate_type in ["one time", "recurring-prepaid"]:
                 currency = price["price"]["dutyFreeAmount"]["unit"]
                 inc = Decimal(price["price"]["taxIncludedAmount"]["value"])
                 excl = Decimal(price["price"]["dutyFreeAmount"]["value"])
-                rate_type = price["priceType"].lower()
 
                 tax_amount = str(inc - excl)
                 rates.append({
@@ -85,12 +86,13 @@ class LocalEngine(Engine):
                         "value": price["price"]["dutyFreeAmount"]["value"]
                     },
                     "billingAccount": billing_account,
-                    "periodCoverage": self._build_period_coverage(price["recurringChargePeriod"], now)
+                    "periodCoverage": self._build_period_coverage(price["recurringChargePeriod"], now),
+                    "priceId": price["priceId"]
                 })
-            elif price["priceType"].lower() == "recurring" or price["priceType"].lower() == "usage":
-                rate_type = price["priceType"].lower()
+            elif rate_type in ["recurring", "usage"]:
                 rates.append({
-                    "appliedBillingRateType": rate_type
+                    "appliedBillingRateType": rate_type,
+                    "priceId": price["priceId"]
                 })
         return rates
 
@@ -100,30 +102,24 @@ class LocalEngine(Engine):
         end_datetime = None
 
         logger.info("recurringChargePeriod: %s", chargePeriod)
-        if chargePeriod == PriceEngine.PERIOD_ONETIME:
-            pass
-        elif chargePeriod == PriceEngine.PERIOD_MONTH or chargePeriod == "1 month":
-            # usage period or 1 month
-            end_time = now + datetime.timedelta(days=30)
-            end_datetime = end_time.isoformat().replace('+00:00', 'Z')
-        else:
-            # Other periods such as "3 month", "1 week", etc.
+
+        if not chargePeriod == PriceEngine.PERIOD_ONETIME:
             parts = chargePeriod.split()
             if len(parts) == 2:
                 amount = int(parts[0])
                 unit = parts[1].lower()
 
                 if unit in ["month", "months"]:
-                    end_time = now + datetime.timedelta(days=30 * amount)
+                    end_time = now + relativedelta(months=amount)
                 elif unit in ["week", "weeks"]:
                     end_time = now + datetime.timedelta(weeks=amount)
                 elif unit in ["day", "days"]:
                     end_time = now + datetime.timedelta(days=amount)
                 elif unit in ["year", "years"]:
-                    end_time = now + datetime.timedelta(days=365 * amount)
+                    end_time = now + relativedelta(years=amount)
                 else:
                     raise ValueError("Invalid charge period")
-                end_datetime = end_time.isoformat().replace('+00:00', 'Z')
+                end_datetime = to_utc_z(end_time)
             else:
                 raise ValueError("Invalid charge period")
 
@@ -132,6 +128,9 @@ class LocalEngine(Engine):
         }
         if end_datetime:
             result["endDateTime"] = end_datetime
+        else:
+            result["endDateTime"] = start_datetime
+
         return result
 
 
@@ -154,7 +153,7 @@ class LocalEngine(Engine):
             logger.info("after cb build")
         return {
             "appliedPayment": [],
-            "billDate": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
+            "billDate": to_utc_z(datetime.datetime.now(datetime.timezone.utc)),
             # "billNo": "", # same as customer bill id
             "billingAccount": billing_acc_ref,
             "taxIncludedAmount" : {

@@ -163,7 +163,7 @@ class BillingClientTestCase(TestCase):
             "relatedParty": [{"id": "party-1", "role": "Customer"}]
         }
 
-        def mock_create_cb_api(cb_model):
+        def mock_create_cb_api(cb_model, cb_state=None):
             return {
                 "id": "123",
                 "taxIncludedAmount": {"value": expected_cb.get("taxIncludedAmount", 0)},
@@ -253,6 +253,7 @@ class BillingClientTestCase(TestCase):
             billing_account={"id": "ba-1"},
             product_id="urn:ngsi-ld:product:1",
             party=None,
+            priceId="urn:ngsi-ld:productOfferingPrice:1",
         )
 
         self.assertEqual(result, {"id": "acbr-1"})

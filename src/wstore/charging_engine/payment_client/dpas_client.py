@@ -17,6 +17,7 @@ logger = getLogger("wstore.default_logger")
 DPAS_CLIENT_API_URL = os.environ.get("BAE_CB_DPAS_CLIENT_API_URL", "https://dpas-sbx.egroup.hu/api/payment-start")
 
 class DpasClient(PaymentClient):
+    NAME = "dpas"
     _checkout_url = None
 
     def __init__(self, order):
@@ -43,15 +44,15 @@ class DpasClient(PaymentClient):
         if redirect_uri[-1] != "/":
             redirect_uri += "/"
 
-        logger.debug("order reference: %s", self._order.pk)
-        success_sig = hmac.new(self._order.hash_key, f"client=dpas&action=accept&ref={str(self._order.pk)}".encode() , hashlib.sha256).hexdigest()
-        cancel_sig = hmac.new(self._order.hash_key, f"client=dpas&action=cancel&ref={str(self._order.pk)}".encode() , hashlib.sha256).hexdigest()
+        logger.debug("order reference: %s", self._order.order_id)
+        success_sig = hmac.new(self._order.hash_key, f"client=dpas&action=accept&ref={str(self._order.order_id)}".encode() , hashlib.sha256).hexdigest()
+        cancel_sig = hmac.new(self._order.hash_key, f"client=dpas&action=cancel&ref={str(self._order.order_id)}".encode() , hashlib.sha256).hexdigest()
         logger.debug("success signature:" + success_sig) # It is supposed that in production debug() method will not print in the logs.
         logger.debug("cancel signature:" + cancel_sig) # It is supposed that in production debug() method will not print in the logs.
 
         redirect_uri += "checkout?client=dpas"
-        success_url = redirect_uri + "&action=accept&ref=" + str(self._order.pk) + "&sig=" + success_sig
-        cancel_url = redirect_uri + "&action=cancel&ref=" + str(self._order.pk) + "&sig=" + cancel_sig
+        success_url = redirect_uri + "&action=accept&ref=" + str(self._order.order_id) + "&sig=" + success_sig
+        cancel_url = redirect_uri + "&action=cancel&ref=" + str(self._order.order_id) + "&sig=" + cancel_sig
 
         payload = {
             "baseAttributes": {
@@ -97,13 +98,23 @@ class DpasClient(PaymentClient):
             except:
                 logger.error("dpas decode failed")
                 raise PaymentError("DPAS sign is incorrect")
-            if 'paymentPreAuthorizationExternalId' in decoded:
-                pre_auth_id = decoded['paymentPreAuthorizationExternalId']
-        logger.debug("finish end redirection with:" + pre_auth_id)
-        return [pre_auth_id], decoded['payoutList']
+            pre_auth_id = decoded.get('paymentPreAuthorizationExternalId')
+            logger.debug("finish end redirection with: " + str(pre_auth_id))
+
+            if self._order.order_id != decoded.get('paymentExternalId'):
+                logger.error(f"Error order id: {self._order.order_id}, order ref: {decoded.get('paymentExternalId')}")
+                raise PaymentError('DPAS redirection was manipulated')
+
+        return ([pre_auth_id] if pre_auth_id else []), decoded['payoutList']
 
     def refund(self, sale_id):
         pass
+
+    def check_payment_status(self, payment_reference):
+        raise NotImplementedError("DPAS payment status is managed externally by payment-scheduler")
+
+    def charge_recurring(self, payment_reference, amount, currency):
+        raise NotImplementedError("DPAS recurring charges are managed externally by payment-scheduler")
 
     def get_checkout_url(self):
         return self._checkout_url

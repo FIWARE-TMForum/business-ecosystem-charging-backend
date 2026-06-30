@@ -151,8 +151,8 @@ class Order(models.Model):
             terminated=contract_info["terminated"],
             options=contract_info["options"],
             applied_rates=contract_info["applied_rates"],
-            customer_bill = contract_info["customer_bill"],
-            processed = contract_info["processed"],
+            customer_bill=contract_info["customer_bill"],
+            processed=contract_info["processed"],
             prd_after_paid = contract_info["prd_after_paid"]
         )
 
@@ -290,6 +290,36 @@ class Order(models.Model):
     class Meta:
         app_label = "wstore"
 
+
+class PaymentRecord(models.Model):
+    _id = models.ObjectIdField()
+    customerBill_id = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    payment_type = models.CharField(max_length=50)
+    payment_reference = models.CharField(max_length=255)
+    retry_count = models.IntegerField(default=0)
+
+    objects = models.DjongoManager()
+
+    @classmethod
+    def create(cls, customerBill_id, payment_type, payment_reference):
+        payment = cls(customerBill_id=customerBill_id, payment_type=payment_type, payment_reference=payment_reference)
+        payment.save()
+        return payment
+
+    @classmethod
+    def get_by_customer_bill_id(cls, customerBill_id):
+        return cls.objects.get(customerBill_id=customerBill_id)
+
+    @classmethod
+    def update_payment_reference(cls, customerBill_id, payment_reference):
+        cls.objects.filter(customerBill_id=customerBill_id).update(payment_reference=payment_reference)
+
+    @classmethod
+    def increment_retry_count(cls, customerBill_id):
+        record = cls.objects.get(customerBill_id=customerBill_id)
+        record.retry_count += 1
+        record.save()
 
 class PendingTermination(models.Model):
     _id = models.ObjectIdField()

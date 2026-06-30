@@ -36,7 +36,7 @@ from wstore.asset_manager.resource_plugins.decorators import on_product_suspende
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
 from wstore.ordering.inventory_client import InventoryClient
-from wstore.ordering.models import Contract, Offering, Order
+from wstore.ordering.models import Contract, Offering, Order, PaymentRecord
 from wstore.ordering.ordering_client import OrderingClient
 from wstore.store_commons.rollback import rollback
 from wstore.store_commons.utils.url import get_service_url
@@ -570,7 +570,7 @@ class OrderingManager:
         inventory_client = InventoryClient()
 
         # Check if automatical payment mode is enabled
-        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"], datetime.datetime.now(datetime.timezone.utc).isoformat()) if contract == None\
+        product = inventory_client.build_product_model(orderItem, order["id"], order["billingAccount"], order["orderDate"]) if contract == None\
             else inventory_client.get_product_for_patch(contract.product_id)
 
         # Instantiate services and resources if needed
@@ -705,8 +705,16 @@ class OrderingManager:
     def notify_item_completed(self, order_model: Order, contract: Contract, raw_order):
 
         extra_char = []
+        attr_name = "paymentPreAuthorizationId"
+        if settings.PAYMENT_METHOD != "dpas":
+            try:
+                record = PaymentRecord.get_by_customer_bill_id(contract.customer_bill.get("id"))
+                if record.payment_type == "stripe":
+                    attr_name = "stripeCheckoutSessionId"
+            except Exception:
+                pass
         for sale_id in order_model.sales_ids:
-            extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
+            extra_char.append({"name": attr_name, "value": sale_id})
 
         # Get product offering
         offering_info = self.get_offer_info_by_item_id(contract.item_id)
@@ -784,6 +792,7 @@ class OrderingManager:
                 self.notify_item_completed(order_model, contract, order)
         except Exception as e:
             logger.error(f"Error processing customer bill {customer_bill_id}: {e}")
+            logger.info("Probably automatic recurring/usage customer bills")
         finally:
             if order_model is not None:
                 db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})

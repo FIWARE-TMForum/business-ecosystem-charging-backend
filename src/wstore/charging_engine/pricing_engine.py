@@ -35,7 +35,7 @@ logger = getLogger("wstore.default_logger")
 class PriceEngine:
     # Period constants
     PERIOD_ONETIME = "onetime"
-    PERIOD_MONTH = "month"
+    PERIOD_MONTH = " 1 month"
     def download_pricing(self, pop_id):
         price_url = get_service_url("catalog", "/productOfferingPrice/{}".format(pop_id))
         request = requests.get(price_url, verify=settings.VERIFY_REQUESTS)
@@ -56,7 +56,7 @@ class PriceEngine:
 
         return Decimal("0")
 
-    def _process_price_component(self, component, spec_chars, aggregated, usage):
+    def _process_price_component(self, component, prd_selected_chars, aggregated, usage):
         # Check if the component needs to be applied
         tail_value = None
         if "prodSpecCharValueUse" in component:
@@ -86,7 +86,7 @@ class PriceEngine:
                 return
 
             found = 0
-            for spec_char in spec_chars:
+            for spec_char in prd_selected_chars:
                 if spec_char["name"].lower() in conditions:
                     condition = conditions[spec_char["name"].lower()]
                     if condition["name"] == "tailored" and spec_char["value"] >= condition["valueFrom"] and spec_char["value"] <= condition["valueTo"]: # integer numbers
@@ -128,13 +128,13 @@ class PriceEngine:
             tailored_price = component_value * tail_value
             aggregated[component["priceType"]][period_key]["value"] += tailored_price
 
-    def _proccess_price_component_indv(self, component, spec_chars, indv: list, usage):
+    def _proccess_price_component_indv(self, price_component, prd_selected_chars, indv: list, usage):
         tail_value = None
-        if "prodSpecCharValueUse" in component:
+        if "prodSpecCharValueUse" in price_component:
             conditions = {}
-            logger.debug(f"prodSpecCharValueUse:{component['prodSpecCharValueUse']}")
+            logger.debug(f"prodSpecCharValueUse:{price_component['prodSpecCharValueUse']}")
 
-            for val in component["prodSpecCharValueUse"]:
+            for val in price_component["prodSpecCharValueUse"]:
                 value = None
                 # CHECK
                 if "productSpecCharacteristicValue" in val and len(val["productSpecCharacteristicValue"]) > 0:
@@ -157,16 +157,16 @@ class PriceEngine:
                 return
 
             found = 0
-            for spec_char in spec_chars:
-                if spec_char["name"].lower() in conditions:
-                    condition = conditions[spec_char["name"].lower()]
-                    if condition["name"] == "tailored" and spec_char["value"] >= condition["valueFrom"] and spec_char["value"] <= condition["valueTo"]: # integer numbers
+            for prd_selected_char in prd_selected_chars:
+                if prd_selected_char["name"].lower() in conditions:
+                    condition = conditions[prd_selected_char["name"].lower()]
+                    if condition["name"] == "tailored" and prd_selected_char["value"] >= condition["valueFrom"] and prd_selected_char["value"] <= condition["valueTo"]: # integer numbers
                         logger.debug("found tailored")
                         found += 1
-                        tail_value = Decimal(str(spec_char["value"]))
+                        tail_value = Decimal(str(prd_selected_char["value"]))
                         continue
 
-                    if condition["name"] == "normal" and str(condition["value"]) == str(spec_char["value"]):
+                    if condition["name"] == "normal" and str(condition["value"]) == str(prd_selected_char["value"]):
                         logger.debug("found normal")
                         found += 1
 
@@ -178,28 +178,29 @@ class PriceEngine:
         indv_price = {}
 
         period_key = self.PERIOD_ONETIME
-        if "recurringChargePeriodType" in component and "recurringChargePeriodLength" in component:
+        if "recurringChargePeriodType" in price_component and "recurringChargePeriodLength" in price_component:
             period_key = "{} {}".format(
-                component["recurringChargePeriodLength"], component["recurringChargePeriodType"]
+                price_component["recurringChargePeriodLength"], price_component["recurringChargePeriodType"]
             )
 
-        if component["priceType"].lower() == "usage":
+        if price_component["priceType"].lower() == "usage":
             period_key = self.PERIOD_MONTH
 
-        indv_price["priceType"] = component["priceType"]
+        indv_price["priceType"] = price_component["priceType"]
         indv_price["period"] = period_key
 
-        component_value = Decimal(str(component["price"]["value"]))
-        if component["priceType"] == "usage" and len(usage) > 0:
-            component_value = self._process_usage_value(component, usage)
+        component_value = Decimal(str(price_component["price"]["value"]))
+        if price_component["priceType"] == "usage":
+            component_value = self._process_usage_value(price_component, usage)
 
         if tail_value is None:
             indv_price["price"] = component_value
         else:
             tailored_price = component_value * tail_value
             indv_price["price"] = tailored_price
-        indv_price["description"] = component["description"] if "description" in component else "empty description"
-        indv_price["name"] = component["name"] if "name" in component else "empty name"
+        indv_price["id"] = price_component.get("id")
+        indv_price["description"] = price_component["description"] if "description" in price_component else "empty description"
+        indv_price["name"] = price_component["name"] if "name" in price_component else "empty name"
         indv.append(indv_price)
 
     def _get_party_char(self, party_id):
@@ -325,7 +326,7 @@ class PriceEngine:
         else: # customer_type is an organization, checked in a previuos method
             return self._search_ue_taxes(related_party, customer_country, seller_country)
 
-    def calculate_prices(self, data: dict, usage=[], preview=True):
+    def calculate_prices(self, data: dict, usage=[], preview=True, pop_components=None):
         aggregated = {}
         indv = []
         logger.debug("calculate prices")
@@ -336,26 +337,27 @@ class PriceEngine:
             # The item has no price, it is free
             return []
 
-        pop_id = item["itemTotalPrice"][0]["productOfferingPrice"]["id"] # always 1 (price plan)
-
-        pricing = self.download_pricing(pop_id)
-
-        # If the price is a bundle download the components
-        to_process = []
-        if pricing["isBundle"]:
-            to_process = [self.download_pricing(pop["id"]) for pop in pricing["bundledPopRelationship"]]
+        if pop_components is not None:
+            to_process = pop_components
         else:
-            to_process = [pricing]
+            pop_id = item["itemTotalPrice"][0]["productOfferingPrice"]["id"] # always 1 (price plan)
+            pricing = self.download_pricing(pop_id)
 
-        spec_chars = []
-        if "product" in item and "productCharacteristic" in item["product"]:
-            spec_chars = item["product"]["productCharacteristic"]
-
-        for component in to_process:
-            if preview is True:
-                self._process_price_component(component, spec_chars, aggregated, usage)
+            # If the price is a bundle download the components
+            if pricing["isBundle"]:
+                to_process = [self.download_pricing(pop["id"]) for pop in pricing["bundledPopRelationship"]]
             else:
-                self._proccess_price_component_indv(component, spec_chars, indv, usage)
+                to_process = [pricing]
+
+        prd_selected_chars = []
+        if "product" in item and "productCharacteristic" in item["product"]:
+            prd_selected_chars = item["product"]["productCharacteristic"]
+
+        for price_component in to_process:
+            if preview is True:
+                self._process_price_component(price_component, prd_selected_chars, aggregated, usage)
+            else:
+                self._proccess_price_component_indv(price_component, prd_selected_chars, indv, usage)
 
         # If the POP is not a bundle check the pricing
         # If the bundle is a pop download the models
@@ -380,14 +382,16 @@ class PriceEngine:
                         self._build_price_result(priceType, period, Decimal(aggregated[priceType][period]["value"]), tax)
                     )
         else:
-            for priceComp in indv:
-                result.append(self._build_price_result(priceComp["priceType"], priceComp["period"], Decimal(priceComp["price"]), tax, name=priceComp["name"], description=priceComp.get("description")))
+            for calculated_price_comp in indv:
+                result.append(self._build_price_result(calculated_price_comp["priceType"], calculated_price_comp["period"], Decimal(calculated_price_comp["price"]), tax,
+                                                       name=calculated_price_comp["name"], description=calculated_price_comp.get("description"), price_id=calculated_price_comp["id"]))
         return result
 
-    def _build_price_result(self, price_type, period, duty_free: Decimal, tax_rate: Decimal, name = None, description = None):
+    def _build_price_result(self, price_type, period, duty_free: Decimal, tax_rate: Decimal, name = None, description = None, price_id = None):
       return {
           **({"name": name} if name else {}),
           **({"description": description} if description else {}),
+          **({"priceId": price_id} if price_id else {}),
           "priceType": price_type,
           "recurringChargePeriod": period,
           "price": {

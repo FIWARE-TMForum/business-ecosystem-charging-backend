@@ -28,8 +28,8 @@ class PaymentClient:
     _purchase = None
 
     @staticmethod
-    def get_payment_client_class():
-        cln_str = settings.PAYMENT_CLIENT
+    def get_payment_client_class(client = None):
+        cln_str = settings.CLIENTS[client] if client is not None else settings.PAYMENT_CLIENT
         client_package, client_class = cln_str.rsplit(".", 1)
         return getattr(import_module(client_package), client_class)
 
@@ -51,6 +51,12 @@ class PaymentClient:
     def get_checkout_url(self):
         pass
 
+    def check_payment_status(self, payment_reference):
+        pass
+
+    def charge_recurring(self, payment_reference, amount, currency):
+        pass
+
 
 class PaymentClientError(Exception):
     """
@@ -63,4 +69,4 @@ class PaymentClientError(Exception):
         self.value = msg
 
     def __str__(self):
-        return f"PaymentClientError: An error has ocurred with {self.client}. Operation cannot be completed. {self.msg}"
+        return f"PaymentClientError: An error has ocurred with {self.client}. Operation cannot be completed. {self.value}"

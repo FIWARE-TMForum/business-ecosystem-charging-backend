@@ -24,8 +24,6 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from importlib import reload
-
-from bson.objectid import ObjectId
 from django.test import TestCase
 from django.test.client import RequestFactory
 from mock import MagicMock, call
@@ -1482,20 +1480,20 @@ class PaymentConfirmationTestCase(TestCase):
             self.assertEquals(2, views.get_database_connection.call_count)
             self.assertEquals(
                 [
-                    call({"_id": ObjectId("111111111111111111111111"), "used": False}, {"$set": {"used": True}}),
+                    call({"order_id": "111111111111111111111111", "used": False}, {"$set": {"used": True}}),
                     call(
-                        {"_id": ObjectId("111111111111111111111111")},
+                        {"order_id": "111111111111111111111111"},
                         {"$set": {"_lock": True}},
                     ),
                     call(
-                        {"_id": ObjectId("111111111111111111111111")},
+                        {"order_id": "111111111111111111111111"},
                         {"$set": {"_lock": False}},
                     ),
                 ],
                 self._connection_inst.wstore_order.find_one_and_update.call_args_list,
             )
 
-            views.Order.objects.filter.assert_called_once_with(pk=ObjectId("111111111111111111111111"))
+            views.Order.objects.filter.assert_called_once_with(order_id="111111111111111111111111")
 
             self._payment_class.assert_called_once_with(self._order_inst)
             self._payment_inst.end_redirection_payment.assert_called_once_with(**data)

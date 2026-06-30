@@ -82,7 +82,7 @@ class StripeTestCalse(TestCase):
             (
                 "success",
                 MagicMock(name="order"),
-                [{"currency": "EUR", "price": 1000, "item": "test", "description": "test", "item_id": "test"}],
+                [{"currency": "EUR", "price": 1000, "item": "test", "description": "test", "item_id": "test", "billId": "bill-1"}],
             ),
             ("no_transactions", MagicMock(name="order"), []),
             ("session_error", MagicMock(name="order"), [], Exception("Test Exception")),
@@ -91,7 +91,10 @@ class StripeTestCalse(TestCase):
     def test_start_redirection_payment(self, name, order, transactions, checkout_error=None):
         stripe_payment_client = stripe_client.StripeClient(order)
         stripe_payment_client._order = MagicMock(
-            **{"contracts": [MagicMock(**transaction) for transaction in transactions]}
+            **{
+                "contracts": [MagicMock(**transaction) for transaction in transactions],
+                "hash_key": b"test-secret-key",
+            }
         )
 
         checkout_session = MagicMock(name="checkout_session")
@@ -117,8 +120,31 @@ class StripeTestCalse(TestCase):
             self.assertEquals(stripe_payment_client.get_checkout_url(), "https://checkout.stripe.com/c/pay/test")
 
     def test_end_redirection_payment(self):
-        stripe_payment_client = stripe_client.StripeClient(MagicMock())
-        self.assertEquals(stripe_payment_client.end_redirection_payment(session_id="test"), ["test"])
+        order = MagicMock()
+        order.order_id = "order-1"
+        stripe_payment_client = stripe_client.StripeClient(order)
+        stripe_client.PaymentRecord = MagicMock()
+
+        session = MagicMock(name="session")
+        session.client_reference_id = order.order_id
+        session.payment_status = "paid"
+
+        item = MagicMock(name="line_item")
+        item.metadata = {"paymentItemExternalId": "cb-1"}
+
+        page = MagicMock(name="page")
+        page.data = [item]
+        page.has_more = False
+
+        stripe_client.stripe.configure_mock(
+            **{
+                "checkout.Session.retrieve.return_value": session,
+                "checkout.Session.list_line_items.return_value": page,
+            }
+        )
+
+        result = stripe_payment_client.end_redirection_payment(session_id="test")
+        self.assertEquals(result, (["test"], [{"paymentItemExternalId": "cb-1", "state": "processed"}]))
 
     def test_refund(self):
         stripe_payment_client = stripe_client.StripeClient(MagicMock())

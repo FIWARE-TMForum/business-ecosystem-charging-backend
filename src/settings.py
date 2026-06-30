@@ -150,7 +150,7 @@ INSTALLED_APPS = [
     # 'wstore.store_commons',
     "wstore",
     # 'wstore.charging_engine',
-    # 'django_crontab',
+    "django_crontab",
     # 'django_nose'
 ]
 
@@ -201,9 +201,18 @@ TEST_RUNNER = "django_nose.NoseTestSuiteRunner"
 
 # Daily job that checks pending pay-per-use charges
 CRONJOBS = [
-    ("0 5 * * *", "django.core.management.call_command", ["pending_charges_daemon"]),
-    ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
-    ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
+    # ("0 5 * * *", "django.core.management.call_command", ["pending_charges_daemon"]),
+    # ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
+    # ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
+    # Recurring billing: creates new CustomerBills for expired billing periods (off-peak hours)
+    ("0 22 * * *", "django.core.management.call_command", ["billing_scheduler"]),
+    ("0 1 * * *", "django.core.management.call_command", ["billing_scheduler"]),
+    ("0 5 * * *", "django.core.management.call_command", ["billing_scheduler"]),
+    # Payment scheduler: charges/settles 'new' CustomerBills, ~1h after billing runs
+    ("0 23 * * *", "django.core.management.call_command", ["payment_scheduler"]),
+    ("0 6 * * *", "django.core.management.call_command", ["payment_scheduler"]),
+    ("0 3 * * *", "django.core.management.call_command", ["retry_pending_terminations"]),
+] if environ.get("BAE_CB_BILLING_ENGINE") == "local" else [
     ("0 3 * * *", "django.core.management.call_command", ["retry_pending_terminations"]),
 ]
 
@@ -316,9 +325,11 @@ AWS_ENABLED = environ.get("AWS_ENABLED", False)
 if isinstance(AWS_ENABLED, str):
     AWS_ENABLED = AWS_ENABLED == "True"
 
-
 BILLING_ENGINE =  environ.get("BAE_CB_BILLING_ENGINE", "local")
 
 OPERATOR_ID = environ.get("BAE_CB_OPERATOR_ID", OPERATOR_ID)
 RELATED_PARTY_SCHEMA_LOCATION = environ.get("BAE_CB_RELATED_PARTY_SCHEMA_LOCATION", RELATED_PARTY_SCHEMA_LOCATION)
 DPAS_KEY = environ.get("DPAS_KEY", "")
+
+# PAYMENT AND BILLING RECURRING
+BILLING_HTTP_ENABLED = environ.get("BAE_CB_BILLING_BY_HTTP_TEST_ENABLED", "False") == "True"

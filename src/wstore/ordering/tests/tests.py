@@ -22,7 +22,7 @@
 from copy import deepcopy
 from datetime import datetime
 from urllib.parse import urlparse
-from datetime import datetime
+from datetime import datetime, timezone
 from bson.objectid import ObjectId
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
@@ -983,8 +983,7 @@ class InventoryClientTestCase(TestCase):
 
         inventory_client.settings.LOCAL_SITE = "http://localhost:8004/"
 
-        now = MagicMock()
-        now.isoformat.return_value = "2016-01-22T04:10:25.176751+00:00"
+        now = datetime(2016, 1, 22, 4, 10, 25, 176751, tzinfo=timezone.utc)
         inventory_client.datetime = MagicMock()
         inventory_client.datetime.now.return_value = now
 

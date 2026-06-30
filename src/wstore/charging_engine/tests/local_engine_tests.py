@@ -21,7 +21,7 @@
 import datetime
 from django.test import TestCase
 from parameterized import parameterized
-from mock import MagicMock, patch
+from mock import MagicMock
 
 from wstore.charging_engine.engines.local_engine import LocalEngine
 
@@ -29,6 +29,7 @@ from wstore.charging_engine.engines.local_engine import LocalEngine
 # Mock prices returned by PriceEngine
 PRICE_ONETIME = [
     {
+        "priceId": "urn:ngsi-ld:productOfferingPrice:1",
         "name": "One Time Price",
         "description": "One time price description",
         "priceType": "one time",
@@ -43,6 +44,7 @@ PRICE_ONETIME = [
 
 PRICE_RECURRING = [
     {
+        "priceId": "urn:ngsi-ld:productOfferingPrice:recurring-1",
         "priceType": "recurring",
         "recurringChargePeriod": "1 month",
         "price": {
@@ -55,6 +57,7 @@ PRICE_RECURRING = [
 
 PRICE_USAGE = [
     {
+        "priceId": "urn:ngsi-ld:productOfferingPrice:usage-1",
         "priceType": "usage",
         "recurringChargePeriod": "month",
         "price": {
@@ -67,6 +70,7 @@ PRICE_USAGE = [
 
 PRICE_MULTIPLE = [
     {
+        "priceId": "urn:ngsi-ld:productOfferingPrice:1",
         "name": "One Time Price",
         "description": "One time price description",
         "priceType": "one time",
@@ -78,6 +82,7 @@ PRICE_MULTIPLE = [
         }
     },
     {
+        "priceId": "urn:ngsi-ld:productOfferingPrice:recurring-1",
         "priceType": "recurring",
         "recurringChargePeriod": "1 month",
         "price": {
@@ -115,20 +120,24 @@ EXPECTED_CHARGE_ONETIME = [
         },
         "billingAccount": {"id": "test-billing-account"},
         "periodCoverage": {
-            "startDateTime": "2024-01-15T00:00:00Z"
-        }
+            "startDateTime": "2024-01-15T00:00:00Z",
+            "endDateTime": "2024-01-15T00:00:00Z"
+        },
+        "priceId": "urn:ngsi-ld:productOfferingPrice:1"
     }
 ]
 
 EXPECTED_CHARGE_RECURRING = [
     {
-        "appliedBillingRateType": "recurring"
+        "appliedBillingRateType": "recurring",
+        "priceId": "urn:ngsi-ld:productOfferingPrice:recurring-1"
     }
 ]
 
 EXPECTED_CHARGE_USAGE = [
     {
         "appliedBillingRateType": "usage",
+        "priceId": "urn:ngsi-ld:productOfferingPrice:usage-1"
     }
 ]
 
@@ -158,11 +167,14 @@ EXPECTED_CHARGE_MULTIPLE = [
         },
         "billingAccount": {"id": "test-billing-account"},
         "periodCoverage": {
-            "startDateTime": "2024-01-15T00:00:00Z"
-        }
+            "startDateTime": "2024-01-15T00:00:00Z",
+            "endDateTime": "2024-01-15T00:00:00Z"
+        },
+        "priceId": "urn:ngsi-ld:productOfferingPrice:1"
     },
     {
-        "appliedBillingRateType": "recurring"
+        "appliedBillingRateType": "recurring",
+        "priceId": "urn:ngsi-ld:productOfferingPrice:recurring-1"
     }
 ]
 
@@ -177,7 +189,8 @@ class LocalEngineTestCase(TestCase):
             "onetime",
             datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc),
             {
-                "startDateTime": "2024-01-15T00:00:00Z"
+                "startDateTime": "2024-01-15T00:00:00Z",
+                "endDateTime": "2024-01-15T00:00:00Z"
             }
         ),
         (
@@ -186,7 +199,7 @@ class LocalEngineTestCase(TestCase):
             datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc),
             {
                 "startDateTime": "2024-01-15T00:00:00Z",
-                "endDateTime": "2024-02-14T00:00:00Z"
+                "endDateTime": "2024-02-15T00:00:00Z"
             }
         ),
         (
@@ -195,7 +208,7 @@ class LocalEngineTestCase(TestCase):
             datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc),
             {
                 "startDateTime": "2024-01-15T00:00:00Z",
-                "endDateTime": "2024-02-14T00:00:00Z"
+                "endDateTime": "2024-02-15T00:00:00Z"
             }
         ),
         (
@@ -204,7 +217,7 @@ class LocalEngineTestCase(TestCase):
             datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc),
             {
                 "startDateTime": "2024-01-15T00:00:00Z",
-                "endDateTime": "2024-04-14T00:00:00Z"
+                "endDateTime": "2024-04-15T00:00:00Z"
             }
         ),
         (
@@ -231,7 +244,7 @@ class LocalEngineTestCase(TestCase):
             datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc),
             {
                 "startDateTime": "2024-01-15T00:00:00Z",
-                "endDateTime": "2025-01-14T00:00:00Z"
+                "endDateTime": "2025-01-15T00:00:00Z"
             }
         ),
     ])
@@ -271,8 +284,10 @@ class LocalEngineTestCase(TestCase):
         engine._price_engine = MagicMock()
         engine._price_engine.calculate_prices.return_value = mock_prices
 
-        # Mock datetime to have consistent test results
-        fixed_datetime = datetime.datetime(2024, 1, 15, 10, 30, 45, tzinfo=datetime.timezone.utc)
+        # Fixed "now" passed explicitly for consistent test results
+        # (the `now` default in _build_charges is bound at import time, so
+        # patching datetime.now would have no effect on it)
+        fixed_datetime = datetime.datetime(2024, 1, 15, 0, 0, 0, tzinfo=datetime.timezone.utc)
 
         item = {
             "itemTotalPrice": [
@@ -286,12 +301,7 @@ class LocalEngineTestCase(TestCase):
 
         billing_account = {"id": "test-billing-account"}
 
-        with patch('wstore.charging_engine.engines.local_engine.datetime') as mock_datetime:
-            mock_datetime.datetime.now.return_value = fixed_datetime
-            mock_datetime.timezone = datetime.timezone
-            mock_datetime.timedelta = datetime.timedelta
-
-            result = engine._build_charges(item, billing_account)
+        result = engine._build_charges(item, billing_account, now=fixed_datetime)
 
         self.assertEqual(result, expected_result)
         engine._price_engine.calculate_prices.assert_called_once_with(

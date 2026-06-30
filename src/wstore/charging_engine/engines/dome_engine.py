@@ -88,6 +88,8 @@ class DomeEngine(Engine):
 
         logger.debug({"product": product, "date": start_date})
         resp = requests.post(url, json={"product": product, "date": start_date})
+        logger.debug("DOME ENGINE")
+        logger.debug({"product": product, "date": start_date})
         resp.raise_for_status()
         instant = resp.json()
         acbrs = instant[0]["acbrs"]
