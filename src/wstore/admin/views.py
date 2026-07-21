@@ -228,6 +228,8 @@ class ConfiguredNotificationCollection(NotificationCollection):
     def _get_configured_notification_data(self, request):
         try:
             data = self._get_notification_data(request)
+            logger.info(f"Support type: request.body: {request.body}")
+
             support_type = json.loads(request.body)["supportType"]
         except (TypeError, ValueError, KeyError):
             raise ValueError("The provided data is not a valid JSON object")
