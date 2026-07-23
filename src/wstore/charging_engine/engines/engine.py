@@ -74,8 +74,8 @@ class Engine:
                 contract.product_id = created_product["id"]
 
                 if len(acbr_models) > 0:
-                    logger.info("Received acbr models " + json.dumps(acbr_models))
-                    logger.info("Received cb models " + json.dumps(cb_model))
+                    logger.info("Received acbr models " + json.dumps(acbr_models, default=str))
+                    logger.info("Received cb models " + json.dumps(cb_model, default=str))
 
                     seller_id = None
                     curated_party = created_product["relatedParty"]
@@ -156,7 +156,7 @@ class Engine:
         except Exception as e:
             logger.error(f"Error in process_initial_charging: {type(e).__name__}: {str(e)}")
             logger.error(f"Order ID: {self._order.order_id if hasattr(self._order, 'order_id') else 'Unknown'}")
-            logger.error(f"Raw order: {json.dumps(raw_order, indent=2) if raw_order else 'None'}")
+            logger.error(f"Raw order: {json.dumps(raw_order, indent=2, default=str) if raw_order else 'None'}")
             raise
 
     def resolve_charging(self, type_="initial", related_contracts=None, raw_order=None):

@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import datetime
+import json
 import requests
 from decimal import Decimal
 from django.test import TestCase
@@ -269,7 +270,27 @@ class BillingClientTestCase(TestCase):
         mock_post.assert_called_once()
 
         sent_body = mock_post.call_args.kwargs["json"]
-        self.assertEqual(sent_body["appliedTax"][0]["taxRate"], Decimal(expected_decimal_rate))
+        self.assertEqual(sent_body["appliedTax"][0]["taxRate"], expected_decimal_rate)
+        json.dumps(sent_body)
+
+    @patch("wstore.charging_engine.charging.billing_client.requests.post")
+    @patch("wstore.charging_engine.charging.billing_client.get_service_url")
+    def test_create_cb_api_serializes_decimal_values(self, mock_get_service_url, mock_post):
+        mock_get_service_url.return_value = "http://billing.test/customerBill"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"id": "cb-1"}
+        mock_post.return_value = mock_response
+
+        client = billing_client.BillingClient()
+        client._create_cb_api({
+            "taxIncludedAmount": {"unit": "EUR", "value": Decimal("12.10")},
+            "taxExcludedAmount": {"unit": "EUR", "value": Decimal("10.00")},
+        })
+
+        sent_body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent_body["taxIncludedAmount"]["value"], "12.10")
+        self.assertEqual(sent_body["taxExcludedAmount"]["value"], "10.00")
+        json.dumps(sent_body)
 
     @patch("wstore.charging_engine.charging.billing_client.requests.get")
     @patch("wstore.charging_engine.charging.billing_client.get_service_url")

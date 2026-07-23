@@ -34,6 +34,20 @@ from wstore.charging_engine.utils import to_utc_z, utc_z_to_dt
 
 logger = getLogger("wstore.default_logger")
 
+
+def _json_safe(value):
+    if isinstance(value, Decimal):
+        return str(value)
+
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+
+    return value
+
+
 class BillingClient:
     def __init__(self):
         pass
@@ -177,7 +191,7 @@ class BillingClient:
         url = get_service_url("billing", "appliedCustomerBillingRate")
 
         try:
-            response = requests.post(url, json=data, verify=settings.VERIFY_REQUESTS)
+            response = requests.post(url, json=_json_safe(data), verify=settings.VERIFY_REQUESTS)
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error("Error creating customer rate: " + str(e))
@@ -305,7 +319,7 @@ class BillingClient:
         url = get_service_url("billing", "customerBill")
 
         try:
-            response = requests.post(url, json=cb_model, verify=settings.VERIFY_REQUESTS)
+            response = requests.post(url, json=_json_safe(cb_model), verify=settings.VERIFY_REQUESTS)
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
             logger.error("Error creating customer bill: " + str(e))
