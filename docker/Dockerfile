@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:24.04
 
 LABEL MAINTAINER="Future Internet Consulting and Development Solutions S.L."
 
@@ -13,13 +13,26 @@ COPY requirements.txt requirements.txt
 COPY dev-requirements.txt dev-requirements.txt
 COPY src/ src/
 
-RUN apt-get update && apt-get -y install python3 python3-pip gcc git wkhtmltopdf xvfb wget cron && \
-    pip3 install -r requirements.txt && pip3 install -r dev-requirements.txt && \
-    mkdir ./src/media && mkdir ./src/media/bills && mkdir ./src/media/assets && mkdir ./src/plugins
+RUN apt-get update && apt-get -y install --no-install-recommends \
+    cron \
+    gcc \
+    git \
+    software-properties-common \
+    wget \
+    wkhtmltopdf \
+    xvfb && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get -y install --no-install-recommends python3.9 python3.9-distutils && \
+    wget -O /tmp/get-pip.py https://bootstrap.pypa.io/pip/3.9/get-pip.py && \
+    python3.9 /tmp/get-pip.py && \
+    python3.9 -m pip install --no-cache-dir --ignore-installed -r requirements.txt && \
+    python3.9 -m pip install --no-cache-dir --ignore-installed -r dev-requirements.txt && \
+    mkdir -p ./src/media/bills ./src/media/assets ./src/plugins && \
+    rm -rf /tmp/get-pip.py /var/lib/apt/lists/*
 
 COPY ./docker/entrypoint.sh /
 
 EXPOSE 8006
 
 ENTRYPOINT ["/entrypoint.sh"]
-

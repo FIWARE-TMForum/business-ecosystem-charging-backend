@@ -67,13 +67,13 @@ test_connection "MongoDB" ${MONGO_HOST} ${MONGO_PORT}
 
 echo "Starting charging server"
 
-python3 manage.py migrate
+python3.9 manage.py migrate
 
 # Register and start the billing/payment scheduler cron jobs (settings.CRONJOBS),
 # only when this backend owns the billing engine
 if [ "${BAE_CB_BILLING_ENGINE}" = "local" ]; then
-    python3 manage.py crontab remove
-    python3 manage.py crontab add
+    python3.9 manage.py crontab remove
+    python3.9 manage.py crontab add
     service cron start
 fi
 
