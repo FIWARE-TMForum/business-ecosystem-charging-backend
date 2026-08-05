@@ -1223,10 +1223,14 @@ class NotifyItemCompletedTestCase(TestCase):
     tags = ("ordering", "notify-item")
 
     def setUp(self):
+        ordering_management.Order = MagicMock()
+
         # Mock order model
         self._order_model = MagicMock()
         self._order_model.sales_ids = ["sale_123", "sale_456"]
         self._order_model.mark_contract_as_processed = MagicMock()
+        self._order_model.get_contracts.return_value = []
+        ordering_management.Order.objects.get.return_value = self._order_model
 
         # Mock contract
         self._contract = MagicMock()
@@ -1468,6 +1472,60 @@ class NotifyItemCompletedTestCase(TestCase):
         # But product should still be activated
         ordering_manager.activate_product.assert_called_once()
 
+    def test_notify_completed_with_external_bill(self):
+        self._order_model.get_contracts.return_value = [self._contract]
+
+        raw_order = deepcopy(self._raw_order)
+        raw_order["productOrderItem"][0]["productOffering"] = {"href": "offering_1"}
+        self._response.json.return_value = self._offering_automatic()
+
+        ordering_manager = ordering_management.OrderingManager()
+        ordering_manager.activate_product = MagicMock()
+        ordering_manager.complete_inventory_product = MagicMock()
+        ordering_manager.complete_inventory_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        ordering_manager.notify_completed(raw_order)
+
+        self._billing_client_inst.set_customer_bill.assert_called_once_with(
+            "settled",
+            "cb_123"
+        )
+        ordering_manager.activate_product.assert_called_once_with(
+            raw_order["id"],
+            {"id": "product_123", "productOffering": {"id": "offering_1"}}
+        )
+
+    def test_notify_completed_with_internal_bill(self):
+        self._contract.customer_bill = {
+            "id": "cb_internal",
+            "href": "http://cb.com/internal",
+            "internal": True
+        }
+        self._order_model.get_contracts.return_value = [self._contract]
+
+        raw_order = deepcopy(self._raw_order)
+        raw_order["productOrderItem"][0]["productOffering"] = {"href": "offering_1"}
+        self._response.json.return_value = self._offering_automatic()
+
+        ordering_manager = ordering_management.OrderingManager()
+        ordering_manager.activate_product = MagicMock()
+        ordering_manager.complete_inventory_product = MagicMock()
+        ordering_manager.complete_inventory_product.return_value = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"}
+        }
+
+        ordering_manager.notify_completed(raw_order)
+
+        self._billing_client_inst.set_customer_bill.assert_not_called()
+        ordering_manager.activate_product.assert_called_once_with(
+            raw_order["id"],
+            {"id": "product_123", "productOffering": {"id": "offering_1"}}
+        )
+
     def test_notify_item_completed_without_customer_bill_id(self):
         # Setup contract without customer bill id
         self._contract.customer_bill = {"href": "http://cb.com/123"}
@@ -1501,5 +1559,4 @@ class NotifyItemCompletedTestCase(TestCase):
 
         # But product should still be activated
         ordering_manager.activate_product.assert_called_once()
-
 
