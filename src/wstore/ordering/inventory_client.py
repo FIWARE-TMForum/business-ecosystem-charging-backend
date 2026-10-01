@@ -264,7 +264,6 @@ class InventoryClient:
         resource_spec = self.download_spec("resource_catalog", '/resourceSpecification', resource_id)
 
         parties = [normalize_party_ref(party) for party in rel_parties]
-        parties.extend(get_operator_party_roles())
 
         resource = {
             "resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
@@ -282,6 +281,7 @@ class InventoryClient:
         resource_url = get_service_url("resource_inventory", "/resource")
 
         inv_response = requests.post(resource_url, json=resource, verify=settings.VERIFY_REQUESTS)
+        inv_response.raise_for_status()
         inv_resource = inv_response.json()
 
         return inv_resource["id"]
@@ -291,7 +291,6 @@ class InventoryClient:
         service_spec = self.download_spec("service_catalog", '/serviceSpecification', service_id)
 
         parties = [normalize_party_ref(party) for party in rel_parties]
-        parties.extend(get_operator_party_roles())
 
         service = {
             "serviceCharacteristic": [self.build_inventory_char(char, "characteristicValueSpecification") for char in service_spec["specCharacteristic"]],
@@ -307,6 +306,7 @@ class InventoryClient:
 
         resource_url = get_service_url("service_inventory", "/service")
         inv_response = requests.post(resource_url, json=service, verify=settings.VERIFY_REQUESTS)
+        inv_response.raise_for_status()
         inv_service = inv_response.json()
         return inv_service["id"]
 

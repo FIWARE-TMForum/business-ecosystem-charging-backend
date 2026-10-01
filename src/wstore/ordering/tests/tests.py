@@ -1163,7 +1163,7 @@ class InventoryClientTestCase(TestCase):
 
         expected_calls_post = [call("http://localhost:9090/resourceInventory/resource", json={
             "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
-            "relatedParty": [norm_party, operator_party],
+            "relatedParty": [norm_party],
             "resourceStatus": "reserved",
             "startOperatingDate": "2024-03-19T11:49:50Z",
             "name": spec_res["name"],
@@ -1208,7 +1208,7 @@ class InventoryClientTestCase(TestCase):
 
         expected_calls_post = [call("http://localhost:7070/serviceInventory/service", json={
             "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
-            "relatedParty": [norm_party, operator_party],
+            "relatedParty": [norm_party],
             "state": "reserved",
             "startDate": "2024-03-19T11:49:50Z",
             "name": spec_serv["name"],
