@@ -34,34 +34,89 @@ class Plugin:
     def __init__(self, plugin_model):
         self._model = plugin_model
 
-    def on_pre_product_spec_validation(self, provider, asset_t, media_type, url):
+    # The service specification is the asset; no separate asset object is passed.
+    # provider is the organization providing the service, rather than the buyer.
+    # Hooks return None on success and may raise PluginError on failure.
+    # These declarations are integrated into callers in subsequent plan steps.
+
+    def on_pre_service_spec_validation(self, provider, service_spec):
+        """Validate a proposed service specification before backend validation."""
         pass
 
-    def on_post_product_spec_validation(self, provider, asset):
+    def on_post_service_spec_validation(self, provider, service_spec):
+        """Validate after backend checks; catalog creation is not implied."""
         pass
 
-    def on_pre_product_spec_attachment(self, asset, asset_t, product_spec):
+    def on_pre_service_spec_attachment(self, provider, service_spec):
+        """Run before completing the specification's candidate/category link."""
         pass
 
-    def on_post_product_spec_attachment(self, asset, asset_t, product_spec):
+    def on_post_service_spec_attachment(self, provider, service_spec):
+        """Notify successful specification creation and candidate/category linking."""
         pass
 
-    def on_pre_product_spec_upgrade(self, asset, asset_t, product_spec):
+    def on_pre_service_spec_upgrade(self, provider, previous_service_spec, service_spec):
+        """Validate an upgrade from the previous to the proposed specification."""
         pass
 
-    def on_post_product_spec_upgrade(self, asset, asset_t, product_spec):
+    def on_post_service_spec_upgrade(self, provider, previous_service_spec, service_spec):
+        """Notify successful attachment of the upgraded service specification."""
         pass
 
-    def on_pre_product_offering_validation(self, asset, product_offering):
+    def on_pre_product_spec_validation(self, provider, service_spec, product_spec):
+        """Validate this service specification's inclusion in a proposed product."""
         pass
 
-    def on_post_product_offering_validation(self, asset, product_offering):
+    def on_post_product_spec_validation(self, provider, service_spec, product_spec):
+        """Validate the inclusion after backend checks, before product creation."""
         pass
 
-    def on_product_acquisition(self, asset, contract, order):
+    def on_pre_product_spec_attachment(self, provider, service_spec, product_spec):
+        """Run before attaching this service specification to the product."""
         pass
 
-    def on_product_suspension(self, asset, contract, order):
+    def on_post_product_spec_attachment(self, provider, service_spec, product_spec):
+        """Notify successful product creation including this service specification."""
+        pass
+
+    def on_pre_product_spec_upgrade(self, provider, service_spec, previous_product_spec, product_spec):
+        """Validate a product specification upgrade involving this service specification."""
+        pass
+
+    def on_post_product_spec_upgrade(self, provider, service_spec, previous_product_spec, product_spec):
+        """Notify a successful product specification upgrade for this service specification."""
+        pass
+
+    def on_pre_product_offering_validation(self, provider, service_spec, product_spec, product_offering):
+        """Validate an offering with its product and this service specification."""
+        pass
+
+    def on_post_product_offering_validation(self, provider, service_spec, product_spec, product_offering):
+        """Validate the offering after backend checks; publication is not implied."""
+        pass
+
+    def on_service_activation(self, provider, service_spec, service, product, order, contract=None):
+        """Provision an inventory service when procurement permits activation."""
+        pass
+
+    def on_service_suspension(self, provider, service_spec, service, product, order, contract=None):
+        """Temporarily withdraw access to an inventory service."""
+        pass
+
+    def on_service_resumption(self, provider, service_spec, service, product, order, contract=None):
+        """Restore access to a suspended service without initial provisioning."""
+        pass
+
+    def on_service_termination(self, provider, service_spec, service, product, order, contract=None):
+        """Permanently withdraw access to an inventory service and clean up."""
+        pass
+
+    def on_service_modification(self, provider, service_spec, service, product, order, changes, contract=None):
+        """Apply proposed changes to an existing service, keeping its specification."""
+        pass
+
+    def on_service_renewal(self, provider, service_spec, service, product, order, contract=None):
+        """Extend service entitlement after renewal, separately from resumption."""
         pass
 
     def get_usage_specs(self):

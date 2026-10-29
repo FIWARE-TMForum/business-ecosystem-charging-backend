@@ -57,20 +57,15 @@ def load_plugin_module(asset_t):
     return module_class(plugin_model)
 
 
+# Legacy plugin dispatch is disabled until callers supply the new hook arguments.
+# Keep running the wrapped backend operations during the migration.
 def on_product_spec_validation(func):
     @wraps(func)
     def wrapper(self, provider, asset_t, media_type, url, asset_id):
-        plugin_module = load_plugin_module(asset_t)
-
-        # On pre validation
-        plugin_module.on_pre_product_spec_validation(provider, asset_t, media_type, url)
-
-        # Call method
+        # plugin_module = load_plugin_module(asset_t)
+        # plugin_module.on_pre_product_spec_validation(provider, asset_t, media_type, url)
         asset = func(self, provider, asset_t, media_type, url, asset_id)
-
-        # On post validation
-        plugin_module.on_post_product_spec_validation(provider, asset)
-
+        # plugin_module.on_post_product_spec_validation(provider, asset)
         return asset
 
     return wrapper
@@ -79,19 +74,10 @@ def on_product_spec_validation(func):
 def on_product_spec_attachment(func):
     @wraps(func)
     def wrapper(self, asset, asset_t, product_spec):
-        if not len(asset.bundled_assets):
-            # Load plugin module
-            plugin_module = load_plugin_module(asset_t)
-
-            # Call on pre create event handler
-            plugin_module.on_pre_product_spec_attachment(asset, asset_t, product_spec)
-
-        # Call method
+        # plugin_module = load_plugin_module(asset_t)
+        # plugin_module.on_pre_product_spec_attachment(asset, asset_t, product_spec)
         func(self, asset, asset_t, product_spec)
-
-        if not len(asset.bundled_assets):
-            # Call on post create event handler
-            plugin_module.on_post_product_spec_attachment(asset, asset_t, product_spec)
+        # plugin_module.on_post_product_spec_attachment(asset, asset_t, product_spec)
 
     return wrapper
 
@@ -99,19 +85,10 @@ def on_product_spec_attachment(func):
 def on_product_spec_upgrade(func):
     @wraps(func)
     def wrapper(self, asset, asset_t, product_spec):
-        if not len(asset.bundled_assets):
-            # Load plugin module
-            plugin_module = load_plugin_module(asset_t)
-
-            # Call on pre create event handler
-            plugin_module.on_pre_product_spec_upgrade(asset, asset_t, product_spec)
-
-        # Call method
+        # plugin_module = load_plugin_module(asset_t)
+        # plugin_module.on_pre_product_spec_upgrade(asset, asset_t, product_spec)
         func(self, asset, asset_t, product_spec)
-
-        if not len(asset.bundled_assets):
-            # Call on post create event handler
-            plugin_module.on_post_product_spec_upgrade(asset, asset_t, product_spec)
+        # plugin_module.on_post_product_spec_upgrade(asset, asset_t, product_spec)
 
     return wrapper
 
@@ -131,39 +108,26 @@ def _expand_bundled_assets(offering_assets):
 def on_product_offering_validation(func):
     @wraps(func)
     def wrapper(self, provider, product_offering, bundled_offerings):
-        offering_assets = []
-        if len(bundled_offerings) > 0:
-            # Get bundled offerings assets
-            offering_assets = [offering.asset for offering in bundled_offerings if offering.is_digital]
-        else:
-            # Get offering asset
-            asset = Resource.objects.filter(product_id=product_offering["productSpecification"]["id"])
-            offering_assets.extend(asset)
-
-        # Get the effective assets
-        assets = _expand_bundled_assets(offering_assets)
-
-        for asset in assets:
-            plugin_module = load_plugin_module(asset.resource_type)
-            plugin_module.on_pre_product_offering_validation(asset, product_offering)
-
+        # Plugin resolution/asset traversal is deferred to the service-spec migration.
+        # plugin_module.on_pre_product_offering_validation(asset, product_offering)
         is_open = func(self, provider, product_offering, bundled_offerings)
-
-        for asset in assets:
-            plugin_module.on_post_product_offering_validation(asset, product_offering)
-
+        # plugin_module.on_post_product_offering_validation(asset, product_offering)
         return is_open
 
     return wrapper
 
 
 def _execute_asset_event(asset, order, contract, type_):
+    # Removed product hooks cannot be dispatched until service integration.
+    if type_ in ("activate", "suspend"):
+        return
+
     # Load plugin module
     plugin_module = load_plugin_module(asset.resource_type)
 
     events = {
-        "activate": plugin_module.on_product_acquisition,
-        "suspend": plugin_module.on_product_suspension,
+        # "activate": plugin_module.on_product_acquisition,
+        # "suspend": plugin_module.on_product_suspension,
         "usage": plugin_module.on_usage_refresh,
     }
     # Execute event
