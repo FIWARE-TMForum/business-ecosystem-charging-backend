@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2015 - 2017 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2015 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2026 Future Internet Consulting and Development Solutions S. L.
 
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
@@ -21,6 +22,7 @@
 import json
 import os
 import zipfile
+from copy import deepcopy
 from logging import getLogger
 from shutil import rmtree
 
@@ -30,7 +32,8 @@ from wstore.asset_manager.resource_plugins.plugin import Plugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_rollback import installPluginRollback
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
-from wstore.models import Resource, ResourcePlugin
+from wstore.models import ResourcePlugin
+from wstore.asset_manager.resource_plugins.service_catalog import ServiceCatalog
 from wstore.store_commons.utils.version import is_lower_version
 
 logger = getLogger("wstore.default_logger")
@@ -45,6 +48,7 @@ class PluginLoader:
         logger.debug("Creating new PluginLoader")
 
         self._plugin_manager = PluginValidator()
+        self._catalog = ServiceCatalog()
         self._plugins_path = os.path.join(settings.BASEDIR, "wstore", "asset_manager", "resource_plugins", "plugins")
         self._plugins_module = "wstore.asset_manager.resource_plugins.plugins."
 
@@ -73,6 +77,29 @@ class PluginLoader:
         model.overrides = json_info.get("overrides", [])
         model.pull_accounting = json_info.get("pull_accounting", False)
         model.save()
+
+    def _snapshot_model(self, model, rb_log):
+        previous = deepcopy(model.__dict__)
+
+        def restore():
+            model.__dict__.clear()
+            model.__dict__.update(previous)
+            model.save()
+
+        rb_log.log_action("RESTORE_MODEL", restore)
+
+    def _synchronize_category(self, model, info, rb_log):
+        if model.category_id:
+            category_id, name, version = model.category_id, model.name, model.version
+            rb_log.log_action(
+                "RESTORE_CATEGORY",
+                lambda: self._catalog.update_category(category_id, name, version),
+            )
+            self._catalog.update_category(category_id, info["name"], info["version"])
+        else:
+            category_id = self._catalog.create_category(info["name"], info["version"])
+            rb_log.log_action("DELETE_CATEGORY", lambda: self._catalog.delete_category(category_id))
+            model.category_id = category_id
 
     @installPluginRollback
     def install_plugin(self, path, rb_log=None):
@@ -134,9 +161,11 @@ class PluginLoader:
             if not is_lower_version(plugin_model.version, json_info["version"]):
                 logger.error("A newer version of this plugin is already installed")
                 raise PluginError("A newer version of this plugin is already installed")
+            self._snapshot_model(plugin_model, rb_log)
             plugin_model.version_history.append(plugin_model.version)
         except ObjectDoesNotExist:
             plugin_model = ResourcePlugin(plugin_id=plugin_id)
+            rb_log.log_action("MODEL", plugin_model)
 
         # Create a  __init__.py file if needed
         open(os.path.join(plugin_path, "__init__.py"), "a").close()
@@ -155,8 +184,8 @@ class PluginLoader:
             logger.error("Error in implementation for pull accounting")
             raise PluginError(pull_accounting_errors)
 
+        self._synchronize_category(plugin_model, json_info, rb_log)
         self._update_model_data_from_json(plugin_model, module, json_info)
-        rb_log.log_action("MODEL", plugin_model)
         logger.debug("Plugin model saved to database")
 
         # Configure usage specifications if needed
@@ -167,7 +196,9 @@ class PluginLoader:
 
         return plugin_id
 
-    def _downgrade_plugin_to_last_version(self, plugin_id, plugin_model):
+    @installPluginRollback
+    def _downgrade_plugin_to_last_version(self, plugin_id, plugin_model, rb_log=None):
+        self._snapshot_model(plugin_model, rb_log)
         cur_version = plugin_model.version
         dg_version = plugin_model.version_history.pop()
         cur_plugin_dir = f"{plugin_id}-{cur_version.replace('.', '-')}"
@@ -186,6 +217,7 @@ class PluginLoader:
             cur_module_class = self._get_plugin_module(plugin_model.module)
             cur_module_class(plugin_model).remove_usage_specs()
 
+        self._synchronize_category(plugin_model, dg_json_info, rb_log)
         self._update_model_data_from_json(plugin_model, dg_module, dg_json_info)
         logger.debug("Plugin model updated")
 
@@ -232,25 +264,32 @@ class PluginLoader:
 
         logger.info(f"Uninstalling plugin {plugin_id}")
 
-        name = plugin_model.name
-        # Check if the plugin is in use
-        resources = Resource.objects.filter(resource_type=name)
+        if not plugin_model.category_id:
+            raise PluginError("Plugin has no service category; run syncplugincategories before removal")
+        if self._catalog.category_in_use(plugin_model.category_id):
+            raise PermissionDenied("The plugin " + plugin_id + " is being used by service candidates")
 
-        if len(resources) > 0:
-            logger.error(f"Plugin {plugin_id} is in use")
-            raise PermissionDenied("The plugin " + plugin_id + " is being used in some resources")
-
-        while plugin_model.version_history:
-            self._downgrade_plugin_to_last_version(plugin_id, plugin_model)
-
+        # Do not downgrade through old versions merely to remove a package.
         if plugin_model.pull_accounting:
             module_class = self._get_plugin_module(plugin_model.module)
             module_class(plugin_model).remove_usage_specs()
 
-        # Remove plugin files
-        plugin_path = os.path.join(self._plugins_path, plugin_id)
-        rmtree(plugin_path)
-
-        # Remove model
+        # Keep the package and registry if the catalog refuses deletion.
+        self._catalog.delete_category(plugin_model.category_id)
+        for version in [plugin_model.version] + plugin_model.version_history:
+            plugin_dir = f"{plugin_id}-{version.replace('.', '-')}"
+            plugin_path = os.path.join(self._plugins_path, plugin_dir)
+            if os.path.isdir(plugin_path):
+                rmtree(plugin_path)
         plugin_model.delete()
         logger.info(f"Plugin {plugin_id} successfully uninstalled")
+
+    @installPluginRollback
+    def synchronize_plugin_category(self, plugin_id, rb_log=None):
+        """Publish a category for an existing installation without reinstalling it."""
+        model = ResourcePlugin.objects.get(plugin_id=plugin_id)
+        if not model.category_id:
+            self._snapshot_model(model, rb_log)
+            self._synchronize_category(model, {"name": model.name, "version": model.version}, rb_log)
+            model.save()
+        return model.category_id

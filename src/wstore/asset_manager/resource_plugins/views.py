@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2015 - 2017 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2015 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2026 Future Internet Consulting and Development Solutions S. L.
 
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
@@ -32,13 +33,14 @@ from wstore.store_commons.utils.http import authentication_required, build_respo
 
 def get_plugin_info(plugin):
     site = settings.SITE
-    plugin_url = urljoin(site, "api/offering/resources/plugins/" + plugin.plugin_id)
+    plugin_url = urljoin(site, "charging/api/assetManagement/assetTypes/" + plugin.plugin_id)
     plugin_info = {
         "id": plugin.plugin_id,
         "href": plugin_url,
         "name": plugin.name,
         "author": plugin.author,
         "version": plugin.version,
+        "categoryId": plugin.category_id,
         "mediaTypes": plugin.media_types,
         "formats": plugin.formats,
         "overrides": plugin.overrides,
