@@ -19,19 +19,25 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import json
 import os
 from importlib import reload
 from json import dump as jsondump
 from shutil import rmtree
+from tempfile import TemporaryDirectory
+from zipfile import ZipFile
 
 from bson.objectid import ObjectId
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
-from django.test import TestCase
-from mock import MagicMock, call
+from django.test import SimpleTestCase, TestCase, override_settings
+from mock import MagicMock, Mock, call, patch
 from parameterized import parameterized
 from requests.exceptions import HTTPError
 from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loader
+from wstore.asset_manager.resource_plugins.plugin import Plugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
+from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
+from wstore.asset_manager.resource_plugins.service_catalog import ServiceCatalog
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.asset_manager.resource_plugins.test_data import *
 from wstore.models import ResourcePlugin
@@ -51,6 +57,11 @@ class PluginLoaderTestCase(TestCase):
     _to_remove = None
 
     def setUp(self):
+        catalog_patch = patch.object(plugin_loader, "ServiceCatalog")
+        self.catalog_mock = catalog_patch.start().return_value
+        self.catalog_mock.create_category.return_value = "category-1"
+        self.catalog_mock.category_in_use.return_value = False
+        self.addCleanup(catalog_patch.stop)
         # Create PluginManager mock
         plugin_loader.PluginValidator = MagicMock(name="PluginManager")
         self.manager_mock = MagicMock()
@@ -345,7 +356,7 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(str(error), err_msg)
 
     def _plugin_in_use(self):
-        plugin_loader.Resource.objects.filter.return_value = ["resource"]
+        self.catalog_mock.category_in_use.return_value = True
 
     def _plugin_not_exists(self):
         plugin_loader.ResourcePlugin.objects.get.side_effect = ObjectDoesNotExist()
@@ -370,7 +381,7 @@ class PluginLoaderTestCase(TestCase):
                 False,
                 _plugin_in_use,
                 PermissionDenied,
-                "The plugin test_plugin is being used in some resources",
+                "The plugin test_plugin is being used by service candidates",
             ),
             (
                 "not_exists",
@@ -385,16 +396,12 @@ class PluginLoaderTestCase(TestCase):
         plugin_name = "Test Plugin"
 
         # Mock libraries
-        plugin_loader.Resource = MagicMock(name="Resource")
-
-        self.resources_mock = MagicMock()
-        plugin_loader.Resource.objects.filter.return_value = []
-
         plugin_loader.ResourcePlugin = MagicMock(name="ResourcePlugin")
 
         plugin_mock = MagicMock()
         plugin_mock.name = plugin_name
         plugin_mock.version = "1.0"
+        plugin_mock.category_id = "category-1"
         plugin_mock.version_history = []
         plugin_mock.pull_accounting = pull
         plugin_mock.module = "wstore.asset_manager.resource_plugins.tests.TestPlugin"
@@ -403,6 +410,9 @@ class PluginLoaderTestCase(TestCase):
         plugin_loader.ResourcePlugin.objects.get.return_value = plugin_mock
 
         plugin_loader.rmtree = MagicMock(name="rmtree")
+        path_patch = patch.object(plugin_loader.os.path, "isdir", return_value=True)
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
 
         if side_effect is not None:
             if name == "two_versions":
@@ -423,8 +433,16 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(error, None)
             # Check calls
             plugin_loader.ResourcePlugin.objects.get.assert_called_once_with(plugin_id="test_plugin")
-            plugin_loader.Resource.objects.filter.assert_called_once_with(resource_type=plugin_name)
-            plugin_loader.rmtree.assert_called_once_with(os.path.join(plugin_l._plugins_path, "test_plugin"))
+            self.catalog_mock.category_in_use.assert_called_once_with("category-1")
+            self.catalog_mock.delete_category.assert_called_once_with("category-1")
+            expected_versions = ["1.0", "0.1"] if name == "two_versions" else ["1.0"]
+            self.assertEqual(
+                [
+                    call(os.path.join(plugin_l._plugins_path, "test_plugin-" + v.replace(".", "-")))
+                    for v in expected_versions
+                ],
+                plugin_loader.rmtree.call_args_list,
+            )
             plugin_mock.delete.assert_called_once_with()
 
             self.assertEquals(pull, plugin_mock.usage_called)
@@ -980,3 +998,177 @@ class DecoratorsTestCase(TestCase):
     #     decorators.Offering.objects.get.assert_called_once_with(pk=ObjectId("61004aba5e05acc115f022f0"))
     #     decorators.load_plugin_module.assert_called_once_with("asset")
     #     self._module.on_usage_refresh.assert_called_once_with(offering.asset, self._contract, self._order)
+
+
+@override_settings(SERVICE_CATALOG="https://catalog.example/tmf-api/serviceCatalogManagement/v4", VERIFY_REQUESTS=True)
+class ServiceCatalogTests(SimpleTestCase):
+    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
+    def test_category_payload_and_configured_url(self, request):
+        request.return_value.json.return_value = {"id": "category-1"}
+        self.assertEqual("category-1", ServiceCatalog().create_category("test", "1.0"))
+        request.assert_called_once_with(
+            "POST",
+            "https://catalog.example/tmf-api/serviceCatalogManagement/v4/serviceCategory",
+            verify=True,
+            timeout=30,
+            json={"name": "test", "version": "1.0"},
+        )
+        request.return_value.raise_for_status.assert_called_once_with()
+
+    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
+    def test_candidate_reference_check(self, request):
+        client = ServiceCatalog()
+        request.return_value.json.return_value = [{"id": "candidate"}]
+        self.assertTrue(client.category_in_use("category-1"))
+        self.assertEqual({"category.id": "category-1", "limit": 1}, request.call_args.kwargs["params"])
+        request.return_value.json.return_value = []
+        self.assertFalse(client.category_in_use("category-1"))
+        request.return_value.json.return_value = {"error": "invalid"}
+        with self.assertRaises(PluginError):
+            client.category_in_use("category-1")
+
+    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
+    def test_http_failure_is_not_treated_as_unused(self, request):
+        request.return_value.raise_for_status.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            ServiceCatalog().category_in_use("category-1")
+
+
+class RecordingPlugin(Plugin):
+    pass
+
+
+class PackageManagementTests(SimpleTestCase):
+    def setUp(self):
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.catalog_patch = patch("wstore.asset_manager.resource_plugins.plugin_loader.ServiceCatalog")
+        self.catalog = self.catalog_patch.start().return_value
+        self.addCleanup(self.catalog_patch.stop)
+        self.catalog.create_category.return_value = "category-1"
+        self.catalog.category_in_use.return_value = False
+        self.loader = PluginLoader()
+        self.loader._plugins_path = self.directory.name
+        self.loader._get_plugin_module = Mock(return_value=RecordingPlugin)
+        self.save = patch.object(ResourcePlugin, "save").start()
+        self.delete = patch.object(ResourcePlugin, "delete").start()
+        self.addCleanup(patch.stopall)
+        self.model = ResourcePlugin(
+            plugin_id="test",
+            name="test",
+            version="1.0",
+            category_id="category-1",
+            version_history=[],
+            module="previous.Plugin",
+            formats=["URL"],
+        )
+        self.lookup = patch.object(ResourcePlugin.objects, "get", return_value=self.model).start()
+
+    def package(self, version):
+        path = os.path.join(self.directory.name, "package.zip")
+        with ZipFile(path, "w") as archive:
+            archive.writestr(
+                "package.json",
+                json.dumps(
+                    {
+                        "name": "test",
+                        "version": version,
+                        "author": "author",
+                        "module": "test.Plugin",
+                        "formats": ["URL"],
+                    }
+                ),
+            )
+        return path
+
+    def test_install_creates_category_and_retains_local_asset_type(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        with patch.object(
+            self.loader, "_update_model_data_from_json", wraps=self.loader._update_model_data_from_json
+        ) as update:
+            self.assertEqual("test", self.loader.install_plugin(self.package("1.0")))
+        model = update.call_args.args[0]
+        self.assertEqual("category-1", model.category_id)
+        self.assertEqual("test", model.plugin_id)
+        self.catalog.create_category.assert_called_once_with("test", "1.0")
+
+    def test_upgrade_keeps_category_identity(self):
+        self.loader.install_plugin(self.package("2.0"))
+        self.assertEqual("category-1", self.model.category_id)
+        self.assertEqual(["1.0"], self.model.version_history)
+        self.catalog.create_category.assert_not_called()
+        self.catalog.update_category.assert_called_once_with("category-1", "test", "2.0")
+
+    def test_failed_upgrade_restores_previous_installation(self):
+        self.save.side_effect = [RuntimeError("save failed"), None]
+        with self.assertRaises(RuntimeError):
+            self.loader.install_plugin(self.package("2.0"))
+        self.assertEqual("1.0", self.model.version)
+        self.assertEqual([], self.model.version_history)
+        self.assertEqual("previous.Plugin", self.model.module)
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+        self.assertEqual(("category-1", "test", "1.0"), self.catalog.update_category.call_args.args)
+        self.delete.assert_not_called()
+
+    def test_failed_install_removes_only_new_category(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        self.save.side_effect = RuntimeError("save failed")
+        with self.assertRaises(RuntimeError):
+            self.loader.install_plugin(self.package("1.0"))
+        self.catalog.delete_category.assert_called_once_with("category-1")
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
+
+    def test_referenced_category_blocks_removal(self):
+        self.catalog.category_in_use.return_value = True
+        with self.assertRaises(PermissionDenied):
+            self.loader.uninstall_plugin("test")
+        self.catalog.delete_category.assert_not_called()
+        self.delete.assert_not_called()
+
+    def test_catalog_failure_leaves_package_installed(self):
+        for method in [self.catalog.category_in_use, self.catalog.delete_category]:
+            with self.subTest(method=method):
+                method.side_effect = HTTPError("offline")
+                with self.assertRaises(HTTPError):
+                    self.loader.uninstall_plugin("test")
+                self.delete.assert_not_called()
+                method.side_effect = None
+
+    def test_removal_deletes_actual_version_directories(self):
+        self.model.version_history = ["0.1"]
+        for directory in ["test-0-1", "test-1-0", "test-other-1-0"]:
+            os.mkdir(os.path.join(self.directory.name, directory))
+        self.loader.uninstall_plugin("test")
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-0-1")))
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
+        self.assertTrue(os.path.isdir(os.path.join(self.directory.name, "test-other-1-0")))
+        self.catalog.delete_category.assert_called_once_with("category-1")
+        self.delete.assert_called_once_with()
+
+    def test_existing_installation_can_publish_missing_category(self):
+        self.model.category_id = None
+        self.assertEqual("category-1", self.loader.synchronize_plugin_category("test"))
+        self.loader.synchronize_plugin_category("test")
+        self.catalog.create_category.assert_called_once_with("test", "1.0")
+
+    def test_missing_category_blocks_removal(self):
+        self.model.category_id = None
+        with self.assertRaises(PluginError):
+            self.loader.uninstall_plugin("test")
+        self.delete.assert_not_called()
+
+    def test_downgrade_keeps_category(self):
+        self.model.version = "2.0"
+        self.model.version_history = ["1.0"]
+        path = os.path.join(self.directory.name, "test-1-0")
+        os.mkdir(path)
+        with open(os.path.join(path, "package.json"), "w") as manifest:
+            json.dump(
+                {"name": "test", "version": "1.0", "author": "author", "module": "test.Plugin", "formats": ["URL"]},
+                manifest,
+            )
+        os.mkdir(os.path.join(self.directory.name, "test-2-0"))
+        self.loader.downgrade_plugin("test")
+        self.assertEqual("1.0", self.model.version)
+        self.assertEqual("category-1", self.model.category_id)
+        self.catalog.update_category.assert_called_once_with("category-1", "test", "1.0")
