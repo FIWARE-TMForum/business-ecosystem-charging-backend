@@ -40,7 +40,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from wstore.charging_engine.payment_client.payment_client import PaymentClient, PaymentClientError
 from wstore.ordering.errors import PaymentError
-from wstore.ordering.models import Offering, PaymentRecord
+from wstore.ordering.models import PaymentRecord
+from wstore.store_commons.product_catalog import ProductCatalog, ProductCatalogError
 
 
 logger = getLogger("wstore.default_logger")
@@ -251,7 +252,15 @@ class RedsysClient(PaymentClient):
         return_url = f"{frontend_url}/checkout?{accept_param}&sig={success_sig}"
         cancel_url = f"{frontend_url}/checkout?{cancel_param}&sig={cancel_sig}"
 
-        products = {contract.item_id: Offering.objects.get(off_id=contract.offering) for contract in self._order.contracts}
+        catalog = ProductCatalog()
+
+        try:
+            products = {
+                contract.item_id: catalog.get_offering(contract.offering)
+                for contract in self._order.contracts
+            }
+        except ProductCatalogError as exc:
+            raise PaymentClientError(self.NAME, "The offering information cannot be retrieved.") from exc
 
         # Redsys handles a single aggregated charge, so the total amount is
         # computed here and the customer bill ids travel in Ds_MerchantData
@@ -264,7 +273,7 @@ class RedsysClient(PaymentClient):
                 has_recurring = True
             total += Decimal(t["price"])
             bills.append(t["billId"])
-            names.append(products[t["item"]].name)
+            names.append(products[t["item"]]["name"])
 
         ds_order = _new_order_number()
         merchant_data = json.dumps({"ref": str(self._order.order_id), "bills": bills})
