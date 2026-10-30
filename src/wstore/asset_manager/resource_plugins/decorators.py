@@ -93,40 +93,11 @@ def _load_plugin_model(plugin_model):
     return module_class(plugin_model)
 
 
-# Legacy plugin dispatch is disabled until callers supply the new hook arguments.
-# Keep running the wrapped backend operations during the migration.
-def on_product_spec_validation(func):
-    @wraps(func)
-    def wrapper(self, provider, asset_t, media_type, url, asset_id):
-        # plugin_module = load_plugin_module(asset_t)
-        # plugin_module.on_pre_product_spec_validation(provider, asset_t, media_type, url)
-        asset = func(self, provider, asset_t, media_type, url, asset_id)
-        # plugin_module.on_post_product_spec_validation(provider, asset)
-        return asset
+def on_product_spec_validation(provider, service_spec, product_spec):
+    plugin = load_plugin_module(service_spec=service_spec)
 
-    return wrapper
-
-
-def on_product_spec_attachment(func):
-    @wraps(func)
-    def wrapper(self, asset, asset_t, product_spec):
-        # plugin_module = load_plugin_module(asset_t)
-        # plugin_module.on_pre_product_spec_attachment(asset, asset_t, product_spec)
-        func(self, asset, asset_t, product_spec)
-        # plugin_module.on_post_product_spec_attachment(asset, asset_t, product_spec)
-
-    return wrapper
-
-
-def on_product_spec_upgrade(func):
-    @wraps(func)
-    def wrapper(self, asset, asset_t, product_spec):
-        # plugin_module = load_plugin_module(asset_t)
-        # plugin_module.on_pre_product_spec_upgrade(asset, asset_t, product_spec)
-        func(self, asset, asset_t, product_spec)
-        # plugin_module.on_post_product_spec_upgrade(asset, asset_t, product_spec)
-
-    return wrapper
+    if plugin is not None:
+        plugin.on_product_spec_validation(provider, service_spec, product_spec)
 
 
 def _expand_bundled_assets(offering_assets):

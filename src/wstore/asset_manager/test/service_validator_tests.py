@@ -185,10 +185,6 @@ class ServiceLifecycleTests(SimpleTestCase):
 
         for name in (
             "validate_upgrade",
-            "attach_info",
-            "attach_upgrade",
-            "rollback_create",
-            "rollback_upgrade",
             "validate_deletion",
         ):
             self.assertNotIn(name, ServiceValidator.__dict__)
@@ -203,10 +199,6 @@ class ServiceLifecycleTests(SimpleTestCase):
             "validate_creation",
             "validate_update",
             "validate_upgrade",
-            "attach_info",
-            "attach_upgrade",
-            "rollback_create",
-            "rollback_upgrade",
             "validate_deletion",
         ):
             self.assertEqual(

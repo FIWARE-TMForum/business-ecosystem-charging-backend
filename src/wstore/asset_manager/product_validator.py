@@ -19,313 +19,123 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from bson import ObjectId
+from urllib.parse import quote
+
+import requests
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
 
 from wstore.asset_manager.catalog_validator import CatalogValidator
 from wstore.asset_manager.errors import ProductError
-from wstore.asset_manager.inventory_upgrader import InventoryUpgrader
-from wstore.asset_manager.models import Resource, ResourcePlugin
-from wstore.asset_manager.resource_plugins.decorators import (
-    on_product_spec_attachment,
-    on_product_spec_upgrade,
-    on_product_spec_validation,
-)
-from wstore.store_commons.database import DocumentLock
-from wstore.store_commons.errors import ConflictError
-from wstore.store_commons.rollback import downgrade_asset, downgrade_asset_pa, rollback
-from wstore.store_commons.utils.url import is_valid_url
-from wstore.store_commons.utils.version import is_lower_version, is_valid_version
+from wstore.asset_manager.resource_plugins.decorators import on_product_spec_validation
+from wstore.store_commons.service_catalog import ServiceCatalog
+from wstore.store_commons.utils.url import get_service_url
 
 
 class ProductValidator(CatalogValidator):
-    def _get_asset_resouces(self, asset_t, url):
-        # Search the asset type
-        asset_type = ResourcePlugin.objects.get(name=asset_t)
+    """Validate product/service associations before the proxy writes the catalog."""
 
-        # Validate location format
-        if not is_valid_url(url):
-            raise ProductError("The location characteristic included in the product specification is not a valid URL")
+    def __init__(self):
+        super().__init__()
 
-        # Use the location to retrieve the attached asset
-        assets = Resource.objects.filter(download_link=url)
+        self._service_catalog = ServiceCatalog()
 
-        return asset_type, assets
+    @staticmethod
+    def _prepare(product_spec):
+        if not isinstance(product_spec, dict):
+            raise ProductError("The product specification must be an object")
 
-    def _validate_product_characteristics(self, asset, provider, asset_t, media_type):
-        if asset.provider != provider:
-            raise PermissionDenied(
-                "You are not authorized to use the digital asset specified in the location characteristic"
-            )
+        if "isBundle" in product_spec and not isinstance(product_spec["isBundle"], bool):
+            raise ProductError("The field isBundle must be a boolean")
 
-        if asset.resource_type != asset_t:
-            raise ProductError("The specified asset type is different from the asset one")
+    @staticmethod
+    def _reference_ids(specification, field):
+        references = specification.get(field, [])
 
-        if asset.content_type.lower() != media_type.lower():
-            raise ProductError("The provided media type characteristic is different from the asset one")
+        if not isinstance(references, list):
+            raise ProductError("The field " + field + " must be a list of references")
 
-        if asset.is_public:
-            raise ProductError("It is not allowed to create products with public assets")
+        ids = []
 
-    @on_product_spec_validation
-    def _validate_product(self, provider, asset_t, media_type, url, asset_id):
-        asset_type, assets = self._get_asset_resouces(asset_t, url)
-
-        if len(assets):
-            # The asset is already registered
-            asset = None
-            for url_asset in assets:
-                if str(url_asset.pk) == asset_id:
-                    asset = url_asset
-                    break
-            else:
-                raise ProductError(
-                    "The URL specified in the location characteristic does not point to a valid digital asset"
-                )
-
-            if asset.product_id is not None:
-                raise ConflictError(
-                    "There is already an existing product specification defined for the given digital asset"
-                )
-
-            self._validate_product_characteristics(asset, provider, asset_t, media_type)
-
-            asset.has_terms = self._has_terms
-            asset.save()
-        else:
-            # The asset is not yet included, this option is only valid for URL assets without metadata
-            site = settings.SITE
-            if "FILE" in asset_type.formats and (
-                ("URL" not in asset_type.formats) or ("URL" in asset_type.formats and url.startswith(site))
+        for reference in references:
+            if (
+                not isinstance(reference, dict)
+                or not isinstance(reference.get("id"), str)
+                or not reference["id"].strip()
             ):
-                raise ProductError(
-                    "The URL specified in the location characteristic does not point to a valid digital asset"
-                )
+                raise ProductError("Each " + field + " reference must contain an id")
 
-            if asset_type.form:
-                raise ProductError("Automatic creation of digital assets with expected metadata is not supported")
+            if reference["id"] in ids:
+                raise ProductError("Duplicate " + field + " reference: " + reference["id"])
 
-            # Validate media type
-            if len(asset_type.media_types) and media_type.lower() not in [
-                media.lower() for media in asset_type.media_types
-            ]:
-                raise ProductError(
-                    "The media type characteristic included in the product specification is not valid for the given asset type"
-                )
+            ids.append(reference["id"])
 
-            # Create the new asset model
-            asset = Resource.objects.create(
-                has_terms=self._has_terms,
-                resource_path="",
-                download_link=url,
-                provider=provider,
-                content_type=media_type,
-            )
+        return ids
 
-        # The asset model is included to the rollback list so if an exception is raised in the plugin post validation
-        # the asset model would be deleted
-        self.rollback_logger["models"].append(asset)
+    @staticmethod
+    def _check_specification(specification, specification_id, kind):
+        if not isinstance(specification, dict) or specification.get("id") != specification_id:
+            raise ProductError("Invalid " + kind + " specification reference: " + specification_id)
 
-        return asset
+        return specification
 
-    @on_product_spec_attachment
-    def _attach_product_info(self, asset, asset_t, product_spec):
-        # Complete asset information
-        asset.product_id = product_spec["id"]
-        asset.version = product_spec["version"]
-        asset.resource_type = asset_t
-        asset.state = "attached"
-        asset.save()
+    def _get_product_spec(self, specification_id):
+        url = get_service_url("catalog", "/productSpecification/" + quote(specification_id, safe=""))
 
-    def _extract_digital_assets(self, bundled_specs):
-        assets = []
-        for bundled_info in bundled_specs:
-            digital_asset = Resource.objects.filter(product_id=bundled_info["id"])
-            if len(digital_asset):
-                assets.append(digital_asset[0].pk)
+        try:
+            response = requests.get(url, verify=settings.VERIFY_REQUESTS, timeout=30)
+            response.raise_for_status()
 
-        return assets
+            specification = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise ProductError("Cannot retrieve product specification: " + specification_id) from exc
 
-    def _build_bundle(self, provider, product_spec):
-        if (
-            "bundledProductSpecification" not in product_spec
-            or not len(product_spec["bundledProductSpecification"]) > 1
-        ):
-            raise ProductError("A product spec bundle must contain at least two bundled product specs")
+        return self._check_specification(specification, specification_id, "product")
 
-        assets = self._extract_digital_assets(product_spec["bundledProductSpecification"])
+    def _get_service_specs(self, product_spec):
+        specifications = []
 
-        if len(assets) and len(assets) != len(product_spec["bundledProductSpecification"]):
-            raise ProductError(
-                "Mixed product bundles are not allowed. All bundled products must be digital or physical"
-            )
+        for specification_id in self._reference_ids(product_spec, "serviceSpecification"):
+            try:
+                specification = self._service_catalog.get_specification(specification_id)
+            except (requests.RequestException, ValueError) as exc:
+                raise ProductError("Cannot retrieve service specification: " + specification_id) from exc
 
-        if len(assets):
-            Resource.objects.create(
-                has_terms=self._has_terms,
-                resource_path="",
-                download_link="",
-                provider=provider,
-                content_type="bundle",
-                bundled_assets=assets,
-            )
+            specifications.append(self._check_specification(specification, specification_id, "service"))
 
-    @rollback()
-    def attach_info(self, provider, product_spec):
-        # Get the digital asset
-        asset_t, media_type, url, asset_id = self.parse_characteristics(product_spec)
-        is_digital = asset_t is not None and media_type is not None and url is not None
+        return specifications
 
-        asset = None
-        if is_digital:
-            asset = Resource.objects.get(pk=ObjectId(asset_id))
+    def validate_creation(self, provider, catalog_element):
+        self._prepare(catalog_element)
 
-        elif product_spec["isBundle"]:
-            # Get the list of bundles pending to be attached of the given provider
-            pending_bundles = Resource.objects.filter(
-                product_id=None,
-                provider=provider,
-                content_type="bundle",
-                resource_path="",
-                download_link="",
-            )
+        bundled_ids = self._reference_ids(catalog_element, "bundledProductSpecification")
+        service_ids = self._reference_ids(catalog_element, "serviceSpecification")
 
-            # Get the digital assets included in the bundle product spec
-            assets = self._extract_digital_assets(product_spec["bundledProductSpecification"])
+        if catalog_element.get("isBundle", False):
+            if len(bundled_ids) < 2:
+                raise ProductError("A product spec bundle must contain at least two bundled product specs")
 
-            asset = None
-            for bundle in pending_bundles:
-                if len(bundle.bundled_assets) == len(assets):
-                    for bundled_asset in bundle.bundled_assets:
-                        if bundled_asset not in assets:
-                            break
-                    else:
-                        # All the assets are the expected ones, so the bundle is correct
-                        asset = bundle
+            if service_ids:
+                raise ProductError("Product spec bundles cannot define their own services")
 
-                    if asset is not None:
-                        break
+            products = [self._get_product_spec(specification_id) for specification_id in bundled_ids]
 
-        if asset is not None:
-            # TODO: Drop the product object from the catalog in case of error
-            self.rollback_logger["models"].append(asset)
+            for product in products:
+                self._prepare(product)
 
-            # The asset is a digital product or a bundle containing a digital product
-            self._attach_product_info(asset, asset_t, product_spec)
+                if product.get("isBundle", False) or self._reference_ids(product, "bundledProductSpecification"):
+                    raise ProductError("Product spec bundles cannot contain other bundles")
+        else:
+            if bundled_ids:
+                raise ProductError("Individual product specs cannot contain bundled product specs")
 
-    @on_product_spec_upgrade
-    def _notify_product_upgrade(self, asset, asset_t, product_spec):
-        # Update existing inventory products to include new version asset info
-        upgrader = InventoryUpgrader(asset)
-        upgrader.start()
+            products = [catalog_element]
 
-        # Set the asset status to attached
-        asset.state = "attached"
-        asset.save()
+        # Resolve every reference before invoking plugins; missing services cannot be silently skipped.
+        associations = [(product, self._get_service_specs(product)) for product in products]
 
-    def _get_upgrading_asset(self, asset_t, url, product_id):
-        asset_type, assets = self._get_asset_resouces(asset_t, url)
+        for product, services in associations:
+            for service in services:
+                on_product_spec_validation(provider, service, product)
 
-        if not len(assets):
-            raise ProductError(
-                "The URL specified in the location characteristic does not point to a valid digital asset"
-            )
-
-        asset = assets[0]
-        # Lock the access to the asset
-        lock = DocumentLock("wstore_resource", asset.pk, "asset")
-        lock.wait_document()
-
-        asset = Resource.objects.get(pk=asset.pk)
-
-        # Check that the asset is in upgrading state
-        if asset.state != "upgrading":
-            raise ProductError("There is not a new version of the specified digital asset")
-
-        if asset.product_id != product_id:
-            raise ProductError("The specified digital asset is included in other product spec")
-
-        return asset, lock
-
-    def attach_upgrade(self, provider, product_spec):
-        asset_t, media_type, url, asset_id = self.parse_characteristics(product_spec)
-        is_digital = asset_t is not None and media_type is not None and url is not None
-
-        if is_digital:
-            asset, lock = self._get_upgrading_asset(asset_t, url, product_spec["id"])
-            self._notify_product_upgrade(asset, asset_t, product_spec)
-
-            # Release asset lock
-            lock.unlock_document()
-
-    @rollback(downgrade_asset_pa)
-    def validate_upgrade(self, provider, product_spec):
-        if "version" in product_spec and "productSpecCharacteristic" in product_spec:
-            # Extract product needed characteristics
-            asset_t, media_type, url, asset_id = self.parse_characteristics(product_spec)
-            is_digital = asset_t is not None and media_type is not None and url is not None
-
-            if is_digital:
-                asset, lock = self._get_upgrading_asset(asset_t, url, product_spec["id"])
-
-                self._to_downgrade = asset
-
-                self._validate_product_characteristics(asset, provider, asset_t, media_type)
-
-                # Check product version
-                if not is_valid_version(product_spec["version"]):
-                    raise ProductError("The field version does not have a valid format")
-
-                if not is_lower_version(asset.old_versions[-1].version, product_spec["version"]):
-                    raise ProductError("The provided version is not higher that the previous one")
-
-                # Attach new info
-                asset.version = product_spec["version"]
-                asset.save()
-
-                # Release asset lock
-                lock.unlock_document()
-
-    def _rollback_handler(self, provider, product_spec, rollback_method):
-        asset_t, media_type, url, asset_id = self.parse_characteristics(product_spec)
-        is_digital = asset_t is not None and media_type is not None and url is not None
-
-        if is_digital:
-            asset_type, assets = self._get_asset_resouces(asset_t, url)
-
-            asset = assets[0]
-            self._validate_product_characteristics(asset, provider, asset_t, media_type)
-            rollback_method(asset)
-
-    def rollback_create(self, provider, product_spec):
-        def rollback_method(asset):
-            if asset.product_id is None:
-                asset.delete()
-
-        self._rollback_handler(provider, product_spec, rollback_method)
-
-    def rollback_upgrade(self, provider, product_spec):
-        def rollback_method(asset):
-            if asset.product_id == product_spec["id"] and asset.state == "upgrading":
-                downgrade_asset(asset)
-
-        self._rollback_handler(provider, product_spec, rollback_method)
-
-    @rollback()
-    def validate_creation(self, provider, product_spec):
-        # Extract product needed characteristics
-        asset_t, media_type, url, asset_id = self.parse_characteristics(product_spec)
-        is_digital = asset_t is not None and media_type is not None and url is not None
-
-        # Product spec bundles are intended for creating composed products, it cannot contain its own asset
-        if product_spec["isBundle"] and is_digital:
-            raise ProductError("Product spec bundles cannot define digital assets")
-
-        if not product_spec["isBundle"] and is_digital:
-            # Process the new digital product
-            self._validate_product(provider, asset_t, media_type, url, asset_id)
-
-        elif product_spec["isBundle"] and not is_digital:
-            # The product bundle may contain digital products already registered
-            self._build_bundle(provider, product_spec)
+    def validate_update(self, provider, catalog_element):
+        self.validate_creation(provider, catalog_element)

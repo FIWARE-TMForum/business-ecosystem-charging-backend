@@ -372,23 +372,6 @@ class OfferingValidator(CatalogValidator):
             bundled_offerings=[offering.pk for offering in bundled_offerings],
         )
 
-    def attach_info(self, provider, product_offering):
-        # Find the offering model to attach the info
-        offerings = Offering.objects.filter(
-            off_id=None,
-            owner_organization=provider,
-            name=product_offering["name"],
-            version=product_offering["version"],
-        )
-
-        if not len(offerings):
-            raise ValueError("The specified offering has not been registered")
-
-        offering = offerings[0]
-        offering.off_id = product_offering["id"]
-        offering.href = product_offering["href"]
-        offering.save()
-
     def validate_creation(self, provider, product_offering):
         bundled_offerings = self._get_bundled_offerings(product_offering)
         is_open, is_custom = self._validate_offering_pricing(provider, product_offering, bundled_offerings)
