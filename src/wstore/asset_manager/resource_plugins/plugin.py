@@ -47,20 +47,12 @@ class Plugin:
         """Validate after backend checks; catalog creation is not implied."""
         pass
 
-    def on_pre_service_spec_attachment(self, provider, service_spec):
-        """Run before completing the specification's candidate/category link."""
+    def on_pre_service_spec_upgrade(self, provider, service_spec):
+        """Validate an update to the existing service specification."""
         pass
 
-    def on_post_service_spec_attachment(self, provider, service_spec):
-        """Notify successful specification creation and candidate/category linking."""
-        pass
-
-    def on_pre_service_spec_upgrade(self, provider, previous_service_spec, service_spec):
-        """Validate an upgrade from the previous to the proposed specification."""
-        pass
-
-    def on_post_service_spec_upgrade(self, provider, previous_service_spec, service_spec):
-        """Notify successful attachment of the upgraded service specification."""
+    def on_post_service_spec_upgrade(self, provider, service_spec):
+        """Notify successful catalog update of the upgraded service specification."""
         pass
 
     def on_pre_product_spec_validation(self, provider, service_spec, product_spec):
@@ -71,11 +63,7 @@ class Plugin:
         """Validate the inclusion after backend checks, before product creation."""
         pass
 
-    def on_pre_product_spec_attachment(self, provider, service_spec, product_spec):
-        """Run before attaching this service specification to the product."""
-        pass
-
-    def on_post_product_spec_attachment(self, provider, service_spec, product_spec):
+    def on_post_product_spec_creation(self, provider, service_spec, product_spec):
         """Notify successful product creation including this service specification."""
         pass
 

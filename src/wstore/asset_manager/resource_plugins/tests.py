@@ -29,7 +29,7 @@ from zipfile import ZipFile
 
 from bson.objectid import ObjectId
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from mock import MagicMock, Mock, call, patch
 from parameterized import parameterized
 from requests.exceptions import HTTPError
@@ -37,7 +37,7 @@ from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loa
 from wstore.asset_manager.resource_plugins.plugin import Plugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
-from wstore.asset_manager.resource_plugins.service_catalog import ServiceCatalog
+from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.asset_manager.resource_plugins.test_data import *
 from wstore.models import ResourcePlugin
@@ -1000,40 +1000,6 @@ class DecoratorsTestCase(TestCase):
     #     self._module.on_usage_refresh.assert_called_once_with(offering.asset, self._contract, self._order)
 
 
-@override_settings(SERVICE_CATALOG="https://catalog.example/tmf-api/serviceCatalogManagement/v4", VERIFY_REQUESTS=True)
-class ServiceCatalogTests(SimpleTestCase):
-    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
-    def test_category_payload_and_configured_url(self, request):
-        request.return_value.json.return_value = {"id": "category-1"}
-        self.assertEqual("category-1", ServiceCatalog().create_category("test", "1.0"))
-        request.assert_called_once_with(
-            "POST",
-            "https://catalog.example/tmf-api/serviceCatalogManagement/v4/serviceCategory",
-            verify=True,
-            timeout=30,
-            json={"name": "test", "version": "1.0"},
-        )
-        request.return_value.raise_for_status.assert_called_once_with()
-
-    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
-    def test_candidate_reference_check(self, request):
-        client = ServiceCatalog()
-        request.return_value.json.return_value = [{"id": "candidate"}]
-        self.assertTrue(client.category_in_use("category-1"))
-        self.assertEqual({"category.id": "category-1", "limit": 1}, request.call_args.kwargs["params"])
-        request.return_value.json.return_value = []
-        self.assertFalse(client.category_in_use("category-1"))
-        request.return_value.json.return_value = {"error": "invalid"}
-        with self.assertRaises(PluginError):
-            client.category_in_use("category-1")
-
-    @patch("wstore.asset_manager.resource_plugins.service_catalog.requests.request")
-    def test_http_failure_is_not_treated_as_unused(self, request):
-        request.return_value.raise_for_status.side_effect = HTTPError("offline")
-        with self.assertRaises(HTTPError):
-            ServiceCatalog().category_in_use("category-1")
-
-
 class RecordingPlugin(Plugin):
     pass
 
@@ -1133,6 +1099,34 @@ class PackageManagementTests(SimpleTestCase):
                     self.loader.uninstall_plugin("test")
                 self.delete.assert_not_called()
                 method.side_effect = None
+
+    def test_invalid_catalog_response_retains_plugin_error_and_installed_files(self):
+        path = os.path.join(self.directory.name, "test-1-0")
+        os.mkdir(path)
+        self.loader._catalog = ServiceCatalog()
+
+        with patch("wstore.store_commons.service_catalog.requests.request") as request:
+            request.return_value.json.return_value = {"error": "invalid candidates"}
+            with self.assertRaises(PluginError) as error:
+                self.loader.uninstall_plugin("test")
+
+        self.assertIsInstance(error.exception.__cause__, ServiceCatalogError)
+        self.assertTrue(os.path.isdir(path))
+        self.delete.assert_not_called()
+        self.assertEqual(1, request.call_count)
+
+    def test_invalid_category_response_retains_plugin_error_and_rolls_back_install(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        self.loader._catalog = ServiceCatalog()
+
+        with patch("wstore.store_commons.service_catalog.requests.request") as request:
+            request.return_value.json.return_value = {}
+            with self.assertRaises(PluginError) as error:
+                self.loader.install_plugin(self.package("1.0"))
+
+        self.assertIsInstance(error.exception.__cause__, ServiceCatalogError)
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
+        self.save.assert_not_called()
 
     def test_removal_deletes_actual_version_directories(self):
         self.model.version_history = ["0.1"]

@@ -24,7 +24,7 @@ from logging import getLogger
 
 from bson.objectid import ObjectId
 
-from wstore.asset_manager.errors import ProductError
+from wstore.asset_manager.errors import ServiceError
 from wstore.asset_manager.models import Resource
 from wstore.models import ResourcePlugin
 from wstore.ordering.models import Offering
@@ -32,18 +32,54 @@ from wstore.ordering.models import Offering
 logger = getLogger("wstore.default_logger")
 
 
-def _get_plugin_model(name):
-    try:
-        plugin_model = ResourcePlugin.objects.get(name=name)
-    except:
-        # Validate resource type
-        raise ProductError("The given product specification contains a not supported asset type: " + name)
+def _get_plugin_model(category_id):
+    plugins = list(ResourcePlugin.objects.filter(category_id=category_id))
 
-    return plugin_model
+    if len(plugins) > 1:
+        raise ServiceError("The service category resolves to more than one installed plugin")
+
+    return plugins[0] if plugins else None
 
 
-def load_plugin_module(asset_t):
-    plugin_model = _get_plugin_model(asset_t)
+def load_plugin_module(service_spec):
+    entries = service_spec.get("specCharacteristic")
+    if not isinstance(entries, list):
+        return None
+
+    service_types = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and entry["name"].strip().lower() == "service type"
+    ]
+
+    if not service_types:
+        return None
+
+    if len(service_types) != 1:
+        raise ServiceError("The service specification must contain exactly one Service Type characteristic")
+
+    values = service_types[0].get("characteristicValueSpecification")
+
+    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
+        raise ServiceError("The Service Type characteristic must contain exactly one value")
+
+    category_ref = values[0].get("value")
+
+    if (
+        not isinstance(category_ref, dict)
+        or not isinstance(category_ref.get("id"), str)
+        or not category_ref["id"].strip()
+    ):
+        raise ServiceError("Service Type must contain a service category reference with an id")
+
+    plugin_model = _get_plugin_model(category_id=category_ref["id"])
+
+    return _load_plugin_model(plugin_model) if plugin_model is not None else None
+
+
+def _load_plugin_model(plugin_model):
     module = plugin_model.module
     module_class_name = module.split(".")[-1]
     module_package = module.partition("." + module_class_name)[0]
@@ -53,7 +89,7 @@ def load_plugin_module(asset_t):
         module_class_name,
     )
 
-    logger.debug(f"Loaded plugin module for {asset_t}")
+    logger.debug("Loaded plugin module %s", module)
     return module_class(plugin_model)
 
 
@@ -117,23 +153,6 @@ def on_product_offering_validation(func):
     return wrapper
 
 
-def _execute_asset_event(asset, order, contract, type_):
-    # Removed product hooks cannot be dispatched until service integration.
-    if type_ in ("activate", "suspend"):
-        return
-
-    # Load plugin module
-    plugin_module = load_plugin_module(asset.resource_type)
-
-    events = {
-        # "activate": plugin_module.on_product_acquisition,
-        # "suspend": plugin_module.on_product_suspension,
-        "usage": plugin_module.on_usage_refresh,
-    }
-    # Execute event
-    events[type_](asset, contract, order)
-
-
 def process_product_notification(order, contract, type_):
     pass
     # Get digital asset from the contract
@@ -152,9 +171,6 @@ def process_product_notification(order, contract, type_):
 
     # assets = _expand_bundled_assets(offering_assets)
 
-    # for event_asset in assets:
-    #     _execute_asset_event(event_asset, order, contract, type_)
-
 
 def on_product_acquired(order, contract):
     process_product_notification(order, contract, "activate")
@@ -166,3 +182,22 @@ def on_product_suspended(order, contract):
 
 def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
+
+
+def on_service_spec_validation(func):
+    @wraps(func)
+    def wrapper(self, provider, service_spec):
+        plugin = load_plugin_module(service_spec=service_spec)
+
+        if plugin is None:
+            return
+
+        plugin.on_pre_service_spec_validation(provider, service_spec)
+
+        result = func(self, provider, service_spec, plugin._model)
+
+        plugin.on_post_service_spec_validation(provider, service_spec)
+
+        return result
+
+    return wrapper

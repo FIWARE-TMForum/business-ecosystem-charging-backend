@@ -21,25 +21,31 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+from logging import getLogger
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.http import HttpResponse
 
 from wstore.asset_manager.asset_manager import AssetManager
-from wstore.asset_manager.errors import ProductError
+from wstore.asset_manager.errors import ProductError, ServiceError
 from wstore.asset_manager.offering_validator import OfferingValidator
 from wstore.asset_manager.product_validator import ProductValidator
+from wstore.asset_manager.service_validator import ServiceValidator
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.models import UserProfile
 from wstore.store_commons.errors import ConflictError
 from wstore.store_commons.resource import Resource
+from wstore.store_commons.service_catalog import ServiceCatalogError
 from wstore.store_commons.utils.http import (
     authentication_required,
     build_response,
     get_content_type,
     supported_request_mime_types,
 )
+
+
+logger = getLogger("wstore.default_logger")
 
 
 class AssetCollection(Resource):
@@ -287,3 +293,51 @@ class ValidateOfferingCollection(Resource):
         """
         offering_validator = OfferingValidator()
         return _validate_catalog_element(request, "offering", offering_validator)
+
+
+class ValidateServiceCollection(Resource):
+    @supported_request_mime_types(("application/json",))
+    @authentication_required
+    def create(self, request):
+        """Validate service specifications and receive successful catalog callbacks."""
+        # Validate user permissions
+        user = request.user
+        if "provider" not in user.userprofile.get_current_roles() and not user.is_staff:
+            return build_response(request, 403, "You don't have the seller role")
+
+        # Parse content
+        try:
+            data = json.loads(request.body)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            return build_response(request, 400, "The content is not a valid JSON document")
+
+        if not isinstance(data, dict):
+            return build_response(request, 400, "The content must be a JSON object")
+
+        if "action" not in data:
+            return build_response(request, 400, "Missing required field: action")
+
+        if "service" not in data:
+            return build_response(request, 400, "Missing required field: service")
+
+        try:
+            ServiceValidator().validate(
+                data["action"],
+                user.userprofile.current_organization,
+                data["service"],
+            )
+        except ValueError as e:
+            return build_response(request, 400, str(e))
+        except ServiceError as e:
+            return build_response(request, 400, str(e))
+        except ConflictError as e:
+            return build_response(request, 409, str(e))
+        except (PluginError, ServiceCatalogError) as e:
+            return build_response(request, 422, str(e))
+        except PermissionDenied as e:
+            return build_response(request, 403, str(e))
+        except Exception:
+            logger.exception("Service specification callback failed for action %r", data["action"])
+            return build_response(request, 500, "An unexpected error has occurred")
+
+        return build_response(request, 200, "OK")
