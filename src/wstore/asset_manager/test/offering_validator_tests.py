@@ -299,31 +299,13 @@ class OfferingValidatorTestCase(TestCase):
 
         self.assertTrue(err)
 
-    def test_offering_attachment(self):
-        offering = MagicMock()
+    def test_attachment_is_not_a_catalog_action(self):
         offering_validator.Offering = MagicMock()
-        offering_validator.Offering.objects.filter.return_value = [offering]
-
         validator = offering_validator.OfferingValidator()
-        validator.validate("attach", self._provider, BASE_OFFERING)
-
-        self.assertEquals(BASE_OFFERING["href"], offering.href)
-        self.assertEquals(BASE_OFFERING["id"], offering.off_id)
-
-        offering.save.assert_called_once_with()
-
-    def test_offering_attachment_missing(self):
-        offering_validator.Offering = MagicMock()
-        offering_validator.Offering.objects.filter.return_value = []
-
-        error = None
-        try:
-            validator = offering_validator.OfferingValidator()
+        with self.assertRaisesRegex(ValueError, "not valid"):
             validator.validate("attach", self._provider, BASE_OFFERING)
-        except ValueError as e:
-            error = e
-
-        self.assertEquals("The specified offering has not been registered", str(error))
+        offering_validator.Offering.objects.filter.assert_not_called()
+        offering_validator.Offering.objects.create.assert_not_called()
 
     def _mock_offering_update(self, pricing):
         offering_validator.Resource.objects.filter.return_value = [self._asset_instance]

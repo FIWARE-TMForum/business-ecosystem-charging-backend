@@ -55,24 +55,8 @@ class Plugin:
         """Notify successful catalog update of the upgraded service specification."""
         pass
 
-    def on_pre_product_spec_validation(self, provider, service_spec, product_spec):
-        """Validate this service specification's inclusion in a proposed product."""
-        pass
-
-    def on_post_product_spec_validation(self, provider, service_spec, product_spec):
-        """Validate the inclusion after backend checks, before product creation."""
-        pass
-
-    def on_post_product_spec_creation(self, provider, service_spec, product_spec):
-        """Notify successful product creation including this service specification."""
-        pass
-
-    def on_pre_product_spec_upgrade(self, provider, service_spec, previous_product_spec, product_spec):
-        """Validate a product specification upgrade involving this service specification."""
-        pass
-
-    def on_post_product_spec_upgrade(self, provider, service_spec, previous_product_spec, product_spec):
-        """Notify a successful product specification upgrade for this service specification."""
+    def on_product_spec_validation(self, provider, service_spec, product_spec):
+        """Check this service's inclusion before the product is created or updated."""
         pass
 
     def on_pre_product_offering_validation(self, provider, service_spec, product_spec, product_offering):

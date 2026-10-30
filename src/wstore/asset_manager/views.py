@@ -245,6 +245,9 @@ def _validate_catalog_element(request, element, validator):
     except:
         return build_response(request, 400, "The content is not a valid JSON document")
 
+    if not isinstance(data, dict):
+        return build_response(request, 400, "The content must be a JSON object")
+
     if "action" not in data:
         return build_response(request, 400, "Missing required field: action")
 
@@ -255,7 +258,7 @@ def _validate_catalog_element(request, element, validator):
         validator.validate(data["action"], user.userprofile.current_organization, data[element])
     except ValueError as e:
         return build_response(request, 400, str(e))
-    except ProductError as e:
+    except (ProductError, ServiceError) as e:
         return build_response(request, 400, str(e))
     except ConflictError as e:
         return build_response(request, 409, str(e))
@@ -274,7 +277,7 @@ class ValidateCollection(Resource):
     @authentication_required
     def create(self, request):
         """
-        Validates the digital assets contained in a TMForum product Specification
+        Validates service associations in a proposed TMForum product specification
         :param request:
         :return:
         """
