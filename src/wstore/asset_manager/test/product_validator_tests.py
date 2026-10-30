@@ -25,12 +25,13 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
-from django.test import RequestFactory, SimpleTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 from requests.exceptions import ConnectionError, HTTPError
 
 from wstore.asset_manager.errors import ProductError, ServiceError
 from wstore.asset_manager.product_validator import ProductValidator
+from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.asset_manager.resource_plugins.plugin import Plugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
@@ -63,13 +64,19 @@ class ValidatorTestCase(SimpleTestCase):
     def setUp(self):
         self.provider = object()
         self.validator = ProductValidator()
+        self.resolver = CatalogResolver()
         self.services = {
             "service-1": service_spec("service-1", "category-1"),
             "service-2": service_spec("service-2", "category-2"),
             "ordinary": service_spec("ordinary"),
         }
         for name, patcher in (
-            ("catalog", patch.object(self.validator, "_service_catalog")),
+            ("catalog", patch.object(self.resolver, "_service_catalog")),
+            ("product_catalog", patch.object(self.resolver, "_catalog")),
+            (
+                "resolve",
+                patch("wstore.asset_manager.resource_plugins.decorators.CatalogResolver", return_value=self.resolver),
+            ),
             ("lookup", patch("wstore.asset_manager.resource_plugins.decorators._get_plugin_model")),
             ("load", patch("wstore.asset_manager.resource_plugins.decorators._load_plugin_model")),
         ):
@@ -218,7 +225,7 @@ class ValidatorTestCase(SimpleTestCase):
         proposed = product_spec(services=("service-2",))
         original = deepcopy(proposed)
 
-        with patch.object(self.validator, "_get_product_spec") as get_product:
+        with patch.object(self.product_catalog, "get_specification") as get_product:
             self.validator.validate("update", self.provider, proposed)
 
         get_product.assert_not_called()
@@ -252,7 +259,7 @@ class ProductBundleTests(SimpleTestCase):
             "p1": product_spec("p1", ("service-1", "ordinary")),
             "p2": product_spec("p2", ("service-1", "service-2")),
         }
-        patcher = patch.object(self.validator, "_get_product_spec", side_effect=self.products.get)
+        patcher = patch.object(self.product_catalog, "get_specification", side_effect=self.products.get)
         self.get_product = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -311,37 +318,6 @@ class ProductBundleTests(SimpleTestCase):
         )
 
 
-@override_settings(CATALOG="https://catalog.example/tmf-api/productCatalogManagement/v4/", VERIFY_REQUESTS=False)
-class ProductCatalogReferenceTests(SimpleTestCase):
-    @patch("wstore.asset_manager.product_validator.requests.get")
-    def test_reference_download_uses_configured_url_tls_and_timeout(self, get):
-        get.return_value.json.return_value = product_spec("p/1")
-
-        self.assertEqual("p/1", ProductValidator()._get_product_spec("p/1")["id"])
-        get.assert_called_once_with(
-            "https://catalog.example/tmf-api/productCatalogManagement/v4/productSpecification/p%2F1",
-            verify=False,
-            timeout=30,
-        )
-        get.return_value.raise_for_status.assert_called_once_with()
-
-    @patch("wstore.asset_manager.product_validator.requests.get")
-    def test_catalog_failures_and_missing_or_wrong_documents_are_rejected(self, get):
-        validator = ProductValidator()
-        for document in (None, [], {}, {"id": "wrong"}):
-            with self.subTest(document=document), self.assertRaises(ProductError):
-                get.return_value.json.return_value = document
-                validator._get_product_spec("p1")
-        get.return_value.raise_for_status.side_effect = HTTPError("404")
-
-        with self.assertRaises(ProductError):
-            validator._get_product_spec("p1")
-        get.side_effect = ConnectionError("offline")
-
-        with self.assertRaises(ProductError):
-            validator._get_product_spec("p1")
-
-
 class ProductEndpointTests(SimpleTestCase):
     def setUp(self):
         self.user = SimpleNamespace(
@@ -360,7 +336,7 @@ class ProductEndpointTests(SimpleTestCase):
 
     @patch("wstore.asset_manager.resource_plugins.decorators._load_plugin_model")
     @patch("wstore.asset_manager.resource_plugins.decorators._get_plugin_model")
-    @patch("wstore.asset_manager.product_validator.ServiceCatalog.get_specification")
+    @patch("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog.get_specification")
     def test_creation_route_runs_single_hook_before_success(self, get, lookup, load):
         service = service_spec("service-1", "category-1")
         get.return_value = service
@@ -394,7 +370,7 @@ class ProductEndpointTests(SimpleTestCase):
                 request = self.request({"action": action, "product": product_spec()})
                 self.assertEqual(status, resolve(request.path).func(request).status_code)
 
-    @patch("wstore.asset_manager.product_validator.ServiceCatalog.get_specification")
+    @patch("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog.get_specification")
     def test_missing_reference_and_invalid_service_type_are_400(self, get):
         for service in ({"error": "not found"}, {"id": "service-1", "specCharacteristic": [{"name": "Service Type"}]}):
             with self.subTest(service=service):

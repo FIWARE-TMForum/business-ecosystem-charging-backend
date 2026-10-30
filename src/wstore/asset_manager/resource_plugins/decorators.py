@@ -22,12 +22,9 @@
 from functools import wraps
 from logging import getLogger
 
-from bson.objectid import ObjectId
-
 from wstore.asset_manager.errors import ServiceError
-from wstore.asset_manager.models import Resource
+from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import ResourcePlugin
-from wstore.ordering.models import Offering
 
 logger = getLogger("wstore.default_logger")
 
@@ -93,54 +90,47 @@ def _load_plugin_model(plugin_model):
     return module_class(plugin_model)
 
 
-def on_product_spec_validation(provider, service_spec, product_spec):
-    plugin = load_plugin_module(service_spec=service_spec)
+def _get_plugins(associations):
+    plugins = []
 
-    if plugin is not None:
-        plugin.on_product_spec_validation(provider, service_spec, product_spec)
+    for service_spec, product_spec in associations:
+        plugin = load_plugin_module(service_spec=service_spec)
+
+        if plugin is not None:
+            plugins.append((plugin, service_spec, product_spec))
+
+    return plugins
 
 
-def _expand_bundled_assets(offering_assets):
-    assets = []
-    for off_asset in offering_assets:
-        if len(off_asset.bundled_assets) > 0:
-            for bundled_asset_pk in off_asset.bundled_assets:
-                assets.append(Resource.objects.get(pk=bundled_asset_pk))
-        else:
-            assets.append(off_asset)
+def on_product_spec_validation(provider, product_spec):
+    associations = CatalogResolver().product_services(product_spec)
 
-    return assets
+    for plugin, service_spec, product in _get_plugins(associations):
+        plugin.on_product_spec_validation(provider, service_spec, product)
 
 
 def on_product_offering_validation(func):
     @wraps(func)
-    def wrapper(self, provider, product_offering, bundled_offerings):
-        # Plugin resolution/asset traversal is deferred to the service-spec migration.
-        # plugin_module.on_pre_product_offering_validation(asset, product_offering)
-        is_open = func(self, provider, product_offering, bundled_offerings)
-        # plugin_module.on_post_product_offering_validation(asset, product_offering)
-        return is_open
+    def wrapper(self, provider, product_offering):
+        associations = CatalogResolver().offering_services(product_offering)
+        plugins = _get_plugins(associations)
+
+        for plugin, service_spec, product_spec in plugins:
+            plugin.on_pre_product_offering_validation(provider, service_spec, product_spec, product_offering)
+
+        result = func(self, provider, product_offering)
+
+        for plugin, service_spec, product_spec in plugins:
+            plugin.on_post_product_offering_validation(provider, service_spec, product_spec, product_offering)
+
+        return result
 
     return wrapper
 
 
 def process_product_notification(order, contract, type_):
+    # Purchased-service dispatch is integrated in its own lifecycle step.
     pass
-    # Get digital asset from the contract
-    # offering_assets = []
-    # offering = Offering.objects.get(pk=ObjectId(contract.offering))
-
-    # if len(offering.bundled_offerings) > 0:
-    #     offering_assets = [
-    #         Offering.objects.get(pk=ObjectId(key)).asset
-    #         for key in offering.bundled_offerings
-    #         if Offering.objects.get(pk=ObjectId(key)).is_digital
-    #     ]
-
-    # elif offering.is_digital:
-    #     offering_assets = [offering.asset]
-
-    # assets = _expand_bundled_assets(offering_assets)
 
 
 def on_product_acquired(order, contract):
