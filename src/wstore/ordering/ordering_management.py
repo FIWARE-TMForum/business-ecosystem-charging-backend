@@ -20,23 +20,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-import re
 import datetime
-from decimal import Decimal
 from logging import getLogger
-from urllib.parse import urlparse
 
 import requests
-from bson import ObjectId
 from django.conf import settings
 
 from wstore.charging_engine.charging.billing_client import BillingClient
-from wstore.asset_manager.product_validator import ProductValidator
 from wstore.asset_manager.resource_plugins.decorators import on_product_suspended, on_product_acquired
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
 from wstore.ordering.inventory_client import InventoryClient
-from wstore.ordering.models import Contract, Offering, Order, PaymentRecord
+from wstore.ordering.models import Contract, Order, PaymentRecord
 from wstore.ordering.ordering_client import OrderingClient
 from wstore.store_commons.rollback import rollback
 from wstore.store_commons.utils.url import get_service_url
@@ -48,7 +43,6 @@ logger = getLogger("wstore.default_logger")
 class OrderingManager:
     def __init__(self):
         self._customer = None
-        self._validator = ProductValidator()
         self.ordering_client = OrderingClient()
 
     def _download(self, url, element, item_id):
@@ -67,155 +61,6 @@ class OrderingManager:
 
         offering_info = self._download(offering_url, "product offering", item["id"])
         return offering_info
-
-    def _get_offering(self, item):
-        offering_info = self._get_offering_info(item)
-        offering_id = offering_info["id"]
-
-        # Check if the offering has been already loaded in the system
-        if len(Offering.objects.filter(off_id=offering_id)) > 0:
-            offering = Offering.objects.get(off_id=offering_id)
-
-            # If the offering defines a digital product, check if the customer already owns it
-            included_offerings = [Offering.objects.get(pk=ObjectId(off_pk)) for off_pk in offering.bundled_offerings]
-            included_offerings.append(offering)
-
-            for off in included_offerings:
-                if off.is_digital and off.pk in self._customer.userprofile.current_organization.acquired_offerings:
-                    logger.error(
-                        f"The customer already owns the digital product offering {off.name} with id {off.off_id}"
-                    )
-                    raise OrderingError(
-                        f"The customer already owns the digital product offering {off.name} with id {off.off_id}"
-                    )
-        else:
-            logger.error(f"The offering {offering_id} has not been previously registered")
-            raise OrderingError(f"The offering {offering_id} has not been previously registered")
-
-        return offering, offering_info
-
-    def _parse_price(self, model_mapper, price):
-        if price["priceType"].lower() not in model_mapper:
-            logger.error(f"Cant parse price: Invalid price model {price['priceType']}")
-            raise OrderingError(f"Invalid price model {price['priceType']}")
-
-        unit_field = {
-            "one time": "priceType",
-            "recurring": "recurringChargePeriod",
-            "usage": "unitOfMeasure",
-        }
-
-        value = str(price["price"]["taxIncludedAmount"]["value"])
-        tax_rate = str(price["price"]["taxRate"])
-        duty_free = str(Decimal(value) - ((Decimal(value) * Decimal(tax_rate)) / 100))
-        return {
-            "value": value,
-            "unit": price[unit_field[price["priceType"].lower()]].lower(),
-            "tax_rate": tax_rate,
-            "duty_free": duty_free,
-        }
-
-    def _parse_alteration(self, alteration, type_):
-        # Alterations cannot specify usage models
-        if alteration["priceType"].lower() != "one time" and alteration["priceType"].lower() != "recurring":
-            logger.error("Invalid priceType in price alteration, it must be one time or recurring")
-            raise OrderingError("Invalid priceType in price alteration, it must be one time or recurring")
-
-        # Check if it is a fixed value or a percentage
-        if "percentage" in alteration["price"] and Decimal(alteration["price"]["percentage"]) > Decimal(0):
-            value = alteration["price"]["percentage"]
-        else:
-            value = {
-                "value": alteration["price"]["taxIncludedAmount"],
-                "duty_free": alteration["price"]["dutyFreeAmount"],
-            }
-
-        alt_model = {
-            "type": type_,
-            "value": value,
-            "period": alteration["priceType"].lower(),
-        }
-
-        # Parse condition
-        if "priceCondition" in alteration and len(alteration["priceCondition"]):
-            exp = re.compile(r"^(eq|lt|gt|le|ge) \d+(\.\d+)?$")
-
-            if not exp.match(alteration["priceCondition"]):
-                logger.error(
-                    "Invalid priceCondition in price alteration, format must be: [eq | lt | gt | le | ge] value"
-                )
-                raise OrderingError(
-                    "Invalid priceCondition in price alteration, format must be: [eq | lt | gt | le | ge] value"
-                )
-
-            op, value = alteration["priceCondition"].split(" ")
-
-            alt_model["condition"] = {"operation": op, "value": value}
-
-        return alt_model
-
-    def _get_effective_pricing(self, item_id, product_price, offering_info):
-        # Search the pricing chosen by the user
-        def field_included(pricing, field):
-            return field in pricing and len(pricing[field]) > 0
-
-        offering_pricing = None
-        for off_price in offering_info["productOfferingPrice"]:
-            if off_price["id"] == product_price["productOfferingPrice"]["id"]:
-                # Download the product offering price model
-
-                price_url = get_service_url("catalog", f"/productOfferingPrice/{off_price['id']}")
-                offering_pricing = self._download(price_url, "product offering price", off_price["id"])
-
-                break
-        else:
-            # The given price does not match any from the product offering
-            logger.error("Product price does not match any prices in offering")
-            raise OrderingError(
-                f"The product price included in productOrderItem {item_id} "
-                "does not match with any of the prices included in the related offering"
-            )
-
-        # Validate that all pricing fields match
-        # MATCHING NO LONGER NEEDED ONLY ID IS PROVIDED NOW
-        if (
-            offering_pricing["priceType"].lower() != product_price["priceType"].lower()
-            or (
-                field_included(offering_pricing, "unitOfMeasure") and not field_included(product_price, "unitOfMeasure")
-            )
-            or (
-                not field_included(offering_pricing, "unitOfMeasure") and field_included(product_price, "unitOfMeasure")
-            )
-            or (
-                field_included(offering_pricing, "unitOfMeasure")
-                and field_included(product_price, "unitOfMeasure")
-                and offering_pricing["unitOfMeasure"]["units"].lower() != product_price["unitOfMeasure"].lower()
-            )
-            or (
-                field_included(offering_pricing, "recurringChargePeriodType")
-                and not field_included(product_price, "recurringChargePeriod")
-            )
-            or (
-                not field_included(offering_pricing, "recurringChargePeriodType")
-                and field_included(product_price, "recurringChargePeriod")
-            )
-            or (
-                field_included(offering_pricing, "recurringChargePeriodType")
-                and field_included(product_price, "recurringChargePeriod")
-                and offering_pricing["recurringChargePeriodType"].lower()
-                != product_price["recurringChargePeriod"].lower()
-            )
-            or Decimal(offering_pricing["price"]["value"])
-            != Decimal(product_price["price"]["taxIncludedAmount"]["value"])
-            or offering_pricing["price"]["unit"].lower() != product_price["price"]["taxIncludedAmount"]["unit"].lower()
-        ):
-            logger.error("Product price does not match any prices in offering")
-            raise OrderingError(
-                f"The product price included in productOrderItem {item_id} "
-                "does not match with any of the prices included in the related offering"
-            )
-
-        return product_price
 
     def _get_mode(self, offering_info):
         if "productOfferingTerm" in offering_info:
@@ -266,33 +111,6 @@ class OrderingManager:
             offering=offering_info["id"],
             options=item.get("product", {}).get("productCharacteristic", []),
         ), offering_info, mode
-
-    def _build_contract(self, item):
-        # Build offering
-        offering, offering_info = self._get_offering(item)
-
-        # Now pricing is taken from a different field
-        #
-        product_price = None
-        if "itemTotalPrice" in item and len(item["itemTotalPrice"]) > 0 and "productOfferingPrice" in item["itemTotalPrice"][0]:
-            product_price = item["itemTotalPrice"][0]["productOfferingPrice"]
-
-        # Check if the product price has not been included but must
-        if product_price is None and len(offering_info["productOfferingPrice"]) and not offering.is_custom:
-            raise OrderingError(f"The price model has not been included for productOrderItem {item['id']}")
-
-        # Build pricing if included
-        pricing = {}
-        if product_price is not None:
-            if offering.is_custom:
-                raise OrderingError(f"Custom pricing models are handled externally, please don't include a price in product")
-
-        return Contract(
-            item_id=item["id"],
-            pricing_model=pricing,
-            # revenue_class=revenue_class,
-            offering=offering.pk,
-        )
 
     def _get_billing_address(self, billing_account):
         # Download BillingAccount
@@ -446,13 +264,6 @@ class OrderingManager:
         order.contracts = order.get_contracts()
         contract = next(c for c in order.contracts if c.product_id == product["id"])
         logger.debug(f"contract product id: {contract.product_id}")
-
-        # Build the new contract
-        # TODO: Maybe needed in the future. SRS
-        # new_contract = self._build_contract(item)
-        # if new_contract.pricing_model != {}:
-        #     contract.pricing_model = new_contract.pricing_model
-        #     contract.revenue_class = new_contract.revenue_class
 
         order.order_id = raw_order["id"]
         order.save()

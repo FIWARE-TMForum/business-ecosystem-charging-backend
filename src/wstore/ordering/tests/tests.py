@@ -28,7 +28,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
-from mock import MagicMock, call
+from mock import MagicMock, call, patch
 from parameterized import parameterized
 
 from wstore.models import Organization
@@ -50,27 +50,20 @@ class OrderingManagementTestCase(TestCase):
     def setUp(self):
         self._customer = MagicMock()
 
+        ordering_client_patch = patch.object(ordering_management, "OrderingClient")
+        ordering_client_patch.start()
+        self.addCleanup(ordering_client_patch.stop)
+
         # Mock order model
         ordering_management.Order = MagicMock()
         self._order_inst = MagicMock()
         ordering_management.Order.objects.create.return_value = self._order_inst
         ordering_management.Order.objects.get.return_value = self._order_inst
 
-        # Mock Offering model
-        ordering_management.Offering = MagicMock()
-        self._offering_inst = MagicMock()
-        self._offering_inst.pk = "61004aba5e05acc115f022f0"
-        self._offering_inst.is_custom = False
-
-        self._order_inst.bundled_offerings = []
-
-        ordering_management.Offering.objects.filter.return_value = []
-        ordering_management.Offering.objects.create.return_value = self._offering_inst
-
         # Mock Contract model
         ordering_management.Contract = MagicMock()
         self._contract_inst = MagicMock()
-        self._contract_inst.offering = "61004aba5e05acc115f022f0"
+        self._contract_inst.offering = "5"
         ordering_management.Contract.return_value = self._contract_inst
 
         # Mock Charging Engine
@@ -88,33 +81,12 @@ class OrderingManagementTestCase(TestCase):
         # Mock organization model
         self._org_inst = MagicMock()
 
-        ordering_management.Organization = MagicMock()
-        ordering_management.Organization.objects.get.return_value = self._org_inst
         self._customer.userprofile.current_organization = self._org_inst
         self._customer.userprofile.access_token = "example_token"
-
-        # Mock Product validator
-        self._validator_inst = MagicMock()
-        ordering_management.ProductValidator = MagicMock()
-        ordering_management.ProductValidator.return_value = self._validator_inst
-        self._validator_inst.parse_characteristics.return_value = (
-            "type",
-            "media_type",
-            "http://location.com",
-        )
-
-        # Mock Resource
-        self._asset_instance = MagicMock()
-        ordering_management.Resource = MagicMock()
-        ordering_management.Resource.objects.get.return_value = self._asset_instance
 
         ordering_management.datetime = MagicMock()
         self._now = datetime(2016, 12, 3)
         ordering_management.datetime.datetime.utcnow.return_value = self._now
-
-        # Mock offering
-        ordering_management.Offering.objects.filter.return_value = [self._offering_inst]
-        ordering_management.Offering.objects.get.return_value = self._offering_inst
 
         # Mock billing client
         self._billing_instance = MagicMock()
@@ -122,21 +94,6 @@ class OrderingManagementTestCase(TestCase):
         ordering_management.BillingClient.return_value = self._billing_instance
 
         self._billing_instance.get_billing_account.return_value = BILLING_ACCOUNT
-
-    def _check_contract_call(self, pricing):
-        ordering_management.Contract.assert_called_once_with(
-            item_id="1",
-            pricing_model=pricing,
-            #revenue_class="productClass",
-            offering=self._offering_inst.pk,
-        )
-
-    def _check_offering_retrieving_call(self):
-        ordering_management.Offering.objects.filter.assert_called_once_with(off_id="20")
-        self.assertEqual(
-            [call(off_id="20"), call(pk=ObjectId("61004aba5e05acc115f022f0"))],
-            ordering_management.Offering.objects.get.call_args_list,
-        )
 
     def _basic_add_checker(self):
         # Check contract creation
@@ -148,9 +105,6 @@ class OrderingManagementTestCase(TestCase):
             options=[]
         )
 
-    def _non_digital_add_checker(self):
-        self._check_offering_retrieving_call()
-
     def _free_add_checker(self):
         ordering_management.Contract.assert_called_once_with(
             item_id="1",
@@ -160,96 +114,8 @@ class OrderingManagementTestCase(TestCase):
             options=[]
         )
 
-    def _basic_discount_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "alteration": {"type": "discount", "period": "one time", "value": 50},
-            }
-        )
-
-    def _recurring_fee_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "alteration": {
-                    "type": "fee",
-                    "period": "recurring",
-                    "value": {"value": "1.00", "duty_free": "0.80"},
-                    "condition": {"operation": "gt", "value": "300.00"},
-                },
-            }
-        )
-
-    def _double_price_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "single_payment": [
-                    {
-                        "value": "8.00",
-                        "unit": "one time",
-                        "tax_rate": "20.00",
-                        "duty_free": "6.00",
-                    }
-                ],
-            }
-        )
-
-    def _double_usage_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    },
-                    {
-                        "value": "8.00",
-                        "unit": "second",
-                        "tax_rate": "20.00",
-                        "duty_free": "6.00",
-                    },
-                ],
-            }
-        )
-
     def _invalid_billing(self):
         self._billing_instance.get_billing_account.side_effect = Exception('Billing error')
-
-    def _non_digital_offering(self):
-        self._validator_inst.parse_characteristics.return_value = (None, None, None)
 
     def _missing_offering(self):
         self._response.status_code = 404
@@ -264,31 +130,6 @@ class OrderingManagementTestCase(TestCase):
 
         ordering_management.requests.get = get
 
-    def _already_owned(self):
-        self._offering_inst.pk = "61004aba5e05acc115f022f0"
-        self._offering_inst.name = "Example offering"
-        self._offering_inst.off_id = "5"
-        self._customer.userprofile.current_organization.acquired_offerings = ["61004aba5e05acc115f022f0"]
-
-    def _already_owned_bundle(self):
-        bundle_offering = MagicMock()
-        bundle_offering.pk = "61004aba5e05acc115f022f0"
-        bundle_offering.name = "Bundle"
-        bundle_offering.off_id = "6"
-        self._offering_inst.bundled_offerings = ["61004aba5e05acc115f022f0"]
-        self._customer.userprofile.current_organization.acquired_offerings = ["61004aba5e05acc115f022f0"]
-
-        ordering_management.Offering.objects.get.side_effect = [
-            self._offering_inst,
-            bundle_offering,
-        ]
-
-    def _multiple_pricing(self):
-        OFFERING["productOfferingPrice"].append(BASIC_PRICING)
-
-    def _missing_offering_local(self):
-        ordering_management.Offering.objects.filter.return_value = []
-
     def _missing_contact(self):
         new_cust = deepcopy(BILLING_ACCOUNT)
         new_cust["contact"] = []
@@ -300,9 +141,6 @@ class OrderingManagementTestCase(TestCase):
             "contactMedium": []
         }]
         self._billing_instance.get_billing_account.return_value = new_cust
-
-    def _terms_not_required(self):
-        self._offering_inst.asset.has_terms = False
 
     @parameterized.expand(
         [
@@ -321,7 +159,7 @@ class OrderingManagementTestCase(TestCase):
                 BASIC_ORDER,
                 BASIC_PRICING,
                 _basic_add_checker,
-                _terms_not_required,
+                None,
                 None,
                 False,
                 OFFERING_NO_TERMS
@@ -334,13 +172,6 @@ class OrderingManagementTestCase(TestCase):
                 _invalid_billing,
                 "OrderingError: Invalid billing account, billing account could not be loaded",
             ),
-            # (
-            #     "non_digital_add",
-            #     BASIC_ORDER,
-            #     BASIC_PRICING,
-            #     _non_digital_add_checker,
-            #     _non_digital_offering,
-            # ),
             (
                 "recurring_add",
                 BASIC_ORDER,
@@ -387,30 +218,6 @@ class OrderingManagementTestCase(TestCase):
                 _missing_offering,
                 "OrderingError: The product offering specified in order item 1 does not exist",
             ),
-            # (
-            #     "already_owned",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _already_owned,
-            #     "OrderingError: The customer already owns the digital product offering Example offering with id 5",
-            # ),
-            # (
-            #     "already_owned_bundle",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _already_owned_bundle,
-            #     "OrderingError: The customer already owns the digital product offering Bundle with id 6",
-            # ),
-            # (
-            #     "offering_not_registered",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _missing_offering_local,
-            #     "OrderingError: The offering 20 has not been previously registered",
-            # ),
             (
                 "missing_postal_address",
                 BASIC_ORDER,
@@ -667,11 +474,6 @@ class OrderingManagementTestCase(TestCase):
         }
 
         ordering = ordering_management.OrderingManager()
-        ordering._build_contract = MagicMock()
-        new_contract = MagicMock()
-        new_contract.pricing_model = new_pricing
-        new_contract.revenue_class = "new_revenue"
-        ordering._build_contract.return_value = new_contract
 
         error = None
         try:
