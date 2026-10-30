@@ -23,8 +23,11 @@ from urllib.parse import quote
 import requests
 from django.conf import settings
 
-from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.store_commons.utils.url import get_service_url
+
+
+class ServiceCatalogError(Exception):
+    pass
 
 
 class ServiceCatalog:
@@ -37,13 +40,12 @@ class ServiceCatalog:
 
     @staticmethod
     def category_data(name, version):
-        # Package-only fields (module, formats, forms, etc.) remain local.
         return {"name": name, "version": version}
 
     def create_category(self, name, version):
         category = self._request("POST", "/serviceCategory", json=self.category_data(name, version)).json()
         if not isinstance(category, dict) or not category.get("id"):
-            raise PluginError("Service catalog returned a category without an id")
+            raise ServiceCatalogError("Service catalog returned a category without an id")
         return str(category["id"])
 
     def update_category(self, category_id, name, version):
@@ -55,8 +57,15 @@ class ServiceCatalog:
         # Existence is enough: no need to download every matching candidate.
         candidates = self._request("GET", "/serviceCandidate", params={"category.id": category_id, "limit": 1}).json()
         if not isinstance(candidates, list):
-            raise PluginError("Service catalog returned an invalid candidate collection")
+            raise ServiceCatalogError("Service catalog returned an invalid candidate collection")
         return bool(candidates)
 
     def delete_category(self, category_id):
         self._request("DELETE", "/serviceCategory/" + quote(str(category_id), safe=""))
+
+    def get_specification(self, specification_id):
+        """Retrieve a service specification from the catalog."""
+        url = get_service_url("service_catalog", f"/serviceSpecification/{specification_id}")
+        response = requests.get(url, verify=settings.VERIFY_REQUESTS)
+
+        return response.json()

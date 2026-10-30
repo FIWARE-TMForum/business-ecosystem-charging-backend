@@ -56,6 +56,10 @@ urlpatterns = [
         offering_views.ValidateCollection(permitted_methods=("POST",)),
     ),
     url(
+        r"^charging/api/assetManagement/assets/validateServiceJob/?$",
+        offering_views.ValidateServiceCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/assetManagement/assets/offeringJob/?$",
         offering_views.ValidateOfferingCollection(permitted_methods=("POST",)),
     ),

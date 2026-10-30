@@ -33,7 +33,7 @@ from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_rollback import installPluginRollback
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.models import ResourcePlugin
-from wstore.asset_manager.resource_plugins.service_catalog import ServiceCatalog
+from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
 from wstore.store_commons.utils.version import is_lower_version
 
 logger = getLogger("wstore.default_logger")
@@ -97,7 +97,11 @@ class PluginLoader:
             )
             self._catalog.update_category(category_id, info["name"], info["version"])
         else:
-            category_id = self._catalog.create_category(info["name"], info["version"])
+            try:
+                category_id = self._catalog.create_category(info["name"], info["version"])
+            except ServiceCatalogError as exc:
+                raise PluginError(str(exc)) from exc
+
             rb_log.log_action("DELETE_CATEGORY", lambda: self._catalog.delete_category(category_id))
             model.category_id = category_id
 
@@ -266,7 +270,12 @@ class PluginLoader:
 
         if not plugin_model.category_id:
             raise PluginError("Plugin has no service category; run syncplugincategories before removal")
-        if self._catalog.category_in_use(plugin_model.category_id):
+        try:
+            category_in_use = self._catalog.category_in_use(plugin_model.category_id)
+        except ServiceCatalogError as exc:
+            raise PluginError(str(exc)) from exc
+
+        if category_in_use:
             raise PermissionDenied("The plugin " + plugin_id + " is being used by service candidates")
 
         # Do not downgrade through old versions merely to remove a package.
