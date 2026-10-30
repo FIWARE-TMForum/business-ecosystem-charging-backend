@@ -36,6 +36,7 @@ from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.models import UserProfile
 from wstore.store_commons.errors import ConflictError
 from wstore.store_commons.resource import Resource
+from wstore.store_commons.product_catalog import ProductCatalogError
 from wstore.store_commons.service_catalog import ServiceCatalogError
 from wstore.store_commons.utils.http import (
     authentication_required,
@@ -262,7 +263,7 @@ def _validate_catalog_element(request, element, validator):
         return build_response(request, 400, str(e))
     except ConflictError as e:
         return build_response(request, 409, str(e))
-    except PluginError as e:
+    except (PluginError, ProductCatalogError) as e:
         return build_response(request, 422, str(e))
     except PermissionDenied as e:
         return build_response(request, 403, str(e))
