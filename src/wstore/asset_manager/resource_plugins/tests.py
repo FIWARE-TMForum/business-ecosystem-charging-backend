@@ -998,7 +998,7 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         }[actor_id]
         self.inventory = self.InventoryClient.return_value
         self.inventory.get_service.side_effect = self.services.__getitem__
-        self._get_plugin_model.side_effect = lambda category_id: self.models.get(category_id)
+        self._get_plugin_model.side_effect = lambda category_id, plugin_type: self.models.get(category_id)
         self._load_plugin_model.side_effect = self.modules.get
 
     def tearDown(self):
@@ -1011,7 +1011,7 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.dispatch(self.contract)
         self.assertEqual([call("service-1"), call("service-2")], self.inventory.get_service.call_args_list)
         self.assertEqual(
-            [call(category_id="category-1"), call(category_id="category-2")],
+            [call(category_id="category-1", plugin_type="service"), call(category_id="category-2", plugin_type="service")],
             self._get_plugin_model.call_args_list,
         )
         for n in (1, 2):

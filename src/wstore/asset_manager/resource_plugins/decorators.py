@@ -24,7 +24,7 @@ from functools import wraps
 from django.conf import settings
 from logging import getLogger
 
-from wstore.asset_manager.errors import ServiceError
+from wstore.asset_manager.errors import ServiceError, ResourceError
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import Organization, ResourcePlugin
 from wstore.ordering.inventory_client import InventoryClient
@@ -32,74 +32,76 @@ from wstore.ordering.inventory_client import InventoryClient
 logger = getLogger("wstore.default_logger")
 
 
-def _get_plugin_model(category_id):
-    plugins = list(ResourcePlugin.objects.filter(category_id=category_id, type="service"))
+def _get_plugin_model(category_id, plugin_type="service"):
+    plugins = list(ResourcePlugin.objects.filter(category_id=category_id, type=plugin_type))
 
     if len(plugins) > 1:
-        raise ServiceError("The service category resolves to more than one installed plugin")
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error("The " + plugin_type + " category resolves to more than one installed plugin")
 
     return plugins[0] if plugins else None
 
 
-def load_plugin_module(service_spec):
-    entries = service_spec.get("specCharacteristic")
+def _get_type_characteristic(entries, plugin_type, description):
     if not isinstance(entries, list):
         return None
 
-    service_types = [
+    matches = [
         entry
         for entry in entries
         if isinstance(entry, dict)
         and isinstance(entry.get("name"), str)
-        and entry["name"].strip().lower() == "service type"
+        and entry["name"].strip().lower() == plugin_type + " type"
     ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error(description + " must contain exactly one " + plugin_type.title() + " Type characteristic")
+    return matches[0]
 
-    if not service_types:
+
+def _load_specification_plugin(specification, plugin_type, characteristics_field, values_field):
+    entry = _get_type_characteristic(
+        specification.get(characteristics_field), plugin_type, "The " + plugin_type + " specification"
+    )
+    if entry is None:
         return None
 
-    if len(service_types) != 1:
-        raise ServiceError("The service specification must contain exactly one Service Type characteristic")
-
-    values = service_types[0].get("characteristicValueSpecification")
-
+    values = entry.get(values_field)
     if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
-        raise ServiceError("The Service Type characteristic must contain exactly one value")
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error("The " + plugin_type.title() + " Type characteristic must contain exactly one value")
+    return _load_category_plugin(values[0].get("value"), plugin_type)
 
-    category_id = values[0].get("value")
 
-    return _load_category_plugin(category_id)
+def load_plugin_module(service_spec):
+    return _load_specification_plugin(
+        service_spec, "service", "specCharacteristic", "characteristicValueSpecification"
+    )
+
+
+def load_resource_plugin_module(resource_spec):
+    return _load_specification_plugin(
+        resource_spec, "resource", "resourceSpecCharacteristic", "resourceSpecCharacteristicValue"
+    )
 
 
 def load_service_plugin_module(service):
-    """Resolve an activation plugin from the inventory service's own characteristics."""
-    entries = service.get("serviceCharacteristic")
-    if not isinstance(entries, list):
-        return None
-
-    service_types = [
-        entry
-        for entry in entries
-        if isinstance(entry, dict)
-        and isinstance(entry.get("name"), str)
-        and entry["name"].strip().lower() == "service type"
-    ]
-
-    if not service_types:
-        return None
-
-    if len(service_types) != 1:
-        raise ServiceError("The inventory service must contain exactly one Service Type characteristic")
-
-    return _load_category_plugin(service_types[0].get("value"))
+    """Resolve activation from the inventory instance without a catalog read."""
+    entry = _get_type_characteristic(service.get("serviceCharacteristic"), "service", "The inventory service")
+    return _load_category_plugin(entry.get("value"), "service") if entry is not None else None
 
 
-def _load_category_plugin(category_id):
+def _load_category_plugin(category_id, plugin_type):
     if not isinstance(category_id, str) or not category_id.strip():
-        raise ServiceError("Service Type must contain a non-empty service category id string")
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error(
+            plugin_type.title() + " Type must contain a non-empty " + plugin_type + " category id string"
+        )
 
-    plugin_model = _get_plugin_model(category_id=category_id)
-
-    return _load_plugin_model(plugin_model) if plugin_model is not None else None
+    model = _get_plugin_model(category_id=category_id, plugin_type=plugin_type)
+    return _load_plugin_model(model) if model is not None else None
 
 
 def _load_plugin_model(plugin_model):
@@ -231,20 +233,28 @@ def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
 
 
-def on_service_spec_validation(func):
+def _on_specification_validation(func, plugin_type, loader):
     @wraps(func)
-    def wrapper(self, provider, service_spec):
-        plugin = load_plugin_module(service_spec=service_spec)
-
+    def wrapper(self, provider, specification):
+        plugin = loader(specification)
         if plugin is None:
             return
 
-        plugin.on_pre_service_spec_validation(provider, service_spec)
-
-        result = func(self, provider, service_spec, plugin._model)
-
-        plugin.on_post_service_spec_validation(provider, service_spec)
-
+        getattr(plugin, "on_pre_" + plugin_type + "_spec_validation")(provider, specification)
+        result = func(self, provider, specification, plugin._model)
+        getattr(plugin, "on_post_" + plugin_type + "_spec_validation")(provider, specification)
         return result
 
     return wrapper
+
+
+def on_service_spec_validation(func):
+    return _on_specification_validation(
+        func, "service", lambda specification: load_plugin_module(service_spec=specification)
+    )
+
+
+def on_resource_spec_validation(func):
+    return _on_specification_validation(
+        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification)
+    )

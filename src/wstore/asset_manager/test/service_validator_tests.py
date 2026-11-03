@@ -17,7 +17,7 @@ def characteristic(name, value):
 
 def parse_values(validator, specification, form=None):
     characteristics = validator.parse_spec_characteristics(specification)
-    return validator._get_service_characteristics(characteristics, form)
+    return validator._get_form_characteristics(characteristics, form)
 
 
 class ServiceSpecificationTests(SimpleTestCase):
@@ -104,7 +104,7 @@ class ServiceLifecycleTests(SimpleTestCase):
             ["on_pre_service_spec_validation", "on_post_service_spec_validation"],
             [c[0] for c in self.plugin.method_calls],
         )
-        self.resolve_plugin.assert_called_once_with(category_id="plugin-category")
+        self.resolve_plugin.assert_called_once_with(category_id="plugin-category", plugin_type="service")
         self.validator._catalog.get_specification.assert_not_called()
 
     def test_invalid_metadata_prevents_post_validation(self):
@@ -350,11 +350,14 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
 
 
 class SharedValidatorContractTests(SimpleTestCase):
-    def test_service_owns_its_parser_and_reuses_parent_dispatch(self):
+    def test_specification_validators_share_parser_and_reuse_catalog_dispatch(self):
         from wstore.asset_manager.catalog_validator import CatalogValidator
 
         self.assertIs(ServiceValidator.validate, CatalogValidator.validate)
-        self.assertIn("parse_spec_characteristics", ServiceValidator.__dict__)
+        from wstore.asset_manager.specification_validator import SpecificationValidator
+        from wstore.asset_manager.resource_validator import ResourceValidator
+        self.assertIs(ServiceValidator.parse_spec_characteristics, SpecificationValidator.parse_spec_characteristics)
+        self.assertIs(ResourceValidator.parse_spec_characteristics, SpecificationValidator.parse_spec_characteristics)
         self.assertNotIn("parse_spec_characteristics", CatalogValidator.__dict__)
         self.assertIn("parse_characteristics", CatalogValidator.__dict__)
         from wstore.asset_manager.product_validator import ProductValidator
@@ -682,7 +685,7 @@ class OrdinaryServiceEarlyReturnTests(SimpleTestCase):
         ):
             validator.validate("create", object(), specification)
             parse.assert_called_once_with(specification)
-            resolve.assert_called_once_with(category_id="plugin-category")
+            resolve.assert_called_once_with(category_id="plugin-category", plugin_type="service")
             plugin.on_post_service_spec_validation.assert_called_once()
 
 
@@ -705,7 +708,7 @@ class ManagedFileValidationTests(SimpleTestCase):
         }
         self.model = SimpleNamespace(requires_file=True, media_types=["application/json"], form={})
         self.plugin = Mock(_model=self.model)
-        lookup = patch("wstore.asset_manager.service_validator.Resource.objects.get", return_value=self.file)
+        lookup = patch("wstore.asset_manager.specification_validator.Resource.objects.get", return_value=self.file)
         self.lookup = lookup.start()
         self.addCleanup(lookup.stop)
         resolve = patch.object(plugin_decorators, "_get_plugin_model", return_value=self.model)

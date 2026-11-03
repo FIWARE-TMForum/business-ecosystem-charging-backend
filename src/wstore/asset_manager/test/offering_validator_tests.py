@@ -341,7 +341,7 @@ class OfferingPluginTests(SimpleTestCase):
 
         patcher = patch(
             "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",
-            side_effect=lambda category_id: category_id,
+            side_effect=lambda category_id, plugin_type: category_id,
         )
         patcher.start()
         self.addCleanup(patcher.stop)

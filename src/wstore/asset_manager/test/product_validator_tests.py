@@ -84,7 +84,7 @@ class ValidatorTestCase(SimpleTestCase):
             self.addCleanup(patcher.stop)
         self.catalog.get_specification.side_effect = self.services.get
         self.plugins = {"category-1": Mock(spec=ServicePlugin), "category-2": Mock(spec=ServicePlugin)}
-        self.lookup.side_effect = lambda category_id: category_id if category_id in self.plugins else None
+        self.lookup.side_effect = lambda category_id, plugin_type: category_id if category_id in self.plugins else None
         self.load.side_effect = self.plugins.get
         self.product = product_spec(services=("service-1", "ordinary", "service-2"))
 
@@ -348,7 +348,7 @@ class ProductEndpointTests(SimpleTestCase):
         response = resolve(request.path).func(request)
 
         self.assertEqual(200, response.status_code)
-        lookup.assert_called_once_with(category_id="category-1")
+        lookup.assert_called_once_with(category_id="category-1", plugin_type="service")
         plugin.on_product_spec_validation.assert_called_once_with(
             self.user.userprofile.current_organization, service, product
         )
