@@ -118,6 +118,34 @@ class InventoryClient:
 
         return r.json()
 
+    def _iter_inventory(self, api, path, query):
+        offset = 0
+        page_size = 100
+
+        while True:
+            params = {**(query or {}), "offset": offset, "limit": page_size}
+            response = requests.get(
+                get_service_url(api, path), params=params, verify=settings.VERIFY_REQUESTS, timeout=30
+            )
+            response.raise_for_status()
+            entries = response.json()
+
+            if not isinstance(entries, list):
+                raise InventoryError("The inventory returned an invalid collection")
+
+            yield from entries
+
+            if len(entries) < page_size:
+                return
+
+            offset += len(entries)
+
+    def iter_services(self, query=None):
+        return self._iter_inventory("service_inventory", "/service", query)
+
+    def iter_products(self, query=None):
+        return self._iter_inventory("inventory", "/product", query)
+
     def patch_product(self, product_id, patch_body):
         """
         Patch a given product according to the provided patch values

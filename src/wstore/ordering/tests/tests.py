@@ -1088,6 +1088,66 @@ class InventoryClientTestCase(TestCase):
         self.assertEqual(original, specification)
 
 
+    @parameterized.expand(
+        [
+            ("services", "iter_services", "http://localhost:7070/serviceInventory/service"),
+            ("products", "iter_products", "http://localhost:8080/product"),
+        ]
+    )
+    def test_inventory_search_passes_encoded_query_parameters(self, name, method, url):
+        self.response.json.return_value = [{"id": "match"}]
+        query = {"relatedParty.id": "urn:party:customer&name=other", "status": "active"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), method)(query=query))
+
+        self.assertEqual([{"id": "match"}], entries)
+        inventory_client.requests.get.assert_called_once_with(
+            url, params={**query, "offset": 0, "limit": 100}, verify=True, timeout=30
+        )
+        self.response.raise_for_status.assert_called_once_with()
+        self.assertNotIn("offset", query)
+
+
+    def test_inventory_search_continues_through_filtered_pages(self):
+        self.response.json.side_effect = [[{"id": str(i)} for i in range(100)], [{"id": "last-match"}]]
+        query = {"serviceCharacteristic.value": "file-id"}
+
+        entries = list(inventory_client.InventoryClient().iter_services(query=query))
+
+        self.assertEqual(101, len(entries))
+        self.assertEqual("last-match", entries[-1]["id"])
+        self.assertEqual([0, 100], [c.kwargs["params"]["offset"] for c in inventory_client.requests.get.call_args_list])
+        self.assertTrue(
+            all(
+                c.kwargs["params"]["serviceCharacteristic.value"] == "file-id"
+                for c in inventory_client.requests.get.call_args_list
+            )
+        )
+
+
+    def test_inventory_search_stops_fetching_when_the_caller_has_a_match(self):
+        self.response.json.return_value = [{"id": str(i)} for i in range(100)]
+        entries = inventory_client.InventoryClient().iter_products(query={"realizingService.id": "service-1"})
+
+        self.assertEqual({"id": "0"}, next(entries))
+        self.assertEqual(1, inventory_client.requests.get.call_count)
+
+
+    def test_inventory_search_rejects_an_invalid_collection(self):
+        self.response.json.return_value = {"error": "not a collection"}
+
+        with self.assertRaises(InventoryError):
+            list(inventory_client.InventoryClient().iter_services())
+
+
+    def test_inventory_search_propagates_http_errors(self):
+        from requests.exceptions import HTTPError
+
+        self.response.raise_for_status.side_effect = HTTPError("offline")
+
+        with self.assertRaises(HTTPError):
+            list(inventory_client.InventoryClient().iter_products())
+
 class NotifyItemCompletedTestCase(TestCase):
     tags = ("ordering", "notify-item")
 
