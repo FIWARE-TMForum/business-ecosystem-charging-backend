@@ -42,7 +42,7 @@ def service_spec(specification_id, category=None):
         specification["specCharacteristic"].append(
             {
                 "name": "Service Type",
-                "characteristicValueSpecification": [{"value": {"id": category}}],
+                "characteristicValueSpecification": [{"value": category}],
             }
         )
     return specification

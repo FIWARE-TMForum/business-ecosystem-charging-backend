@@ -242,8 +242,10 @@ class InventoryClient:
 
     def build_inventory_char(self, spec_char, value_field):
         value = None
-        for val in spec_char[value_field]:
-            if val["isDefault"]:
+        values = spec_char[value_field]
+
+        for val in values:
+            if len(values) == 1 or val.get("isDefault", False):
                 if "valueFrom" in val:
                     value = str(val["valueFrom"]) + " - " + str(val["valueTo"])
                 else:

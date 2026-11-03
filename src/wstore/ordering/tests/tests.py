@@ -1020,6 +1020,73 @@ class InventoryClientTestCase(TestCase):
         client.build_inventory_char.assert_called_once()
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
 
+    def test_single_primitive_value_is_copied_as_an_inventory_string(self):
+        client = inventory_client.InventoryClient()
+
+        for value, expected in (("file-id", "file-id"), (False, "False"), (12, "12"), (1.5, "1.5")):
+            with self.subTest(value=value):
+                specification = {
+                    "name": "example",
+                    "characteristicValueSpecification": [{"value": value}],
+                }
+                original = deepcopy(specification)
+
+                characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+                self.assertEqual(expected, characteristic["value"])
+                self.assertEqual("string", characteristic["valueType"])
+                self.assertEqual(original, specification)
+
+    def test_multiple_values_use_the_marked_default(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "name": "region",
+            "characteristicValueSpecification": [
+                {"value": "EU"},
+                {"value": "US", "isDefault": True},
+                {"value": "APAC", "isDefault": False},
+            ],
+        }
+
+        characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+        self.assertEqual("US", characteristic["value"])
+
+    def test_range_and_unit_conversion_is_preserved(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "name": "capacity",
+            "characteristicValueSpecification": [{"valueFrom": 1, "valueTo": 10, "unitOfMeasure": "GB"}],
+        }
+
+        characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+        self.assertEqual("1 - 10 GB", characteristic["value"])
+
+    def test_service_creation_keeps_file_and_category_ids_as_strings(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "specCharacteristic": [
+                {"name": "Service Type", "characteristicValueSpecification": [{"value": "category-1"}]},
+                {"name": "File", "characteristicValueSpecification": [{"value": "507f1f77bcf86cd799439011"}]},
+            ],
+        }
+        original = deepcopy(specification)
+        self.response.json.return_value = {"id": "service-1"}
+
+        with patch.object(client, "download_spec", return_value=specification):
+            self.assertEqual("service-1", client.create_service("specification-1", []))
+
+        service = inventory_client.requests.post.call_args.kwargs["json"]
+        values = {
+            characteristic["name"]: characteristic["value"] for characteristic in service["serviceCharacteristic"]
+        }
+        self.assertEqual({"Service Type": "category-1", "File": "507f1f77bcf86cd799439011"}, values)
+        self.assertTrue(
+            all(characteristic["valueType"] == "string" for characteristic in service["serviceCharacteristic"])
+        )
+        self.assertEqual(original, specification)
+
 
 class NotifyItemCompletedTestCase(TestCase):
     tags = ("ordering", "notify-item")

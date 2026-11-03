@@ -51,12 +51,8 @@ class ServiceValidator(CatalogValidator):
 
         service_type = self._get_spec_characteristic_value(characteristics, "service type")
 
-        if (
-            not isinstance(service_type, dict)
-            or not isinstance(service_type.get("id"), str)
-            or not service_type["id"].strip()
-        ):
-            raise ServiceError("Service Type must contain a service category reference with an id")
+        if not isinstance(service_type, str) or not service_type.strip():
+            raise ServiceError("Service Type must contain a non-empty service category id string")
 
         return characteristics
 
@@ -120,17 +116,13 @@ class ServiceValidator(CatalogValidator):
         if "file" not in characteristics:
             raise ServiceError("The service specification must contain a File characteristic")
 
-        reference = self._get_spec_characteristic_value(characteristics, "file")
+        file_id = self._get_spec_characteristic_value(characteristics, "file")
 
-        if (
-            not isinstance(reference, dict)
-            or not isinstance(reference.get("id"), str)
-            or not ObjectId.is_valid(reference["id"])
-        ):
-            raise ServiceError("File must contain an uploaded file reference with a valid id")
+        if not isinstance(file_id, str) or not ObjectId.is_valid(file_id):
+            raise ServiceError("File must contain a valid uploaded file id string")
 
         try:
-            resource = Resource.objects.get(pk=ObjectId(reference["id"]))
+            resource = Resource.objects.get(pk=ObjectId(file_id))
         except Resource.DoesNotExist:
             raise ServiceError("The uploaded file does not exist")
 

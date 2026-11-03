@@ -62,16 +62,12 @@ def load_plugin_module(service_spec):
     if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
         raise ServiceError("The Service Type characteristic must contain exactly one value")
 
-    category_ref = values[0].get("value")
+    category_id = values[0].get("value")
 
-    if (
-        not isinstance(category_ref, dict)
-        or not isinstance(category_ref.get("id"), str)
-        or not category_ref["id"].strip()
-    ):
-        raise ServiceError("Service Type must contain a service category reference with an id")
+    if not isinstance(category_id, str) or not category_id.strip():
+        raise ServiceError("Service Type must contain a non-empty service category id string")
 
-    plugin_model = _get_plugin_model(category_id=category_ref["id"])
+    plugin_model = _get_plugin_model(category_id=category_id)
 
     return _load_plugin_model(plugin_model) if plugin_model is not None else None
 
