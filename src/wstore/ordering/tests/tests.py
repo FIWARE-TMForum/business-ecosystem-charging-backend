@@ -964,6 +964,11 @@ class InventoryClientTestCase(TestCase):
         client.create_resource(spec_id, party + [operator_party])
 
         expected_calls_post = [call("http://localhost:9090/resourceInventory/resource", json={
+            "resourceSpecification": {
+                "id": spec_id,
+                "href": spec_id,
+                "name": spec_res["name"],
+            },
             "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
             "relatedParty": [norm_party, operator_party],
             "resourceStatus": "reserved",
@@ -1009,6 +1014,11 @@ class InventoryClientTestCase(TestCase):
         client.create_service(spec_id, party + [operator_party])
 
         expected_calls_post = [call("http://localhost:7070/serviceInventory/service", json={
+            "serviceSpecification": {
+                "id": spec_id,
+                "href": spec_id,
+                "name": spec_serv["name"],
+            },
             "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
             "relatedParty": [norm_party, operator_party],
             "state": "reserved",
@@ -1019,6 +1029,49 @@ class InventoryClientTestCase(TestCase):
             }, verify = inventory_client.settings.VERIFY_REQUESTS)]
         client.build_inventory_char.assert_called_once()
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
+
+    def test_inventory_creation_includes_specification_references_without_version(self):
+        cases = (
+            ("resource", "resourceSpecCharacteristic", "resourceInventory", "9090"),
+            ("service", "specCharacteristic", "serviceInventory", "7070"),
+        )
+        for kind, characteristic_field, inventory_path, port in cases:
+            spec_id = kind + "-specification-1"
+            reference_field = kind + "Specification"
+
+            for metadata in (
+                {"name": kind + " specification", "href": "urn:ngsi-ld:" + reference_field + ":" + spec_id},
+                {},
+                {"href": ""},
+            ):
+                with self.subTest(kind=kind, metadata=metadata):
+                    specification = {
+                        "id": spec_id,
+                        "version": "2.0",
+                        characteristic_field: [],
+                        **metadata,
+                    }
+                    original = deepcopy(specification)
+                    client = inventory_client.InventoryClient()
+                    inventory_client.requests.post.reset_mock()
+                    self.response.json.return_value = {"id": kind + "-inventory-1"}
+
+                    with patch.object(client, "download_spec", return_value=specification) as download:
+                        result = getattr(client, "create_" + kind)(spec_id, [])
+
+                    download.assert_called_once_with(kind + "_catalog", "/" + reference_field, spec_id)
+                    inventory_client.requests.post.assert_called_once()
+                    args, kwargs = inventory_client.requests.post.call_args
+                    self.assertEqual((f"http://localhost:{port}/{inventory_path}/{kind}",), args)
+                    self.assertTrue(kwargs["verify"])
+                    reference = kwargs["json"][reference_field]
+                    expected = {"id": spec_id, "href": metadata.get("href") or spec_id}
+                    if "name" in metadata:
+                        expected["name"] = metadata["name"]
+                    self.assertEqual(expected, reference)
+                    self.assertNotIn("version", reference)
+                    self.assertEqual(kind + "-inventory-1", result)
+                    self.assertEqual(original, specification)
 
     def test_single_primitive_value_is_copied_as_an_inventory_string(self):
         client = inventory_client.InventoryClient()
