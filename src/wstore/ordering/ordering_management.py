@@ -27,7 +27,10 @@ import requests
 from django.conf import settings
 
 from wstore.charging_engine.charging.billing_client import BillingClient
-from wstore.asset_manager.resource_plugins.decorators import on_product_suspended, on_product_acquired
+from wstore.asset_manager.resource_plugins.decorators import (
+    on_product_suspended,
+    on_product_activation,
+)
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
 from wstore.ordering.inventory_client import InventoryClient
@@ -496,6 +499,8 @@ class OrderingManager:
 
             logger.info("customer bill updated")
             self.activate_product(order["id"], new_product)
+            if self._get_mode(offering_info) == "automatic":
+                on_product_activation(new_product, order, contract)
             order_model.mark_contract_as_processed(contract.item_id)
             processed_items.append(orderItem)
 
@@ -567,6 +572,8 @@ class OrderingManager:
 
                 logger.info("customer bill updated")
                 self.activate_product(raw_order["id"], new_product)
+                if self._get_mode(offering_info) == "automatic":
+                    on_product_activation(new_product, raw_order, contract)
                 order_model.mark_contract_as_processed(contract.item_id)
                 processed_items.append(orderItem)
             else:
@@ -647,12 +654,6 @@ class OrderingManager:
                 if "id" in item_cb:
                     billing_client.set_customer_bill("settled", item_cb["id"])
 
-                # Activate asset
-                try:
-                    on_product_acquired(raw_order, contract)
-                except:
-                    return 400, "The asset has failed to be activated"
-
                 self.activate_product(raw_order["id"], new_product)
             else:
                 # Activate product for manual payment
@@ -673,12 +674,6 @@ class OrderingManager:
 
         if contract is None:
             return 404, "There is not a contract for the specified product"
-
-        # Activate asset
-        try:
-            on_product_acquired(order, contract)
-        except:
-            return 400, "The asset has failed to be activated"
 
         # Change product state to active
         inventory_client = InventoryClient()

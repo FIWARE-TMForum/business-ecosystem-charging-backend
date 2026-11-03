@@ -68,7 +68,7 @@ class Plugin:
         """Validate the offering after backend checks; publication is not implied."""
         pass
 
-    def on_service_activation(self, provider, service, product, order, contract=None):
+    def on_service_activation(self, provider, buyer, service, product, order, contract=None):
         """Provision using the inventory service's instantiated characteristics."""
         pass
 

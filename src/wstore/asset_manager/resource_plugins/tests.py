@@ -29,7 +29,7 @@ from zipfile import ZipFile
 
 from bson.objectid import ObjectId
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from mock import MagicMock, Mock, call, patch
 from parameterized import parameterized
 from requests.exceptions import HTTPError
@@ -924,55 +924,6 @@ class DecoratorsTestCase(TestCase):
         offering.asset = asset
         return offering
 
-    # def test_product_acquired(self):
-    #     # Include order and contract info
-    #     bundle = self._get_offering_mock()
-    #     bundle.bundled_offerings = [
-    #         "61004aba5e05acc115f022f0",
-    #         "61004aba5e05acc115f022f1",
-    #         "61004aba5e05acc115f022f2",
-    #     ]
-
-    #     offering1 = self._get_offering_mock()
-    #     offering2 = self._get_offering_mock()
-    #     offering3 = self._get_offering_mock(bundle_asset=True)
-
-    #     decorators.Offering = MagicMock()
-    #     decorators.Offering.objects.get.side_effect = [
-    #         bundle,
-    #         offering1,
-    #         offering1,
-    #         offering2,
-    #         offering2,
-    #         offering3,
-    #         offering3,
-    #     ]
-
-    #     decorators.Resource = MagicMock()
-    #     asset1 = MagicMock(resource_type="asset3")
-    #     asset2 = MagicMock(resource_type="asset4")
-    #     decorators.Resource.objects.get.side_effect = [asset1, asset2]
-
-    #     self._contract.offering = "61004aba5e05acc115f022f0"
-
-    #     decorators.on_product_acquired(self._order, self._contract)
-
-    #     # Check calls
-    #     self.assertEquals(
-    #         [call("asset"), call("asset"), call("asset3"), call("asset4")],
-    #         decorators.load_plugin_module.call_args_list,
-    #     )
-
-    #     self.assertEquals(
-    #         [
-    #             call(offering1.asset, self._contract, self._order),
-    #             call(offering2.asset, self._contract, self._order),
-    #             call(asset1, self._contract, self._order),
-    #             call(asset2, self._contract, self._order),
-    #         ],
-    #         self._module.on_product_acquisition.call_args_list,
-    #     )
-
     # def test_product_suspended(self):
     #     self._contract.offering = "61004aba5e05acc115f022f0"
     #     offering = self._get_offering_mock()
@@ -1003,6 +954,7 @@ class DecoratorsTestCase(TestCase):
 class ServiceActivationDispatchTests(SimpleTestCase):
     def setUp(self):
         self.provider = object()
+        self.buyer = object()
         self.order = {"id": "order-1", "productOrderItem": [{"id": "item-1"}]}
         self.contract = object()
         self.product = {"id": "product-1", "realizingService": [{"id": "service-1"}, {"id": "service-2"}]}
@@ -1017,16 +969,25 @@ class ServiceActivationDispatchTests(SimpleTestCase):
             }
             for n in (1, 2)
         }
+        self.product["relatedParty"] = [
+            {"id": "provider-party", "role": "sElLeR"},
+            {"id": "buyer-party", "role": "bUyEr"},
+            {"id": "operator-party", "role": "SellerOperator"},
+        ]
         self.models = {f"category-{n}": object() for n in (1, 2)}
         self.plugins = {f"category-{n}": Mock() for n in (1, 2)}
         self.modules = {model: self.plugins[category] for category, model in self.models.items()}
-        for name in ("InventoryClient", "_get_plugin_model", "_load_plugin_model"):
+        for name in ("InventoryClient", "_get_plugin_model", "_load_plugin_model", "Organization"):
             patcher = patch.object(decorators, name)
             setattr(self, name, patcher.start())
             self.addCleanup(patcher.stop)
         patcher = patch("wstore.store_commons.service_catalog.ServiceCatalog.get_specification")
         self.catalog_read = patcher.start()
         self.addCleanup(patcher.stop)
+        self.Organization.objects.get.side_effect = lambda actor_id: {
+            "provider-party": self.provider,
+            "buyer-party": self.buyer,
+        }[actor_id]
         self.inventory = self.InventoryClient.return_value
         self.inventory.get_service.side_effect = self.services.__getitem__
         self._get_plugin_model.side_effect = lambda category_id: self.models.get(category_id)
@@ -1036,7 +997,7 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.catalog_read.assert_not_called()
 
     def dispatch(self, contract=None):
-        return decorators.on_product_activation(self.provider, self.product, self.order, contract)
+        return decorators.on_product_activation(self.product, self.order, contract)
 
     def test_each_plugin_receives_its_inventory_service_and_purchase_arguments(self):
         self.dispatch(self.contract)
@@ -1048,6 +1009,7 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         for n in (1, 2):
             self.plugins[f"category-{n}"].on_service_activation.assert_called_once_with(
                 self.provider,
+                self.buyer,
                 self.services[f"service-{n}"],
                 self.product,
                 self.order,
@@ -1085,8 +1047,8 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.dispatch()
         self.assertEqual(
             [
-                call(self.provider, self.services["service-1"], self.product, self.order, None),
-                call(self.provider, self.services["service-2"], self.product, self.order, None),
+                call(self.provider, self.buyer, self.services["service-1"], self.product, self.order, None),
+                call(self.provider, self.buyer, self.services["service-2"], self.product, self.order, None),
             ],
             self.plugins["category-1"].on_service_activation.call_args_list,
         )
@@ -1167,12 +1129,62 @@ class ServiceActivationDispatchTests(SimpleTestCase):
                     self.assertIs(error, logs.records[0].exc_info[1])
                     self.plugins["category-2"].on_service_activation.assert_called_once_with(
                         self.provider,
+                        self.buyer,
                         self.services["service-2"],
                         self.product,
                         self.order,
                         None,
                     )
             operation.side_effect = original
+
+    def test_parties_are_resolved_once_for_all_services(self):
+        self.dispatch()
+        self.assertEqual(
+            [call(actor_id="provider-party"), call(actor_id="buyer-party")],
+            self.Organization.objects.get.call_args_list,
+        )
+
+    @override_settings(PROVIDER_ROLE="Vendor", CUSTOMER_ROLE="Purchaser")
+    def test_organization_resolution_uses_configured_roles(self):
+        self.product["relatedParty"][0]["role"] = "vEnDoR"
+        self.product["relatedParty"][1]["role"] = "pUrChAsEr"
+        self.dispatch()
+        self.plugins["category-1"].on_service_activation.assert_called_once_with(
+            self.provider,
+            self.buyer,
+            self.services["service-1"],
+            self.product,
+            self.order,
+            None,
+        )
+
+    def test_missing_or_ambiguous_organizations_are_logged_without_dispatch(self):
+        for parties in (
+            [],
+            [{"id": "provider-party", "role": "Seller"}],
+            [{"id": "buyer-party", "role": "Buyer"}],
+            [{"id": "a", "role": "Seller"}, {"id": "b", "role": "Seller"}],
+        ):
+            with self.subTest(parties=parties):
+                self.product["relatedParty"] = parties
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+                for plugin in self.plugins.values():
+                    plugin.on_service_activation.assert_not_called()
+
+    def test_organization_lookup_failure_does_not_escape(self):
+        self.Organization.objects.get.side_effect = RuntimeError("organization unavailable")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.assertIsNone(self.dispatch())
+        for plugin in self.plugins.values():
+            plugin.on_service_activation.assert_not_called()
+
+    def test_ordinary_services_do_not_require_organizations(self):
+        for service in self.services.values():
+            service.pop("serviceCharacteristic")
+        self.product.pop("relatedParty")
+        self.dispatch()
+        self.Organization.objects.get.assert_not_called()
 
 
 class RecordingPlugin(Plugin):
