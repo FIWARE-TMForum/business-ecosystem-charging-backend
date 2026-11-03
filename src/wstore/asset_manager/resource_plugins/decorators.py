@@ -87,10 +87,12 @@ def load_resource_plugin_module(resource_spec):
     )
 
 
-def load_service_plugin_module(service):
-    """Resolve activation from the inventory instance without a catalog read."""
-    entry = _get_type_characteristic(service.get("serviceCharacteristic"), "service", "The inventory service")
-    return _load_category_plugin(entry.get("value"), "service") if entry is not None else None
+def load_inventory_plugin_module(instance, plugin_type):
+    """Resolve activation from inventory characteristics without a catalog read."""
+    entry = _get_type_characteristic(
+        instance.get(plugin_type + "Characteristic"), plugin_type, "The inventory " + plugin_type
+    )
+    return _load_category_plugin(entry.get("value"), plugin_type) if entry is not None else None
 
 
 def _load_category_plugin(category_id, plugin_type):
@@ -177,50 +179,53 @@ def _get_product_organization(product, role):
 
 
 def on_product_activation(product, order, contract=None):
-    """Dispatch product activation to its service plugins without interrupting purchase completion."""
-    references = product.get("realizingService", [])
-
-    if not isinstance(references, list):
-        logger.error(
-            "Cannot notify activation for product %s: realizingService must be a list", product.get("id")
-        )
-        return
-
+    """Notify service/resource plugins without interrupting purchase completion."""
     inventory = InventoryClient()
     organizations = None
 
-    for reference in references:
-        try:
-            if (
-                not isinstance(reference, dict)
-                or not isinstance(reference.get("id"), str)
-                or not reference["id"].strip()
-            ):
-                raise ServiceError("Each realizingService reference must contain a service id")
-
-            service = inventory.get_service(reference["id"])
-
-            if not isinstance(service, dict) or service.get("id") != reference["id"]:
-                raise ServiceError("Invalid inventory service reference: " + reference["id"])
-
-            plugin = load_service_plugin_module(service)
-
-            if plugin is not None:
-                if organizations is None:
-                    organizations = (
-                        _get_product_organization(product, settings.PROVIDER_ROLE),
-                        _get_product_organization(product, settings.CUSTOMER_ROLE),
-                    )
-                provider, buyer = organizations
-                plugin.on_service_activation(provider, buyer, service, product, order, contract)
-        except Exception:
-            # Payment has completed: a plugin notification must not block the purchase.
-            logger.exception(
-                "Service activation notification failed for order %s, product %s, service %s",
-                order.get("id"),
-                product.get("id"),
-                reference.get("id") if isinstance(reference, dict) else None,
+    for plugin_type, field in (("service", "realizingService"), ("resource", "realizingResource")):
+        references = product.get(field, [])
+        if not isinstance(references, list):
+            logger.error(
+                "Cannot notify activation for product %s: %s must be a list", product.get("id"), field
             )
+            continue
+
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        for reference in references:
+            try:
+                if (
+                    not isinstance(reference, dict)
+                    or not isinstance(reference.get("id"), str)
+                    or not reference["id"].strip()
+                ):
+                    raise error("Each " + field + " reference must contain a " + plugin_type + " id")
+
+                instance = getattr(inventory, "get_" + plugin_type)(reference["id"])
+                if not isinstance(instance, dict) or instance.get("id") != reference["id"]:
+                    raise error("Invalid inventory " + plugin_type + " reference: " + reference["id"])
+
+                plugin = load_inventory_plugin_module(instance, plugin_type)
+                if plugin is not None:
+                    if organizations is None:
+                        organizations = (
+                            _get_product_organization(product, settings.PROVIDER_ROLE),
+                            _get_product_organization(product, settings.CUSTOMER_ROLE),
+                        )
+                    provider, buyer = organizations
+                    getattr(plugin, "on_" + plugin_type + "_activation")(
+                        provider, buyer, instance, product, order, contract
+                    )
+            except Exception:
+                # Payment has completed: plugin notifications must not block the purchase.
+                logger.exception(
+                    "%s activation notification failed for order %s, product %s, %s %s",
+                    plugin_type.title(),
+                    order.get("id"),
+                    product.get("id"),
+                    plugin_type,
+                    reference.get("id") if isinstance(reference, dict) else None,
+                )
 
 
 def process_product_notification(order, contract, type_):

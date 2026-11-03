@@ -866,6 +866,20 @@ class InventoryClientTestCase(TestCase):
         self.assertIs(error, caught.exception)
         self.response.json.assert_not_called()
 
+    def test_get_resource(self):
+        resource = {"id": "resource-1", "resourceCharacteristic": [{"name": "Resource Type", "value": "category"}]}
+        self.response.json.return_value = resource
+        self.assertEqual(resource, inventory_client.InventoryClient().get_resource("resource-1"))
+        inventory_client.requests.get.assert_called_once_with(
+            "http://localhost:9090/resourceInventory/resource/resource-1", verify=True, timeout=30,
+        )
+        self.response.raise_for_status.assert_called_once_with()
+
+    def test_get_resource_http_error_propagates(self):
+        self.response.raise_for_status.side_effect = InventoryError("resource inventory unavailable")
+        with self.assertRaises(InventoryError): inventory_client.InventoryClient().get_resource("resource-1")
+        self.response.json.assert_not_called()
+
     def test_activate_product(self):
         client = inventory_client.InventoryClient()
         client.activate_product("1")
@@ -1684,5 +1698,41 @@ class NotifyItemCompletedTestCase(TestCase):
                 self._raw_order,
                 self._contract,
             )
+        self._order_model.mark_contract_as_processed.assert_called_once_with(self._contract.item_id)
+        self._ordering_client_inst.update_items_state.assert_called_once()
+
+    @parameterized.expand([("batch",), ("item",)])
+    def test_real_resource_dispatch_failure_does_not_interrupt_completion(self, path):
+        from wstore.asset_manager.resource_plugins import decorators
+
+        manager, product = self._prepare_activation_completion()
+        product.pop("realizingService")
+        product["realizingResource"] = [{"id": "resource-1"}]
+        resource = {
+            "id": "resource-1",
+            "resourceCharacteristic": [{"name": "Resource Type", "value": "resource-category"}],
+        }
+        inventory = MagicMock()
+        inventory.get_resource.return_value = resource
+        plugin = MagicMock()
+        plugin.on_resource_activation.side_effect = RuntimeError("provisioning failed")
+        provider, buyer = object(), object()
+        organizations = {"seller-party": provider, "buyer-party": buyer}
+        with patch.object(
+            ordering_management, "on_product_activation", decorators.on_product_activation
+        ), patch.object(decorators, "InventoryClient", return_value=inventory), patch.object(
+            decorators, "_get_plugin_model", return_value=object()
+        ), patch.object(
+            decorators, "_load_plugin_model", return_value=plugin
+        ), patch.object(
+            decorators.Organization.objects, "get", side_effect=lambda actor_id: organizations[actor_id]
+        ), self.assertLogs(
+            "wstore.default_logger", level="ERROR"
+        ):
+            self._run_activation_completion(manager, path)
+        plugin.on_resource_activation.assert_called_once_with(
+            provider, buyer, resource, product, self._raw_order, self._contract
+        )
+        inventory.get_service.assert_not_called()
         self._order_model.mark_contract_as_processed.assert_called_once_with(self._contract.item_id)
         self._ordering_client_inst.update_items_state.assert_called_once()
