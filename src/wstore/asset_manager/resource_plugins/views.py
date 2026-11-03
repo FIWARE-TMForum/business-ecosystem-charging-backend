@@ -38,6 +38,7 @@ def get_plugin_info(plugin):
         "id": plugin.plugin_id,
         "href": plugin_url,
         "name": plugin.name,
+        "type": plugin.type,
         "author": plugin.author,
         "version": plugin.version,
         "categoryId": plugin.category_id,

@@ -7,6 +7,7 @@ from requests.exceptions import ConnectionError, HTTPError
 
 from wstore.ordering.inventory_client import InventoryClient
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
+from wstore.store_commons.resource_catalog import ResourceCatalog, ResourceCatalogError
 
 
 @override_settings(SERVICE_CATALOG="https://catalog.example/tmf-api/serviceCatalogManagement/v4", VERIFY_REQUESTS=True)
@@ -146,6 +147,7 @@ class InventorySpecificationTests(SimpleTestCase):
             "https://inventory.example/services/service",
             json={
                 "name": "service",
+                "serviceSpecification": {"id": "spec-1", "href": "spec-1", "name": "service"},
                 "description": "existing service",
                 "serviceCharacteristic": [
                     {
@@ -162,3 +164,54 @@ class InventorySpecificationTests(SimpleTestCase):
             verify=True,
         )
         post.return_value.raise_for_status.assert_called_once_with()
+
+
+@override_settings(
+    RESOURCE_CATALOG="https://resources.example/tmf-api/resourceCatalog/v4/", VERIFY_REQUESTS=True
+)
+class ResourceCatalogTests(SimpleTestCase):
+    @patch("wstore.store_commons.resource_catalog.requests.request")
+    def test_resource_category_operations_use_resource_catalog(self, request):
+        client = ResourceCatalog()
+        request.return_value.json.return_value = {"id": "category-1"}
+        self.assertEqual("category-1", client.create_category("test", "1.0"))
+        self.assertEqual(
+            ("POST", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCategory"),
+            request.call_args.args,
+        )
+        self.assertEqual({"name": "test", "version": "1.0"}, request.call_args.kwargs["json"])
+        client.update_category("category:1", "test", "2.0")
+        self.assertEqual(
+            ("PATCH", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCategory/category%3A1"),
+            request.call_args.args,
+        )
+        request.return_value.json.return_value = []
+        self.assertFalse(client.category_in_use("category-1"))
+        self.assertEqual(
+            ("GET", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCandidate"),
+            request.call_args.args,
+        )
+        self.assertEqual({"category.id": "category-1", "limit": 1}, request.call_args.kwargs["params"])
+        request.return_value.json.return_value = [{"id": "candidate"}]
+        self.assertTrue(client.category_in_use("category-1"))
+        client.delete_category("category-1")
+        self.assertEqual(
+            ("DELETE", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCategory/category-1"),
+            request.call_args.args,
+        )
+        for invocation in request.call_args_list:
+            self.assertEqual(30, invocation.kwargs["timeout"])
+            self.assertIs(True, invocation.kwargs["verify"])
+
+    @patch("wstore.store_commons.resource_catalog.requests.request")
+    def test_invalid_resource_responses_raise_resource_catalog_errors(self, request):
+        for document in (None, [], {}, {"name": "missing id"}):
+            request.return_value.json.return_value = document
+            with self.assertRaises(ResourceCatalogError):
+                ResourceCatalog().create_category("test", "1.0")
+        request.return_value.json.return_value = {}
+        with self.assertRaises(ResourceCatalogError):
+            ResourceCatalog().category_in_use("category-1")
+        request.return_value.raise_for_status.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            ResourceCatalog().category_in_use("category-1")

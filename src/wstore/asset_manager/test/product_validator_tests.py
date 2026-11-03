@@ -32,7 +32,7 @@ from requests.exceptions import ConnectionError, HTTPError
 from wstore.asset_manager.errors import ProductError, ServiceError
 from wstore.asset_manager.product_validator import ProductValidator
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
-from wstore.asset_manager.resource_plugins.plugin import Plugin
+from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
 
@@ -83,7 +83,7 @@ class ValidatorTestCase(SimpleTestCase):
             setattr(self, name, patcher.start())
             self.addCleanup(patcher.stop)
         self.catalog.get_specification.side_effect = self.services.get
-        self.plugins = {"category-1": Mock(spec=Plugin), "category-2": Mock(spec=Plugin)}
+        self.plugins = {"category-1": Mock(spec=ServicePlugin), "category-2": Mock(spec=ServicePlugin)}
         self.lookup.side_effect = lambda category_id: category_id if category_id in self.plugins else None
         self.load.side_effect = self.plugins.get
         self.product = product_spec(services=("service-1", "ordinary", "service-2"))

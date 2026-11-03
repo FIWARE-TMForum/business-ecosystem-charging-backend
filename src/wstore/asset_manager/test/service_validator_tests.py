@@ -559,7 +559,7 @@ class ServiceTypeResolutionTests(SimpleTestCase):
                 ),
             )
             request.assert_not_called()
-        lookup.assert_called_once_with(category_id="category-1")
+        lookup.assert_called_once_with(category_id="category-1", type="service")
 
     @patch("wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.filter")
     def test_present_duplicate_or_malformed_service_type_rejected(self, lookup):
@@ -612,7 +612,7 @@ class ServiceTypeResolutionTests(SimpleTestCase):
         original = deepcopy(specification)
         with patch.object(plugin_decorators, "_load_plugin_model"):
             plugin_decorators.load_plugin_module(specification)
-        lookup.assert_called_once_with(category_id="category-1")
+        lookup.assert_called_once_with(category_id="category-1", type="service")
         self.assertEqual(original, specification)
 
     def test_service_without_service_type_is_accepted_by_backend_route(self):

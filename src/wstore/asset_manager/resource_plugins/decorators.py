@@ -33,7 +33,7 @@ logger = getLogger("wstore.default_logger")
 
 
 def _get_plugin_model(category_id):
-    plugins = list(ResourcePlugin.objects.filter(category_id=category_id))
+    plugins = list(ResourcePlugin.objects.filter(category_id=category_id, type="service"))
 
     if len(plugins) > 1:
         raise ServiceError("The service category resolves to more than one installed plugin")

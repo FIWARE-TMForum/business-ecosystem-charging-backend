@@ -107,7 +107,7 @@ class ServeMediaTestCase(TestCase):
                 "status": "active",
             }
         )
-        self.ResourcePlugin.objects.filter.assert_called_once_with(category_id="file-category", requires_file=True)
+        self.ResourcePlugin.objects.filter.assert_called_once_with(category_id="file-category", type="service", requires_file=True)
 
     def _validate_upgrading_call(self):
         self.assertEqual(

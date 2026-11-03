@@ -26,6 +26,7 @@ PLUGIN_INFO = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [
         "application/x-widget+mashable-application-component",
         "application/x-mashup+mashable-application-component",
@@ -74,6 +75,7 @@ PLUGIN_INFO2 = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "requires_file": True,
 }
 
@@ -82,6 +84,7 @@ PLUGIN_INFO_ACCOUNTING = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "requires_file": True,
     "pull_accounting": True,
 }
@@ -91,6 +94,7 @@ PLUGIN_INFO_DOWNGRADE = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
+    "type": "service",
     "requires_file": True,
 }
 
@@ -99,6 +103,7 @@ PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
+    "type": "service",
     "requires_file": True,
     "pull_accounting": True,
 }
@@ -108,6 +113,7 @@ PLUGIN_INFO_ACCOUNTING = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "requires_file": True,
     "pull_accounting": True,
 }
@@ -117,6 +123,7 @@ PLUGIN_INFO_DOWNGRADE = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
+    "type": "service",
     "requires_file": True,
 }
 
@@ -125,6 +132,7 @@ PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
+    "type": "service",
     "requires_file": True,
     "pull_accounting": True,
 }
@@ -133,6 +141,7 @@ MISSING_NAME = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -142,6 +151,7 @@ INVALID_NAME = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -150,6 +160,7 @@ MISSING_AUTHOR = {
     "name": "plugin name",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -159,6 +170,7 @@ MISSING_REQUIRES_FILE = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
 }
 
@@ -174,6 +186,7 @@ MISSING_VERSION = {
     "name": "plugin name",
     "author": "test author",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -183,6 +196,7 @@ INVALID_NAME_TYPE = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -192,6 +206,7 @@ INVALID_AUTHOR_TYPE = {
     "author": 10,
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": True,
 }
@@ -201,6 +216,7 @@ INVALID_REQUIRES_FILE_TYPE = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": "true",
 }
@@ -210,6 +226,7 @@ INVALID_REQUIRES_FILE = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": [],
     "requires_file": 1,
 }
@@ -219,6 +236,7 @@ INVALID_MEDIA_TYPE = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": "text/plain",
     "requires_file": True,
 }
@@ -228,6 +246,7 @@ INVALID_MODULE_TYPE = {
     "author": "test author",
     "version": "1.0",
     "module": [],
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
 }
@@ -237,6 +256,7 @@ INVALID_VERSION = {
     "author": "test author",
     "version": "1.a",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
 }
@@ -246,6 +266,7 @@ INVALID_VERSION = {
     "author": "test author",
     "version": "1.a",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
 }
@@ -255,6 +276,7 @@ INVALID_ACCOUNTING = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "pull_accounting": "true",
@@ -265,6 +287,7 @@ BASIC_PLUGIN_DATA = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
 }
@@ -355,6 +378,7 @@ INVALID_OVERRIDES = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "overrides": ["INVALID"],
@@ -365,6 +389,7 @@ INVALID_FORM_ORDER_FORMAT = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "overrides": [],
@@ -385,6 +410,7 @@ INVALID_FORM_ORDER_NO_FORM = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "overrides": [],
@@ -396,6 +422,7 @@ INVALID_FORM_ORDER_MISSING_KEY = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "overrides": [],
@@ -416,6 +443,7 @@ INVALID_FORM_ORDER_DIFFERENT_KEY = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
+    "type": "service",
     "media_types": ["text/plain"],
     "requires_file": True,
     "overrides": [],

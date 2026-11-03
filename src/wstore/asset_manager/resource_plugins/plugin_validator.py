@@ -30,6 +30,7 @@ logger = getLogger("wstore.default_logger")
 class PluginValidator:
     REQUIRED_FIELDS = [
         ("name", str),
+        ("type", str),
         ("author", str),
         ("requires_file", bool),
         ("module", str),
@@ -104,8 +105,8 @@ class PluginValidator:
         }
 
         for k, v in form_info.items():
-            if k.strip().lower() in ("file", "service type"):
-                return "Invalid form field: " + k + " is reserved for service specification references"
+            if k.strip().lower() in ("file", "service type", "resource type"):
+                return "Invalid form field: " + k + " is reserved for specification references"
 
             # Validate component
             if not isinstance(v, dict):
@@ -162,6 +163,9 @@ class PluginValidator:
             logger.error("Errors in required fields in plugin info")
             return errors
 
+        if plugin_info["type"] not in ("service", "resource"):
+            errors.append("Plugin `type` must be service or resource")
+
         if not is_valid_id(plugin_info["name"]):
             logger.error("Invalid name format: invalid character")
             errors.append("Invalid name format: invalid character")
@@ -176,7 +180,8 @@ class PluginValidator:
         if "media_types" in plugin_info and (
             not isinstance(plugin_info["media_types"], list)
             or any(
-                not isinstance(media_type, str) or not media_type.strip() for media_type in plugin_info["media_types"]
+                not isinstance(media_type, str) or not media_type.strip()
+                for media_type in plugin_info["media_types"]
             )
         ):
             logger.error("Invalid media types")
