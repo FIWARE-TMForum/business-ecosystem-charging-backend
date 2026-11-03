@@ -29,7 +29,7 @@ from parameterized import parameterized
 
 from wstore.asset_manager.offering_validator import OfferingValidator
 from wstore.asset_manager.errors import ProductError
-from wstore.asset_manager.resource_plugins.plugin import Plugin
+from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.test import offering_validator_test_data as data
 from wstore.asset_manager.test.product_validator_tests import product_spec, service_spec
@@ -337,7 +337,7 @@ class OfferingPluginTests(SimpleTestCase):
         self.catalog.get_specification.return_value = self.product
         self.catalog.get_price.return_value = deepcopy(data.OT_OFFERING_PRICE)
         self.offer = {**deepcopy(data.BASE_OFFERING), "productSpecification": {"id": self.product["id"]}}
-        self.plugins = {"c1": Mock(spec=Plugin), "c2": Mock(spec=Plugin)}
+        self.plugins = {"c1": Mock(spec=ServicePlugin), "c2": Mock(spec=ServicePlugin)}
 
         patcher = patch(
             "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",

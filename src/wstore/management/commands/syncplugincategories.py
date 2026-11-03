@@ -18,7 +18,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Publish categories for packages installed before service catalog integration."""
+"""Publish categories for packages installed before catalog integration."""
 from django.core.management.base import BaseCommand, CommandError
 
 from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
@@ -26,7 +26,7 @@ from wstore.models import ResourcePlugin
 
 
 class Command(BaseCommand):
-    help = "Create missing service categories for installed plugins"
+    help = "Create missing service/resource categories for installed plugins"
 
     def handle(self, *args, **options):
         loader = PluginLoader()

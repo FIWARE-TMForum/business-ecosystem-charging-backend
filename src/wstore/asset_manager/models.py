@@ -77,6 +77,7 @@ class Resource(models.Model):
 class ResourcePlugin(models.Model):
     _id = models.ObjectIdField()
     plugin_id = models.CharField(max_length=100)
+    type = models.CharField(max_length=20, choices=(("service", "service"), ("resource", "resource")), default="service")
     category_id = models.CharField(max_length=100, blank=True, null=True)
     name = models.CharField(max_length=100)
     version = models.CharField(max_length=50)

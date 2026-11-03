@@ -91,7 +91,7 @@ class ServeMedia(API_Resource):
         if len(category_ids) != 1 or not isinstance(category_ids[0], str) or not category_ids[0].strip():
             return False
 
-        return ResourcePlugin.objects.filter(category_id=category_ids[0], requires_file=True).exists()
+        return ResourcePlugin.objects.filter(category_id=category_ids[0], type="service", requires_file=True).exists()
 
     def _has_file_purchase(self, organization, asset):
         party_id = organization.actor_id

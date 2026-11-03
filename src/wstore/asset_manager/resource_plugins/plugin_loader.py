@@ -28,12 +28,14 @@ from shutil import rmtree
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
-from wstore.asset_manager.resource_plugins.plugin import Plugin
+from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
+from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin as ResourcePluginHandler
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_rollback import installPluginRollback
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
 from wstore.models import ResourcePlugin
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
+from wstore.store_commons.resource_catalog import ResourceCatalog, ResourceCatalogError
 from wstore.store_commons.utils.version import is_lower_version
 
 logger = getLogger("wstore.default_logger")
@@ -49,7 +51,10 @@ class PluginLoader:
 
         self._plugin_manager = PluginValidator()
         self._catalog = ServiceCatalog()
-        self._plugins_path = os.path.join(settings.BASEDIR, "wstore", "asset_manager", "resource_plugins", "plugins")
+        self._resource_catalog = ResourceCatalog()
+        self._plugins_path = os.path.join(
+            settings.BASEDIR, "wstore", "asset_manager", "resource_plugins", "plugins"
+        )
         self._plugins_module = "wstore.asset_manager.resource_plugins.plugins."
 
         logger.debug(f"Plugins path: {self._plugins_path}")
@@ -64,8 +69,31 @@ class PluginLoader:
             module_class_name,
         )
 
+    def _catalog_for_type(self, plugin_type):
+        if plugin_type == "service":
+            return self._catalog
+        if plugin_type == "resource":
+            return self._resource_catalog
+        raise PluginError("Plugin type must be service or resource")
+
+    def _validate_plugin_class(self, info, module_class):
+        expected = {"service": ServicePlugin, "resource": ResourcePluginHandler}[info["type"]]
+        if (
+            not isinstance(module_class, type)
+            or not issubclass(module_class, expected)
+            or module_class is expected
+        ):
+            raise PluginError("No " + expected.__name__ + " implementation has been found")
+        other = ResourcePluginHandler if info["type"] == "service" else ServicePlugin
+        if issubclass(module_class, other):
+            raise PluginError("A plugin implementation cannot handle both services and resources")
+        errors = self._plugin_manager.validate_pull_accounting(info, module_class)
+        if errors:
+            raise PluginError(errors)
+
     def _update_model_data_from_json(self, model, module, json_info):
         # Create or update plugin model data
+        model.type = json_info["type"]
         model.name = json_info["name"]
         model.version = json_info["version"]
         model.author = json_info["author"]
@@ -89,20 +117,21 @@ class PluginLoader:
         rb_log.log_action("RESTORE_MODEL", restore)
 
     def _synchronize_category(self, model, info, rb_log):
+        catalog = self._catalog_for_type(info["type"])
         if model.category_id:
             category_id, name, version = model.category_id, model.name, model.version
             rb_log.log_action(
                 "RESTORE_CATEGORY",
-                lambda: self._catalog.update_category(category_id, name, version),
+                lambda: catalog.update_category(category_id, name, version),
             )
-            self._catalog.update_category(category_id, info["name"], info["version"])
+            catalog.update_category(category_id, info["name"], info["version"])
         else:
             try:
-                category_id = self._catalog.create_category(info["name"], info["version"])
-            except ServiceCatalogError as exc:
+                category_id = catalog.create_category(info["name"], info["version"])
+            except (ServiceCatalogError, ResourceCatalogError) as exc:
                 raise PluginError(str(exc)) from exc
 
-            rb_log.log_action("DELETE_CATEGORY", lambda: self._catalog.delete_category(category_id))
+            rb_log.log_action("DELETE_CATEGORY", lambda: catalog.delete_category(category_id))
             model.category_id = category_id
 
     @installPluginRollback
@@ -162,6 +191,8 @@ class PluginLoader:
         # Get plugin model
         try:
             plugin_model = ResourcePlugin.objects.get(plugin_id=plugin_id)
+            if plugin_model.type != json_info["type"]:
+                raise PluginError("A plugin cannot change type during upgrade")
             if not is_lower_version(plugin_model.version, json_info["version"]):
                 logger.error("A newer version of this plugin is already installed")
                 raise PluginError("A newer version of this plugin is already installed")
@@ -178,15 +209,7 @@ class PluginLoader:
         module = self._plugins_module + plugin_dir + "." + json_info["module"]
         module_class = self._get_plugin_module(module)
 
-        if Plugin not in module_class.__bases__:
-            logger.error("No plugin implementation has been found")
-            raise PluginError("No Plugin implementation has been found")
-
-        # Check accounting implementations
-        pull_accounting_errors = self._plugin_manager.validate_pull_accounting(json_info, module_class)
-        if pull_accounting_errors:
-            logger.error("Error in implementation for pull accounting")
-            raise PluginError(pull_accounting_errors)
+        self._validate_plugin_class(json_info, module_class)
 
         self._synchronize_category(plugin_model, json_info, rb_log)
         self._update_model_data_from_json(plugin_model, module, json_info)
@@ -268,15 +291,18 @@ class PluginLoader:
 
         logger.info(f"Uninstalling plugin {plugin_id}")
 
+        catalog = self._catalog_for_type(plugin_model.type)
         if not plugin_model.category_id:
-            raise PluginError("Plugin has no service category; run syncplugincategories before removal")
+            raise PluginError("Plugin has no category; run syncplugincategories before removal")
         try:
-            category_in_use = self._catalog.category_in_use(plugin_model.category_id)
-        except ServiceCatalogError as exc:
+            category_in_use = catalog.category_in_use(plugin_model.category_id)
+        except (ServiceCatalogError, ResourceCatalogError) as exc:
             raise PluginError(str(exc)) from exc
 
         if category_in_use:
-            raise PermissionDenied("The plugin " + plugin_id + " is being used by service candidates")
+            raise PermissionDenied(
+                "The plugin " + plugin_id + " is being used by " + plugin_model.type + " candidates"
+            )
 
         # Do not downgrade through old versions merely to remove a package.
         if plugin_model.pull_accounting:
@@ -284,7 +310,7 @@ class PluginLoader:
             module_class(plugin_model).remove_usage_specs()
 
         # Keep the package and registry if the catalog refuses deletion.
-        self._catalog.delete_category(plugin_model.category_id)
+        catalog.delete_category(plugin_model.category_id)
         for version in [plugin_model.version] + plugin_model.version_history:
             plugin_dir = f"{plugin_id}-{version.replace('.', '-')}"
             plugin_path = os.path.join(self._plugins_path, plugin_dir)
@@ -299,6 +325,8 @@ class PluginLoader:
         model = ResourcePlugin.objects.get(plugin_id=plugin_id)
         if not model.category_id:
             self._snapshot_model(model, rb_log)
-            self._synchronize_category(model, {"name": model.name, "version": model.version}, rb_log)
+            self._synchronize_category(
+                model, {"name": model.name, "version": model.version, "type": model.type}, rb_log
+            )
             model.save()
         return model.category_id

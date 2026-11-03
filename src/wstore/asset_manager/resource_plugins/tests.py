@@ -21,6 +21,7 @@
 
 import json
 import os
+import sys
 from importlib import reload
 from json import dump as jsondump
 from shutil import rmtree
@@ -34,7 +35,9 @@ from mock import MagicMock, Mock, call, patch
 from parameterized import parameterized
 from requests.exceptions import HTTPError
 from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loader
-from wstore.asset_manager.resource_plugins.plugin import Plugin
+from wstore.asset_manager.resource_plugins.plugin import Plugin, ServicePlugin
+from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin as ResourcePluginHandler
+from wstore.store_commons.resource_catalog import ResourceCatalog, ResourceCatalogError
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
@@ -142,7 +145,7 @@ class PluginLoaderTestCase(TestCase):
                 None,
                 None,
                 PluginError,
-                "Plugin Error: No Plugin implementation has been found",
+                "Plugin Error: No ServicePlugin implementation has been found",
             ),
             (
                 "inv_json",
@@ -639,6 +642,7 @@ class PluginValidatorTestCase(TestCase):
 
 
 class PluginTestCase(TestCase):
+    handler_class = ServicePlugin
     tags = ("plugin",)
 
     _characteristics = [
@@ -755,7 +759,7 @@ class PluginTestCase(TestCase):
         if side_effect is not None:
             side_effect(self)
 
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
         plugin_handler.get_usage_specs = MagicMock(return_value=specs)
 
         plugin_handler.configure_usage_spec()
@@ -764,7 +768,7 @@ class PluginTestCase(TestCase):
         validator(self)
 
     def test_usage_spec_error(self):
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
         plugin_handler.get_usage_specs = MagicMock(return_value=[{}])
 
         try:
@@ -814,7 +818,7 @@ class PluginTestCase(TestCase):
         if side_effect:
             side_effect(self)
 
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
 
         plugin_handler.remove_usage_specs()
 
@@ -827,7 +831,7 @@ class PluginTestCase(TestCase):
         error.response = MagicMock(status_code=500)
         self._usage_client.delete_usage_spec.side_effect = error
 
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
 
         try:
             plugin_handler.remove_usage_specs()
@@ -859,7 +863,7 @@ class PluginTestCase(TestCase):
 
         self._usage_client.create_usage.return_value = {"id": "1"}
 
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
         plugin_handler.get_pending_accounting = MagicMock(return_value=usages)
 
         asset, contract, order = self._mock_order()
@@ -879,7 +883,7 @@ class PluginTestCase(TestCase):
             self.assertEquals([call(), call()], order.save.call_args_list)
 
     def test_usage_refresh_error(self):
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
         plugin_handler.get_pending_accounting = MagicMock(return_value=([{}], None))
 
         asset, contract, order = self._mock_order()
@@ -893,11 +897,15 @@ class PluginTestCase(TestCase):
 
     def test_usage_refresh_not_pull(self):
         self._model.pull_accounting = False
-        plugin_handler = plugin.Plugin(self._model)
+        plugin_handler = self.handler_class(self._model)
         plugin_handler.get_pending_accounting = MagicMock(return_value=([], None))
 
         plugin_handler.on_usage_refresh(None, None, None)
         self.assertEquals(0, plugin_handler.get_pending_accounting.call_count)
+
+
+class ResourcePluginAccountingTests(PluginTestCase):
+    handler_class = ResourcePluginHandler
 
 
 class DecoratorsTestCase(TestCase):
@@ -1187,27 +1195,39 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.Organization.objects.get.assert_not_called()
 
 
-class RecordingPlugin(Plugin):
+class RecordingPlugin(ServicePlugin):
+    pass
+
+
+class RecordingResourcePlugin(ResourcePluginHandler):
     pass
 
 
 class PackageManagementTests(SimpleTestCase):
+    plugin_type = "service"
+    catalog_class = ServiceCatalog
+    catalog_error = ServiceCatalogError
+    handler_class = RecordingPlugin
+
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
-        self.catalog_patch = patch("wstore.asset_manager.resource_plugins.plugin_loader.ServiceCatalog")
+        self.catalog_patch = patch(
+            "wstore.asset_manager.resource_plugins.plugin_loader." + self.catalog_class.__name__
+        )
         self.catalog = self.catalog_patch.start().return_value
         self.addCleanup(self.catalog_patch.stop)
         self.catalog.create_category.return_value = "category-1"
         self.catalog.category_in_use.return_value = False
         self.loader = PluginLoader()
         self.loader._plugins_path = self.directory.name
-        self.loader._get_plugin_module = Mock(return_value=RecordingPlugin)
+        self.loader._get_plugin_module = Mock(return_value=self.handler_class)
         self.save = patch.object(ResourcePlugin, "save").start()
         self.delete = patch.object(ResourcePlugin, "delete").start()
         self.addCleanup(patch.stopall)
         self.model = ResourcePlugin(
             plugin_id="test",
+            type=self.plugin_type,
             name="test",
             version="1.0",
             category_id="category-1",
@@ -1228,6 +1248,7 @@ class PackageManagementTests(SimpleTestCase):
                         "version": version,
                         "author": "author",
                         "module": "test.Plugin",
+                        "type": self.plugin_type,
                         "requires_file": requires_file,
                     }
                 ),
@@ -1243,6 +1264,7 @@ class PackageManagementTests(SimpleTestCase):
         model = update.call_args.args[0]
         self.assertEqual("category-1", model.category_id)
         self.assertEqual("test", model.plugin_id)
+        self.assertEqual(self.plugin_type, model.type)
         self.assertIs(False, model.requires_file)
         self.catalog.create_category.assert_called_once_with("test", "1.0")
 
@@ -1292,28 +1314,36 @@ class PackageManagementTests(SimpleTestCase):
     def test_invalid_catalog_response_retains_plugin_error_and_installed_files(self):
         path = os.path.join(self.directory.name, "test-1-0")
         os.mkdir(path)
-        self.loader._catalog = ServiceCatalog()
+        setattr(
+            self.loader,
+            "_catalog" if self.plugin_type == "service" else "_resource_catalog",
+            self.catalog_class(),
+        )
 
         with patch("wstore.store_commons.service_catalog.requests.request") as request:
             request.return_value.json.return_value = {"error": "invalid candidates"}
             with self.assertRaises(PluginError) as error:
                 self.loader.uninstall_plugin("test")
 
-        self.assertIsInstance(error.exception.__cause__, ServiceCatalogError)
+        self.assertIsInstance(error.exception.__cause__, self.catalog_error)
         self.assertTrue(os.path.isdir(path))
         self.delete.assert_not_called()
         self.assertEqual(1, request.call_count)
 
     def test_invalid_category_response_retains_plugin_error_and_rolls_back_install(self):
         self.lookup.side_effect = ObjectDoesNotExist
-        self.loader._catalog = ServiceCatalog()
+        setattr(
+            self.loader,
+            "_catalog" if self.plugin_type == "service" else "_resource_catalog",
+            self.catalog_class(),
+        )
 
         with patch("wstore.store_commons.service_catalog.requests.request") as request:
             request.return_value.json.return_value = {}
             with self.assertRaises(PluginError) as error:
                 self.loader.install_plugin(self.package("1.0"))
 
-        self.assertIsInstance(error.exception.__cause__, ServiceCatalogError)
+        self.assertIsInstance(error.exception.__cause__, self.catalog_error)
         self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
         self.save.assert_not_called()
 
@@ -1347,7 +1377,14 @@ class PackageManagementTests(SimpleTestCase):
         os.mkdir(path)
         with open(os.path.join(path, "package.json"), "w") as manifest:
             json.dump(
-                {"name": "test", "version": "1.0", "author": "author", "module": "test.Plugin", "requires_file": False},
+                {
+                    "name": "test",
+                    "version": "1.0",
+                    "author": "author",
+                    "module": "test.Plugin",
+                    "requires_file": False,
+                    "type": self.plugin_type,
+                },
                 manifest,
             )
         os.mkdir(os.path.join(self.directory.name, "test-2-0"))
@@ -1355,6 +1392,77 @@ class PackageManagementTests(SimpleTestCase):
         self.assertEqual("1.0", self.model.version)
         self.assertEqual("category-1", self.model.category_id)
         self.catalog.update_category.assert_called_once_with("category-1", "test", "1.0")
+
+    def test_install_imports_the_declared_domain_handler_from_real_package(self):
+        namespace = "typed_plugin_" + self.plugin_type
+        root = os.path.join(self.directory.name, namespace)
+        os.mkdir(root)
+        with open(os.path.join(root, "__init__.py"), "w"):
+            pass
+        self.loader._plugins_path = root
+        self.loader._plugins_module = namespace + "."
+        self.loader._get_plugin_module = PluginLoader._get_plugin_module.__get__(self.loader)
+        self.lookup.side_effect = ObjectDoesNotExist
+        package = self.package("1.0")
+        module = "plugin"
+        handler = "ServicePlugin" if self.plugin_type == "service" else "ResourcePlugin"
+        with ZipFile(package, "r") as archive:
+            info = json.loads(archive.read("package.json"))
+        info["module"] = "implementation.Installed"
+        with ZipFile(package, "w") as archive:
+            archive.writestr("package.json", json.dumps(info))
+            archive.writestr(
+                "implementation.py",
+                (
+                    f"from wstore.asset_manager.resource_plugins.{module} import {handler}\n"
+                    f"class Installed({handler}):\n    pass\n"
+                ),
+            )
+        try:
+            with patch.object(sys, "path", [self.directory.name] + sys.path):
+                self.assertEqual("test", self.loader.install_plugin(package))
+        finally:
+            for name in list(sys.modules):
+                if name == namespace or name.startswith(namespace + "."):
+                    sys.modules.pop(name)
+        self.catalog.create_category.assert_called_once_with("test", "1.0")
+
+    def test_wrong_handler_class_is_rejected_before_catalog_writes(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        wrong = RecordingResourcePlugin if self.plugin_type == "service" else RecordingPlugin
+        self.loader._get_plugin_module.return_value = wrong
+        with self.assertRaises(PluginError):
+            self.loader.install_plugin(self.package("1.0"))
+        self.catalog.create_category.assert_not_called()
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
+
+    def test_shared_parent_alone_is_not_a_domain_handler(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        self.loader._get_plugin_module.return_value = Plugin
+        with self.assertRaises(PluginError):
+            self.loader.install_plugin(self.package("1.0"))
+        self.catalog.create_category.assert_not_called()
+
+    def test_upgrade_cannot_switch_catalog_type(self):
+        self.model.type = "resource" if self.plugin_type == "service" else "service"
+        with self.assertRaisesRegex(PluginError, "cannot change type"):
+            self.loader.install_plugin(self.package("2.0"))
+        self.catalog.update_category.assert_not_called()
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+
+    def test_other_catalog_is_not_used(self):
+        self.lookup.side_effect = ObjectDoesNotExist
+        other = Mock()
+        setattr(self.loader, "_resource_catalog" if self.plugin_type == "service" else "_catalog", other)
+        self.loader.install_plugin(self.package("1.0"))
+        self.assertEqual([], other.mock_calls)
+
+
+class ResourcePackageManagementTests(PackageManagementTests):
+    plugin_type = "resource"
+    catalog_class = ResourceCatalog
+    catalog_error = ResourceCatalogError
+    handler_class = RecordingResourcePlugin
 
 
 class FilePluginContractTests(SimpleTestCase):
@@ -1364,6 +1472,7 @@ class FilePluginContractTests(SimpleTestCase):
             "version": "1.0",
             "author": "author",
             "module": "test.Plugin",
+            "type": "service",
             "requires_file": False,
         }
         self.validator = PluginValidator()
@@ -1398,3 +1507,34 @@ class FilePluginContractTests(SimpleTestCase):
         info = get_plugin_info(model)
         self.assertIs(False, info["requiresFile"])
         self.assertNotIn("formats", info)
+
+    def test_manifest_type_is_required_and_has_only_two_values(self):
+        for value in (None, True, 1, "", "Service", "other"):
+            with self.subTest(value=value):
+                self.info["type"] = value
+                self.assertTrue(self.validator.validate_plugin_info(self.info))
+        self.info.pop("type")
+        self.assertIn("Missing required field: type", self.validator.validate_plugin_info(self.info))
+        for value in ("service", "resource"):
+            self.info["type"] = value
+            self.assertEqual([], self.validator.validate_plugin_info(self.info))
+
+    def test_interfaces_do_not_inherit_other_domain_hooks(self):
+        self.assertTrue(issubclass(ServicePlugin, Plugin))
+        self.assertTrue(issubclass(ResourcePluginHandler, Plugin))
+        self.assertFalse(hasattr(Plugin, "on_service_activation"))
+        self.assertFalse(hasattr(Plugin, "on_resource_activation"))
+        self.assertFalse(issubclass(ServicePlugin, ResourcePluginHandler))
+        self.assertFalse(issubclass(ResourcePluginHandler, ServicePlugin))
+        for suffix in ("activation", "suspension", "resumption", "termination", "modification", "renewal"):
+            self.assertTrue(hasattr(ServicePlugin, "on_service_" + suffix))
+            self.assertFalse(hasattr(ServicePlugin, "on_resource_" + suffix))
+            self.assertTrue(hasattr(ResourcePluginHandler, "on_resource_" + suffix))
+            self.assertFalse(hasattr(ResourcePluginHandler, "on_service_" + suffix))
+
+    def test_api_metadata_exposes_domain(self):
+        from wstore.asset_manager.resource_plugins.views import get_plugin_info
+
+        for plugin_type in ("service", "resource"):
+            model = ResourcePlugin(plugin_id="test", name="test", type=plugin_type, requires_file=False)
+            self.assertEqual(plugin_type, get_plugin_info(model)["type"])
