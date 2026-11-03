@@ -60,6 +60,10 @@ urlpatterns = [
         offering_views.ValidateServiceCollection(permitted_methods=("POST",)),
     ),
     url(
+        r"^charging/api/assetManagement/assets/validateResourceJob/?$",
+        offering_views.ValidateResourceCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/assetManagement/assets/offeringJob/?$",
         offering_views.ValidateOfferingCollection(permitted_methods=("POST",)),
     ),

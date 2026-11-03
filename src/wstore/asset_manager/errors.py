@@ -33,3 +33,11 @@ class ServiceError(Exception):
 
     def __str__(self):
         return "ServiceError: " + self.value
+
+
+class ResourceError(Exception):
+    def __init__(self, msg):
+        self.value = msg
+
+    def __str__(self):
+        return "ResourceError: " + self.value

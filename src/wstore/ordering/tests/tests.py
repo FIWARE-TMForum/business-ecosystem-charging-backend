@@ -1664,7 +1664,7 @@ class NotifyItemCompletedTestCase(TestCase):
         with patch.object(
             ordering_management, "on_product_activation", decorators.on_product_activation
         ), patch.object(decorators, "InventoryClient", return_value=inventory), patch.object(
-            decorators, "_get_plugin_model", side_effect=lambda category_id: category_id
+            decorators, "_get_plugin_model", side_effect=lambda category_id, plugin_type: category_id
         ), patch.object(
             decorators, "_load_plugin_model", side_effect=plugins.get
         ), patch.object(
