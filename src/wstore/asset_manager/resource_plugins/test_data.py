@@ -31,7 +31,7 @@ PLUGIN_INFO = {
         "application/x-mashup+mashable-application-component",
         "application/x-operator+mashable-application-component",
     ],
-    "formats": ["FILE"],
+    "requires_file": True,
     "form": {
         "vendor": {
             "type": "text",
@@ -74,7 +74,7 @@ PLUGIN_INFO2 = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 PLUGIN_INFO_ACCOUNTING = {
@@ -82,7 +82,7 @@ PLUGIN_INFO_ACCOUNTING = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
-    "formats": ["FILE"],
+    "requires_file": True,
     "pull_accounting": True,
 }
 
@@ -91,7 +91,7 @@ PLUGIN_INFO_DOWNGRADE = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
@@ -99,7 +99,7 @@ PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "pull_accounting": True,
 }
 
@@ -108,7 +108,7 @@ PLUGIN_INFO_ACCOUNTING = {
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
-    "formats": ["FILE"],
+    "requires_file": True,
     "pull_accounting": True,
 }
 
@@ -117,7 +117,7 @@ PLUGIN_INFO_DOWNGRADE = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
@@ -125,7 +125,7 @@ PLUGIN_INFO_DOWNGRADE_ACCOUNTING = {
     "author": "test author dg",
     "version": "0.2",
     "module": "test.TestPluginDg",
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "pull_accounting": True,
 }
 
@@ -134,7 +134,7 @@ MISSING_NAME = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 INVALID_NAME = {
@@ -143,7 +143,7 @@ INVALID_NAME = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 MISSING_AUTHOR = {
@@ -151,10 +151,10 @@ MISSING_AUTHOR = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
-MISSING_FORMATS = {
+MISSING_REQUIRES_FILE = {
     "name": "plugin name",
     "author": "test author",
     "version": "1.0",
@@ -167,7 +167,7 @@ MISSING_MODULE = {
     "author": "test author",
     "version": "1.0",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 MISSING_VERSION = {
@@ -175,7 +175,7 @@ MISSING_VERSION = {
     "author": "test author",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 INVALID_NAME_TYPE = {
@@ -184,7 +184,7 @@ INVALID_NAME_TYPE = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
 INVALID_AUTHOR_TYPE = {
@@ -193,25 +193,25 @@ INVALID_AUTHOR_TYPE = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE"],
+    "requires_file": True,
 }
 
-INVALID_FORMAT_TYPE = {
+INVALID_REQUIRES_FILE_TYPE = {
     "name": "plugin name",
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": "FILE",
+    "requires_file": "true",
 }
 
-INVALID_FORMAT = {
+INVALID_REQUIRES_FILE = {
     "name": "plugin name",
     "author": "test author",
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": [],
-    "formats": ["FILE", "URL", "INV"],
+    "requires_file": 1,
 }
 
 INVALID_MEDIA_TYPE = {
@@ -220,7 +220,7 @@ INVALID_MEDIA_TYPE = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": "text/plain",
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 INVALID_MODULE_TYPE = {
@@ -229,7 +229,7 @@ INVALID_MODULE_TYPE = {
     "version": "1.0",
     "module": [],
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 INVALID_VERSION = {
@@ -238,7 +238,7 @@ INVALID_VERSION = {
     "version": "1.a",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 INVALID_VERSION = {
@@ -247,7 +247,7 @@ INVALID_VERSION = {
     "version": "1.a",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 INVALID_ACCOUNTING = {
@@ -256,7 +256,7 @@ INVALID_ACCOUNTING = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "pull_accounting": "true",
 }
 
@@ -266,7 +266,7 @@ BASIC_PLUGIN_DATA = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
 }
 
 INVALID_FORM_TYPE = deepcopy(BASIC_PLUGIN_DATA)
@@ -356,7 +356,7 @@ INVALID_OVERRIDES = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "overrides": ["INVALID"],
 }
 
@@ -366,7 +366,7 @@ INVALID_FORM_ORDER_FORMAT = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "overrides": [],
     "form_order": {},
     "form": {
@@ -386,7 +386,7 @@ INVALID_FORM_ORDER_NO_FORM = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "overrides": [],
     "form_order": [],
 }
@@ -397,7 +397,7 @@ INVALID_FORM_ORDER_MISSING_KEY = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "overrides": [],
     "form_order": [],
     "form": {
@@ -417,7 +417,7 @@ INVALID_FORM_ORDER_DIFFERENT_KEY = {
     "version": "1.0",
     "module": "test.TestPlugin",
     "media_types": ["text/plain"],
-    "formats": ["FILE", "URL"],
+    "requires_file": True,
     "overrides": [],
     "form_order": ["version"],
     "form": {

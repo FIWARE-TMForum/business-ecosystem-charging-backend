@@ -70,7 +70,7 @@ class PluginLoader:
         model.version = json_info["version"]
         model.author = json_info["author"]
         model.module = module
-        model.formats = json_info["formats"]
+        model.requires_file = json_info["requires_file"]
         model.media_types = json_info.get("media_types", [])
         model.form = json_info.get("form", {})
         model.form_order = json_info.get("form_order", [])

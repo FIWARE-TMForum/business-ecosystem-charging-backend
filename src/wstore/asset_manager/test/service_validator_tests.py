@@ -24,69 +24,51 @@ class ServiceSpecificationTests(SimpleTestCase):
     def setUp(self):
         self.validator = ServiceValidator()
         self.specification = {
-            "id": "spec-1",
-            "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
-                characteristic("URL", "https://provider.example/service"),
-                characteristic("Media Type", "application/json"),
-            ],
+            "specCharacteristic": [characteristic("Service Type", {"id": "plugin-category"})],
         }
-        self.plugin = SimpleNamespace(formats=["URL"], media_types=["application/json"], form={})
+        self.plugin = SimpleNamespace(requires_file=False, media_types=["application/json"], form={})
 
-    def test_url_and_media_type_come_from_specification(self):
+    def test_non_file_plugins_do_not_require_url_or_media_type(self):
         values = parse_values(self.validator, self.specification)
-        self.assertEqual("https://provider.example/service", values["url"])
+        self.assertEqual({}, values)
         self.validator.validate_asset_characteristics(self.plugin, values)
 
-    def test_malformed_or_duplicate_characteristics_are_rejected(self):
-        for extra in [
-            characteristic("url", "https://another.example/"),
-            {"name": "Media Type", "characteristicValueSpecification": []},
-            {"name": "Media Type", "characteristicValueSpecification": [{}]},
-            {"name": "Media Type", "characteristicValueSpecification": [{"value": "a"}, {"value": "b"}]},
-            None,
-        ]:
-            with self.subTest(extra=extra):
-                specification = deepcopy(self.specification)
-                specification["specCharacteristic"].append(extra)
-                with self.assertRaises(ServiceError):
-                    parse_values(self.validator, specification)
-
-    def test_required_url_and_supported_media_types(self):
-        valid = parse_values(self.validator, self.specification)
-        for invalid in [
-            {**valid, "url": "not-a-url"},
-            {**valid, "url": None},
-            {**valid, "media type": "text/plain"},
-            {**valid, "media type": ""},
-        ]:
-            with self.subTest(invalid=invalid), self.assertRaises(ServiceError):
-                self.validator.validate_asset_characteristics(self.plugin, invalid)
-
-    def test_files_also_use_url_without_format_validation(self):
-        self.plugin.formats = ["FILE"]
-        self.specification["specCharacteristic"][1] = characteristic("URL", "https://provider.example/assets/file.zip")
-        values = parse_values(self.validator, self.specification)
+    def test_urls_are_ordinary_form_fields_without_platform_url_semantics(self):
+        self.plugin.form = {"endpoint": {"type": "text", "mandatory": True}}
+        self.specification["specCharacteristic"].append(characteristic("endpoint", "plugin-defined-value"))
+        values = parse_values(self.validator, self.specification, self.plugin.form)
         self.validator.validate_asset_characteristics(self.plugin, values)
+        self.assertEqual({"endpoint": "plugin-defined-value"}, values)
 
-    def test_media_type_validation_is_case_insensitive(self):
-        values = parse_values(self.validator, self.specification)
-        values["media type"] = "APPLICATION/JSON"
-        self.validator.validate_asset_characteristics(self.plugin, values)
+        with self.assertRaisesRegex(ServiceError, "endpoint"):
+            self.validator.validate_asset_characteristics(self.plugin, {})
+
+    def test_url_and_media_type_are_not_implicitly_validated(self):
+        self.specification["specCharacteristic"].extend(
+            [
+                characteristic("URL", "not-a-url"),
+                characteristic("Media Type", "not-a-media-type"),
+            ]
+        )
+        self.assertEqual({}, parse_values(self.validator, self.specification))
 
     def test_other_service_characteristics_remain_general_purpose(self):
-        extra = [
-            {"name": "Regions", "characteristicValueSpecification": [{"value": "EU"}, {"value": "US"}]},
-            characteristic("Format", "custom"),
-            characteristic("Metadata", "ordinary characteristic"),
-            characteristic("License", "ordinary characteristic"),
-        ]
-        self.specification["specCharacteristic"].extend(extra)
+        self.specification["specCharacteristic"].extend(
+            [
+                {"name": "Regions", "characteristicValueSpecification": [{"value": "EU"}, {"value": "US"}]},
+                characteristic("Format", "custom"),
+                characteristic("Metadata", "ordinary characteristic"),
+                characteristic("License", "ordinary characteristic"),
+            ]
+        )
         before = deepcopy(self.specification)
-        values = parse_values(self.validator, self.specification)
-        self.assertEqual({"url": "https://provider.example/service", "media type": "application/json"}, values)
+        self.assertEqual({}, parse_values(self.validator, self.specification))
         self.assertEqual(before, self.specification)
-        self.validator.validate_asset_characteristics(self.plugin, values)
+
+    def test_malformed_characteristic_is_rejected_for_plugin_service(self):
+        self.specification["specCharacteristic"].append(None)
+        with self.assertRaises(ServiceError):
+            parse_values(self.validator, self.specification)
 
 
 class ServiceLifecycleTests(SimpleTestCase):
@@ -104,7 +86,7 @@ class ServiceLifecycleTests(SimpleTestCase):
                 characteristic("Media Type", "application/json"),
             ],
         }
-        self.model = SimpleNamespace(formats=["URL"], media_types=["application/json"], form={})
+        self.model = SimpleNamespace(requires_file=False, media_types=["application/json"], form={})
         self.plugin = Mock(_model=self.model)
         resolve_patch = patch.object(plugin_decorators, "_get_plugin_model", return_value=self.model)
         self.resolve_plugin = resolve_patch.start()
@@ -126,7 +108,7 @@ class ServiceLifecycleTests(SimpleTestCase):
         self.validator._catalog.get_specification.assert_not_called()
 
     def test_invalid_metadata_prevents_post_validation(self):
-        self.spec["specCharacteristic"][1]["characteristicValueSpecification"][0]["value"] = "bad"
+        self.model.requires_file = True
         with self.assertRaises(ServiceError):
             self.validator.validate("create", self.provider, self.spec)
         self.plugin.on_pre_service_spec_validation.assert_called_once()
@@ -305,7 +287,7 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
                 characteristic("Media Type", "application/json"),
             ],
         }
-        self.model = SimpleNamespace(formats=["URL"], media_types=["application/json"], form={})
+        self.model = SimpleNamespace(requires_file=False, media_types=["application/json"], form={})
         self.plugin = Mock(_model=self.model)
 
     def post(self, body):
@@ -475,6 +457,7 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
             ],
         }
         self.model = SimpleNamespace(
+            requires_file=False,
             media_types=["application/json"],
             form={
                 "region": {"type": "select", "mandatory": True, "options": [{"value": "EU"}, {"value": "US"}]},
@@ -677,7 +660,9 @@ class OrdinaryServiceEarlyReturnTests(SimpleTestCase):
 
     def test_plugin_specification_is_parsed_once_inside_backend_operation(self):
         validator = ServiceValidator()
-        model = SimpleNamespace(media_types=["application/json"], form={"region": {"type": "text", "mandatory": True}})
+        model = SimpleNamespace(
+            requires_file=False, media_types=["application/json"], form={"region": {"type": "text", "mandatory": True}}
+        )
         specification = {
             "specCharacteristic": [
                 characteristic("Service Type", {"id": "plugin-category"}),
@@ -696,3 +681,164 @@ class OrdinaryServiceEarlyReturnTests(SimpleTestCase):
             parse.assert_called_once_with(specification)
             resolve.assert_called_once_with(category_id="plugin-category")
             plugin.on_post_service_spec_validation.assert_called_once()
+
+
+class ManagedFileValidationTests(SimpleTestCase):
+    def setUp(self):
+        self.validator = ServiceValidator()
+        self.provider = SimpleNamespace(pk="seller")
+        self.file_id = "507f1f77bcf86cd799439011"
+        self.file = SimpleNamespace(
+            provider_id=self.provider.pk,
+            resource_path="media/assets/seller/data.json",
+            content_type="application/json",
+            download_link="https://files.example/data.json",
+        )
+        self.spec = {
+            "specCharacteristic": [
+                characteristic("Service Type", {"id": "plugin-category"}),
+                characteristic("File", {"id": self.file_id}),
+            ],
+        }
+        self.model = SimpleNamespace(requires_file=True, media_types=["application/json"], form={})
+        self.plugin = Mock(_model=self.model)
+        lookup = patch("wstore.asset_manager.service_validator.Resource.objects.get", return_value=self.file)
+        self.lookup = lookup.start()
+        self.addCleanup(lookup.stop)
+        resolve = patch.object(plugin_decorators, "_get_plugin_model", return_value=self.model)
+        self.resolve = resolve.start()
+        self.addCleanup(resolve.stop)
+        load = patch.object(plugin_decorators, "_load_plugin_model", return_value=self.plugin)
+        load.start()
+        self.addCleanup(load.stop)
+
+    def test_owned_upload_passes_without_url_or_media_type_characteristics(self):
+        from bson import ObjectId
+
+        original = deepcopy(self.spec)
+        self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_called_once_with(pk=ObjectId(self.file_id))
+        self.assertEqual(original, self.spec)
+        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+
+    def test_missing_file_rejected_when_required(self):
+        self.spec["specCharacteristic"].pop()
+        with self.assertRaisesRegex(ServiceError, "File characteristic"):
+            self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+        self.plugin.on_post_service_spec_validation.assert_not_called()
+
+    def test_non_file_plugin_needs_only_its_form_fields(self):
+        self.model.requires_file = False
+        self.model.form = {"endpoint": {"type": "text", "mandatory": True}}
+        self.spec["specCharacteristic"][1] = characteristic("endpoint", "plugin-defined-value")
+        self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+        self.plugin.on_post_service_spec_validation.assert_called_once()
+
+    def test_non_file_plugin_does_not_process_file_characteristic(self):
+        self.model.requires_file = False
+        self.spec["specCharacteristic"][1] = characteristic("File", "catalog-owned-value")
+        self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+
+    def test_malformed_file_references_are_rejected_without_lookup(self):
+        for value in [None, self.file_id, {}, {"id": 123}, {"id": "invalid"}, {"id": ""}]:
+            with self.subTest(value=value):
+                self.spec["specCharacteristic"][1] = characteristic("File", value)
+                with self.assertRaisesRegex(ServiceError, "uploaded file reference"):
+                    self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+
+    def test_file_must_have_one_characteristic_with_one_value(self):
+        invalid_entries = [
+            [characteristic("File", {"id": self.file_id}), characteristic("FILE", {"id": self.file_id})],
+            [{"name": "File", "characteristicValueSpecification": []}],
+            [{"name": "File", "characteristicValueSpecification": [{}]}],
+            [{"name": "File", "characteristicValueSpecification": [{"value": {}}, {"value": {}}]}],
+        ]
+        for entries in invalid_entries:
+            with self.subTest(entries=entries):
+                self.spec["specCharacteristic"] = self.spec["specCharacteristic"][:1] + entries
+                with self.assertRaises(ServiceError):
+                    self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+
+    def test_missing_upload_is_a_validation_error(self):
+        from wstore.asset_manager.models import Resource
+
+        self.lookup.side_effect = Resource.DoesNotExist
+        with self.assertRaisesRegex(ServiceError, "does not exist"):
+            self.validator.validate("create", self.provider, self.spec)
+
+    def test_another_providers_upload_is_rejected_before_post_hook(self):
+        from django.core.exceptions import PermissionDenied
+
+        self.file.provider_id = "other-provider"
+        with self.assertRaisesRegex(PermissionDenied, "does not belong"):
+            self.validator.validate("create", self.provider, self.spec)
+        self.plugin.on_post_service_spec_validation.assert_not_called()
+
+    def test_url_only_resource_is_not_an_uploaded_file(self):
+        self.file.resource_path = ""
+        with self.assertRaisesRegex(ServiceError, "not an external URL"):
+            self.validator.validate("create", self.provider, self.spec)
+
+    def test_media_type_comes_from_upload_even_when_spec_claims_supported_type(self):
+        self.file.content_type = "image/png"
+        self.spec["specCharacteristic"].append(characteristic("Media Type", "application/json"))
+        with self.assertRaisesRegex(ServiceError, "media type is not supported"):
+            self.validator.validate("create", self.provider, self.spec)
+        self.plugin.on_post_service_spec_validation.assert_not_called()
+
+    def test_media_types_are_case_insensitive_and_empty_list_is_unrestricted(self):
+        self.file.content_type = "APPLICATION/JSON"
+        self.validator.validate("create", self.provider, self.spec)
+        self.model.media_types = []
+        self.file.content_type = "image/png"
+        self.validator.validate("create", self.provider, self.spec)
+
+    def test_update_checks_proposed_file_and_passes_original_specification_to_hooks(self):
+        self.spec.update({"id": "spec-1", "version": "1.0"})
+        previous = deepcopy(self.spec)
+        previous["specCharacteristic"][1] = characteristic("File", {"id": "507f1f77bcf86cd799439012"})
+        self.validator._catalog = Mock()
+        self.validator._catalog.get_specification.return_value = previous
+        self.validator.validate("update", self.provider, self.spec)
+        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.assertIs(self.spec, self.plugin.on_post_service_spec_validation.call_args.args[1])
+        self.file.provider_id = "other-provider"
+        from django.core.exceptions import PermissionDenied
+
+        with self.assertRaises(PermissionDenied):
+            self.validator.validate("update", self.provider, self.spec)
+
+    def test_no_plugin_means_file_characteristic_is_not_processed(self):
+        self.resolve.return_value = None
+        for action in ("create", "update"):
+            with self.subTest(action=action):
+                self.validator.validate(action, self.provider, self.spec)
+        self.spec["specCharacteristic"].pop(0)
+        self.spec["specCharacteristic"][0] = characteristic("File", "ordinary-catalog-value")
+        self.validator.validate("create", self.provider, self.spec)
+        self.lookup.assert_not_called()
+        self.plugin.on_pre_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_validation.assert_not_called()
+
+    def test_file_permissions_are_returned_as_403_by_service_endpoint(self):
+        import json
+        from django.test import RequestFactory
+        from django.urls import resolve
+
+        self.file.provider_id = "other-provider"
+        request = RequestFactory().post(
+            "/charging/api/assetManagement/assets/validateServiceJob",
+            data=json.dumps({"action": "create", "service": self.spec}),
+            content_type="application/json",
+        )
+        request.user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(current_organization=self.provider, get_current_roles=lambda: ["provider"]),
+        )
+        self.assertEqual(403, resolve(request.path).func(request).status_code)

@@ -20,16 +20,19 @@
 
 from copy import deepcopy
 
+from bson import ObjectId
+from django.core.exceptions import PermissionDenied
+
 from wstore.asset_manager.catalog_validator import CatalogValidator
 from wstore.asset_manager.errors import ServiceError
+from wstore.asset_manager.models import Resource
 from wstore.asset_manager.resource_plugins.decorators import on_service_spec_validation
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
 from wstore.store_commons.utils.version import is_valid_version
-from wstore.store_commons.utils.url import is_valid_url
 
 
 class ServiceValidator(CatalogValidator):
-    """Service specifications are the assets; no local Resource is read or written."""
+    """Validate service form values and references to provider-owned uploaded files."""
 
     def __init__(self):
         super().__init__()
@@ -77,8 +80,7 @@ class ServiceValidator(CatalogValidator):
         return values[0]["value"]
 
     def _get_service_characteristics(self, characteristics, form):
-        names = {"url", "media type"}
-        names.update(name.strip().lower() for name in (form or {}))
+        names = {name.strip().lower() for name in (form or {})}
 
         return {
             name: self._get_spec_characteristic_value(characteristics, name)
@@ -90,18 +92,6 @@ class ServiceValidator(CatalogValidator):
     def validate_asset_characteristics(plugin_model, values):
         if plugin_model is None:
             return
-
-        for name in ("url", "media type"):
-            if not isinstance(values.get(name), str) or not values[name].strip():
-                raise ServiceError("Plugin-backed service specifications must contain a " + name + " characteristic")
-
-        if not is_valid_url(values["url"]):
-            raise ServiceError("The URL characteristic is not a valid URL")
-
-        if plugin_model.media_types and values["media type"].lower() not in [
-            m.lower() for m in plugin_model.media_types
-        ]:
-            raise ServiceError("The media type is not supported by the service specification's plugin")
 
         # The old asset metadata keys are now individual specification characteristics.
         for name, field in (plugin_model.form or {}).items():
@@ -126,6 +116,45 @@ class ServiceValidator(CatalogValidator):
             ]:
                 raise ServiceError("The characteristic " + name + " must be one of the configured options")
 
+    def _validate_file(self, provider, characteristics, plugin_model):
+        if "file" not in characteristics:
+            raise ServiceError("The service specification must contain a File characteristic")
+
+        reference = self._get_spec_characteristic_value(characteristics, "file")
+
+        if (
+            not isinstance(reference, dict)
+            or not isinstance(reference.get("id"), str)
+            or not ObjectId.is_valid(reference["id"])
+        ):
+            raise ServiceError("File must contain an uploaded file reference with a valid id")
+
+        try:
+            resource = Resource.objects.get(pk=ObjectId(reference["id"]))
+        except Resource.DoesNotExist:
+            raise ServiceError("The uploaded file does not exist")
+
+        if resource.provider_id != provider.pk:
+            raise PermissionDenied("The uploaded file does not belong to the provider")
+
+        if not resource.resource_path:
+            raise ServiceError("File must reference an uploaded file, not an external URL")
+
+        if plugin_model.media_types and resource.content_type.lower() not in [
+            media_type.lower() for media_type in plugin_model.media_types
+        ]:
+            raise ServiceError("The uploaded file's media type is not supported by the service specification's plugin")
+
+    def _validate_service_characteristics(self, provider, service_spec, plugin_model):
+        characteristics = self.parse_spec_characteristics(service_spec)
+
+        if plugin_model.requires_file:
+            self._validate_file(provider, characteristics, plugin_model)
+
+        values = self._get_service_characteristics(characteristics, plugin_model.form)
+
+        self.validate_asset_characteristics(plugin_model, values)
+
     def _prepare(self, service_spec):
         if not isinstance(service_spec, dict):
             raise ServiceError("The service specification must be an object")
@@ -137,10 +166,7 @@ class ServiceValidator(CatalogValidator):
 
     @on_service_spec_validation
     def _validate_service(self, provider, service_spec, plugin_model):
-        characteristics = self.parse_spec_characteristics(service_spec)
-        values = self._get_service_characteristics(characteristics, plugin_model.form)
-
-        self.validate_asset_characteristics(plugin_model, values)
+        self._validate_service_characteristics(provider, service_spec, plugin_model)
 
     def validate_creation(self, provider, catalog_element):
         self._prepare(catalog_element)
@@ -165,15 +191,12 @@ class ServiceValidator(CatalogValidator):
 
     @on_service_spec_validation
     def _validate_service_update(self, provider, service_spec, plugin_model):
-        characteristics = self.parse_spec_characteristics(service_spec)
         previous, proposed = self._proposed_update(service_spec)
 
         if proposed.get("version") != previous.get("version"):
             raise ServiceError("Service specification version changes are not supported yet")
 
-        values = self._get_service_characteristics(characteristics, plugin_model.form)
-
-        self.validate_asset_characteristics(plugin_model, values)
+        self._validate_service_characteristics(provider, service_spec, plugin_model)
 
     def validate_update(self, provider, catalog_element):
         self._prepare(catalog_element)
