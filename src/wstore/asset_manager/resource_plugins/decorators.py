@@ -141,16 +141,18 @@ def on_product_spec_validation(provider, product_spec):
 def on_product_offering_validation(func):
     @wraps(func)
     def wrapper(self, provider, product_offering):
-        associations = CatalogResolver().offering_services(product_offering)
-        plugins = _get_plugins(("service", specification, product) for specification, product in associations)
+        associations = CatalogResolver().offering_specifications(product_offering)
+        plugins = _get_plugins(associations)
 
-        for plugin, service_spec, product_spec in plugins:
-            plugin.on_pre_product_offering_validation(provider, service_spec, product_spec, product_offering)
+        for plugin, specification, product_spec in plugins:
+            plugin.on_pre_product_offering_validation(provider, specification, product_spec, product_offering)
 
         result = func(self, provider, product_offering)
 
-        for plugin, service_spec, product_spec in plugins:
-            plugin.on_post_product_offering_validation(provider, service_spec, product_spec, product_offering)
+        for plugin, specification, product_spec in plugins:
+            plugin.on_post_product_offering_validation(
+                provider, specification, product_spec, product_offering
+            )
 
         return result
 
