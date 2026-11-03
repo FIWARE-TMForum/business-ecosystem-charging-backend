@@ -1195,6 +1195,175 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.Organization.objects.get.assert_not_called()
 
 
+class ResourceActivationDispatchTests(SimpleTestCase):
+    def setUp(self):
+        ServiceActivationDispatchTests.setUp(self)
+        self.product.pop("realizingService")
+        self.product["realizingResource"] = [{"id": "resource-1"}, {"id": "resource-2"}]
+        self.resources = {
+            f"resource-{n}": {
+                "id": f"resource-{n}",
+                "resourceCharacteristic": [
+                    {"name": "Resource Type", "value": f"category-{n}"},
+                    {"name": "File", "value": f"file-{n}"},
+                ],
+            }
+            for n in (1, 2)
+        }
+        self.resource_plugins = {f"category-{n}": Mock(spec=ResourcePluginHandler) for n in (1, 2)}
+        typed_plugins = {
+            **{("service", category): plugin for category, plugin in self.plugins.items()},
+            **{("resource", category): plugin for category, plugin in self.resource_plugins.items()},
+        }
+        self.inventory.get_resource.side_effect = self.resources.__getitem__
+        self._get_plugin_model.side_effect = lambda category_id, plugin_type: (
+            (plugin_type, category_id) if (plugin_type, category_id) in typed_plugins else None
+        )
+        self._load_plugin_model.side_effect = typed_plugins.get
+        patcher = patch("wstore.store_commons.resource_catalog.ResourceCatalog.get_specification")
+        self.resource_catalog_read = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def tearDown(self):
+        ServiceActivationDispatchTests.tearDown(self)
+        self.resource_catalog_read.assert_not_called()
+
+    def dispatch(self, contract=None):
+        return decorators.on_product_activation(self.product, self.order, contract)
+
+    def test_resource_only_product_dispatches_inventory_instances_with_both_organizations(self):
+        self.dispatch(self.contract)
+        self.inventory.get_service.assert_not_called()
+        for n in (1, 2):
+            self.resource_plugins[f"category-{n}"].on_resource_activation.assert_called_once_with(
+                self.provider,
+                self.buyer,
+                self.resources[f"resource-{n}"],
+                self.product,
+                self.order,
+                self.contract,
+            )
+        self.inventory.patch_product.assert_not_called()
+
+    def test_mixed_product_uses_separate_plugins_for_identical_category_ids(self):
+        self.product["realizingService"] = [{"id": "service-1"}]
+        self.dispatch()
+        self.plugins["category-1"].on_service_activation.assert_called_once_with(
+            self.provider,
+            self.buyer,
+            self.services["service-1"],
+            self.product,
+            self.order,
+            None,
+        )
+        self.resource_plugins["category-1"].on_resource_activation.assert_called_once_with(
+            self.provider,
+            self.buyer,
+            self.resources["resource-1"],
+            self.product,
+            self.order,
+            None,
+        )
+        self.assertEqual(2, self.Organization.objects.get.call_count)
+
+    def test_ordinary_resources_and_uninstalled_categories_skip_callbacks(self):
+        self.resources["resource-1"]["resourceCharacteristic"] = []
+        self.resources["resource-1"]["resourceSpecification"] = {"id": "spec-not-to-be-fetched"}
+        self.resources["resource-2"]["resourceCharacteristic"][0]["value"] = "uninstalled"
+        self.dispatch()
+        for plugin in self.resource_plugins.values():
+            plugin.on_resource_activation.assert_not_called()
+        self.Organization.objects.get.assert_not_called()
+
+    def test_resources_sharing_plugin_receive_their_own_instances(self):
+        self.resources["resource-2"]["resourceCharacteristic"][0]["value"] = "category-1"
+        self.dispatch()
+        self.assertEqual(
+            [
+                call(self.provider, self.buyer, self.resources["resource-1"], self.product, self.order, None),
+                call(self.provider, self.buyer, self.resources["resource-2"], self.product, self.order, None),
+            ],
+            self.resource_plugins["category-1"].on_resource_activation.call_args_list,
+        )
+
+    def test_resource_type_names_are_case_insensitive(self):
+        self.resources["resource-1"]["resourceCharacteristic"][0]["name"] = " RESOURCE TYPE "
+        self.dispatch()
+        self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
+
+    def test_plugin_failure_is_logged_and_later_resources_still_run(self):
+        self.resource_plugins["category-1"].on_resource_activation.side_effect = RuntimeError("failed")
+        with self.assertLogs("wstore.default_logger", level="ERROR") as logs:
+            self.assertIsNone(self.dispatch())
+        for identifier in ("order-1", "product-1", "resource-1"):
+            self.assertIn(identifier, logs.output[0])
+        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+
+    def test_service_plugin_failure_does_not_prevent_resource_callbacks(self):
+        self.product["realizingService"] = [{"id": "service-1"}]
+        self.plugins["category-1"].on_service_activation.side_effect = PluginError("failed")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
+
+    def test_malformed_domain_collection_does_not_block_other_domain(self):
+        for field, other, plugin, handler in (
+            (
+                "realizingService",
+                "realizingResource",
+                self.resource_plugins["category-1"],
+                "on_resource_activation",
+            ),
+            ("realizingResource", "realizingService", self.plugins["category-1"], "on_service_activation"),
+        ):
+            with self.subTest(field=field):
+                self.product[field] = {}
+                self.product[other] = [{"id": "resource-1" if other == "realizingResource" else "service-1"}]
+                plugin.reset_mock()
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+                getattr(plugin, handler).assert_called_once()
+
+    def test_invalid_resource_reference_does_not_block_later_resource(self):
+        self.product["realizingResource"].insert(0, {})
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+
+    def test_resource_read_failure_does_not_block_later_resource(self):
+        def read(id_):
+            if id_ == "resource-1":
+                raise RuntimeError("inventory offline")
+            return self.resources[id_]
+
+        self.inventory.get_resource.side_effect = read
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
+        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+
+    def test_invalid_resource_identity_is_logged(self):
+        self.resources["resource-1"]["id"] = "wrong-resource"
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
+        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+
+    def test_invalid_or_duplicate_resource_type_is_logged(self):
+        for entries in (
+            [{"name": "Resource Type", "value": {"id": "category-1"}}],
+            [{"name": "Resource Type", "value": "category-1"}] * 2,
+        ):
+            with self.subTest(entries=entries):
+                self.resources["resource-1"]["resourceCharacteristic"] = entries
+                self.resource_plugins["category-2"].reset_mock()
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+                self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
+                self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+
+
 class RecordingPlugin(ServicePlugin):
     pass
 

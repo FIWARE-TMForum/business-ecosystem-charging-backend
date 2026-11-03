@@ -86,12 +86,19 @@ class InventoryClient:
 
         return r.json()
 
-    def get_service(self, service_id):
-        """Retrieve a purchased service from service inventory."""
-        url = get_service_url("service_inventory", "/service/" + str(service_id))
+    def _get_inventory_instance(self, kind, instance_id):
+        url = get_service_url(kind + "_inventory", "/" + kind + "/" + str(instance_id))
         response = requests.get(url, verify=settings.VERIFY_REQUESTS, timeout=30)
         response.raise_for_status()
         return response.json()
+
+    def get_service(self, service_id):
+        """Retrieve a purchased service from service inventory."""
+        return self._get_inventory_instance("service", service_id)
+
+    def get_resource(self, resource_id):
+        """Retrieve a purchased resource from resource inventory."""
+        return self._get_inventory_instance("resource", resource_id)
 
     def get_product_for_patch(self, product_id):
         """
