@@ -32,7 +32,7 @@ from wstore.asset_manager.errors import ProductError
 from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.test import offering_validator_test_data as data
-from wstore.asset_manager.test.product_validator_tests import product_spec, service_spec
+from wstore.asset_manager.test.product_validator_tests import product_spec, service_spec, resource_spec
 from wstore.store_commons.product_catalog import ProductCatalog, ProductCatalogError
 
 
@@ -41,7 +41,7 @@ class OfferingPricingTests(SimpleTestCase):
         patcher = patch("wstore.asset_manager.resource_plugins.decorators.CatalogResolver")
         self.resolver = patcher.start().return_value
         self.addCleanup(patcher.stop)
-        self.resolver.offering_services.return_value = []
+        self.resolver.offering_specifications.return_value = []
 
         self.validator = OfferingValidator()
         self.validator._catalog = Mock(spec=ProductCatalog)
@@ -536,4 +536,220 @@ class OfferingPluginTests(SimpleTestCase):
         self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
         self.assertEqual(400, invoke().status_code)
         self.catalog.get_specification.side_effect = ProductCatalogError("offline")
+        self.assertEqual(422, invoke().status_code)
+
+
+class ResourceOfferingPluginTests(SimpleTestCase):
+    def setUp(self):
+        from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin
+
+        OfferingPluginTests.setUp(self)
+        self.resources = Mock()
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.resolver.ResourceCatalog", return_value=self.resources
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.resource_specs = {
+            "r1": resource_spec("r1", "c1"),
+            "r2": resource_spec("r2", "c2"),
+            "ordinary-resource": resource_spec("ordinary-resource"),
+        }
+        self.resources.get_specification.side_effect = self.resource_specs.get
+        self.product["resourceSpecification"] = [{"id": id_} for id_ in self.resource_specs]
+        self.resource_plugins = {"c1": Mock(spec=ResourcePlugin), "c2": Mock(spec=ResourcePlugin)}
+        typed_plugins = {
+            **{("service", category): plugin for category, plugin in self.plugins.items()},
+            **{("resource", category): plugin for category, plugin in self.resource_plugins.items()},
+        }
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",
+            side_effect=lambda category_id, plugin_type: (plugin_type, category_id)
+            if (plugin_type, category_id) in typed_plugins
+            else None,
+        )
+        self.lookup = patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._load_plugin_model",
+            side_effect=typed_plugins.get,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mixed_plugins_all_run_pre_then_pricing_then_post(self):
+        events = Mock()
+        for name, plugin in (
+            ("s1", self.plugins["c1"]),
+            ("s2", self.plugins["c2"]),
+            ("r1", self.resource_plugins["c1"]),
+            ("r2", self.resource_plugins["c2"]),
+        ):
+            events.attach_mock(plugin, name)
+        events.attach_mock(self.catalog.get_price, "price")
+        self.validator.validate("create", self.provider, self.offer)
+        self.assertEqual(
+            [
+                "s1.on_pre_product_offering_validation",
+                "s2.on_pre_product_offering_validation",
+                "r1.on_pre_product_offering_validation",
+                "r2.on_pre_product_offering_validation",
+                "price",
+                "s1.on_post_product_offering_validation",
+                "s2.on_post_product_offering_validation",
+                "r1.on_post_product_offering_validation",
+                "r2.on_post_product_offering_validation",
+            ],
+            [invocation[0] for invocation in events.mock_calls],
+        )
+        for n in (1, 2):
+            expected = (self.provider, self.resource_specs[f"r{n}"], self.product, self.offer)
+            self.resource_plugins[f"c{n}"].on_pre_product_offering_validation.assert_called_once_with(
+                *expected
+            )
+            self.resource_plugins[f"c{n}"].on_post_product_offering_validation.assert_called_once_with(
+                *expected
+            )
+            self.resource_plugins[f"c{n}"].on_product_spec_validation.assert_not_called()
+            self.resource_plugins[f"c{n}"].on_pre_resource_spec_validation.assert_not_called()
+        self.lookup.assert_any_call(category_id="c1", plugin_type="service")
+        self.lookup.assert_any_call(category_id="c1", plugin_type="resource")
+
+    def test_resource_only_product_does_not_read_service_catalog(self):
+        self.product.pop("serviceSpecification")
+        self.validator.validate("create", self.provider, self.offer)
+        self.services.get_specification.assert_not_called()
+        self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once()
+
+    def test_ordinary_and_uninstalled_resource_types_skip_hooks_but_keep_pricing(self):
+        self.product["serviceSpecification"] = []
+        self.product["resourceSpecification"] = [{"id": "ordinary-resource"}, {"id": "external"}]
+        self.resource_specs["external"] = resource_spec("external", "external-category")
+        self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_called_once()
+        for plugin in self.resource_plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    @parameterized.expand([("create",), ("update",)])
+    def test_resource_hooks_receive_complete_proposed_offering(self, action):
+        self.offer["name"] = "Proposed name"
+        before = deepcopy(self.offer)
+        self.validator.validate(action, self.provider, self.offer)
+        self.catalog.get_offering.assert_not_called()
+        self.assertEqual(before, self.offer)
+        self.assertIs(
+            self.offer, self.resource_plugins["c1"].on_post_product_offering_validation.call_args.args[3]
+        )
+
+    def test_free_open_custom_offerings_still_run_resource_hooks(self):
+        for prices in ([], [data.OPEN_OFFERING_PRICE], [data.CUSTOM_OFFERING_PRICING]):
+            with self.subTest(prices=prices):
+                self.resource_plugins["c1"].reset_mock()
+                self.offer["productOfferingPrice"] = [{"id": price["id"]} for price in prices]
+                self.catalog.get_price.side_effect = deepcopy(prices)
+                self.validator.validate("create", self.provider, self.offer)
+                self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once()
+
+    def test_product_bundle_resource_hooks_keep_containing_product(self):
+        first, second = product_spec("p1"), product_spec("p2")
+        for product in (first, second):
+            product["resourceSpecification"] = [{"id": "r1"}]
+        bundle = {
+            "id": "bundle",
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}],
+        }
+        self.catalog.get_specification.side_effect = {"bundle": bundle, "p1": first, "p2": second}.get
+        self.offer["productSpecification"] = {"id": "bundle"}
+        self.offer["productOfferingPrice"] = []
+        self.validator.validate("create", self.provider, self.offer)
+        self.assertEqual(
+            [
+                call(self.provider, self.resource_specs["r1"], first, self.offer),
+                call(self.provider, self.resource_specs["r1"], second, self.offer),
+            ],
+            self.resource_plugins["c1"].on_post_product_offering_validation.call_args_list,
+        )
+
+    def test_offering_bundle_resource_hooks_receive_original_offering(self):
+        first, second = product_spec("p1"), product_spec("p2")
+        first["resourceSpecification"] = [{"id": "r1"}]
+        second["resourceSpecification"] = [{"id": "r2"}]
+        self.catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        self.catalog.get_offering.side_effect = {
+            "o1": {"id": "o1", "productSpecification": {"id": "p1"}},
+            "o2": {"id": "o2", "productSpecification": {"id": "p2"}},
+        }.get
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+        self.validator.validate("create", self.provider, offer)
+        self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once_with(
+            self.provider, self.resource_specs["r1"], first, offer
+        )
+        self.resource_plugins["c2"].on_post_product_offering_validation.assert_called_once_with(
+            self.provider, self.resource_specs["r2"], second, offer
+        )
+
+    def test_nested_offering_bundle_rejected_before_resource_reads(self):
+        self.catalog.get_offering.side_effect = [
+            {"id": "o1", "productSpecification": {"id": self.product["id"]}},
+            {"id": "o2", "isBundle": True},
+        ]
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, offer)
+        self.resources.get_specification.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+
+    def test_invalid_resource_reference_prevents_all_pre_hooks_and_pricing(self):
+        self.resources.get_specification.side_effect = None
+        self.resources.get_specification.return_value = {"id": "wrong-resource"}
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+
+    def test_resource_pre_hook_failure_blocks_pricing_and_all_post_hooks(self):
+        self.resource_plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_not_called()
+        self.resource_plugins["c2"].on_pre_product_offering_validation.assert_not_called()
+        self.plugins["c1"].on_post_product_offering_validation.assert_not_called()
+
+    def test_pricing_failure_prevents_resource_post_hooks(self):
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+        with self.assertRaises(ValueError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_called_once()
+        self.resource_plugins["c1"].on_post_product_offering_validation.assert_not_called()
+
+    def test_resource_post_hook_rejection_is_reported(self):
+        self.resource_plugins["c1"].on_post_product_offering_validation.side_effect = PluginError("reject")
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_called_once()
+        self.resource_plugins["c2"].on_post_product_offering_validation.assert_not_called()
+
+    def test_endpoint_invokes_resource_hooks_and_reports_plugin_failure(self):
+        user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(
+                current_organization=self.provider,
+                get_current_roles=lambda: ["provider"],
+            ),
+        )
+
+        def invoke():
+            request = RequestFactory().post(
+                "/charging/api/assetManagement/assets/offeringJob",
+                data=json.dumps({"action": "create", "offering": self.offer}),
+                content_type="application/json",
+            )
+            request.user = user
+            return resolve(request.path).func(request)
+
+        self.assertEqual(200, invoke().status_code)
+        self.resource_plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
         self.assertEqual(422, invoke().status_code)

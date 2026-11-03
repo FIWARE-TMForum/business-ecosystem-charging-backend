@@ -66,18 +66,11 @@ class CatalogResolver:
         self._service_catalog = ServiceCatalog()
         self._resource_catalog = ResourceCatalog()
 
-    def product_services(self, product_spec):
-        return [
-            (specification, product)
-            for _, specification, product in self.product_specifications(
-                product_spec, plugin_types=("service",)
-            )
-        ]
-
-    def product_specifications(self, product_spec, plugin_types=("service", "resource")):
+    def product_specifications(self, product_spec):
         """Resolve typed service/resource associations for individual products or bundles."""
         _check_document(product_spec, "product specification")
 
+        plugin_types = ("service", "resource")
         bundled_ids = reference_ids(product_spec, "bundledProductSpecification")
         specification_ids = {
             kind: reference_ids(product_spec, kind + "Specification") for kind in plugin_types
@@ -126,7 +119,7 @@ class CatalogResolver:
 
         return associations
 
-    def offering_services(self, product_offering):
+    def offering_specifications(self, product_offering):
         _check_document(product_offering, "product offering")
 
         bundled_ids = reference_ids(product_offering, "bundledProductOffering")
@@ -155,6 +148,6 @@ class CatalogResolver:
             ids = reference_ids({"productSpecification": [product_ref]}, "productSpecification")
             product_spec = self._catalog.get_specification(ids[0])
 
-            associations.extend(self.product_services(product_spec))
+            associations.extend(self.product_specifications(product_spec))
 
         return associations
