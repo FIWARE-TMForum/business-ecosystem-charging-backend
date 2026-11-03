@@ -844,6 +844,28 @@ class InventoryClientTestCase(TestCase):
         msg += "and that the inventory API is up and running"
         self.assertEquals(msg, str(error))
 
+    def test_get_service(self):
+        service = {"id": "service-1", "serviceSpecification": {"id": "spec-1"}}
+        self.response.json.return_value = service
+
+        result = inventory_client.InventoryClient().get_service("service-1")
+
+        inventory_client.requests.get.assert_called_once_with(
+            "http://localhost:7070/serviceInventory/service/service-1", verify=True, timeout=30
+        )
+        self.response.raise_for_status.assert_called_once_with()
+        self.assertEqual(service, result)
+
+    def test_get_service_http_error_propagates(self):
+        error = InventoryError("service inventory unavailable")
+        self.response.raise_for_status.side_effect = error
+
+        with self.assertRaises(InventoryError) as caught:
+            inventory_client.InventoryClient().get_service("service-1")
+
+        self.assertIs(error, caught.exception)
+        self.response.json.assert_not_called()
+
     def test_activate_product(self):
         client = inventory_client.InventoryClient()
         client.activate_product("1")

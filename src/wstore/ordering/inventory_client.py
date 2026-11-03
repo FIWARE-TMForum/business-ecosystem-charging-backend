@@ -86,6 +86,13 @@ class InventoryClient:
 
         return r.json()
 
+    def get_service(self, service_id):
+        """Retrieve a purchased service from service inventory."""
+        url = get_service_url("service_inventory", "/service/" + str(service_id))
+        response = requests.get(url, verify=settings.VERIFY_REQUESTS, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
     def get_product_for_patch(self, product_id):
         """
         Retrieves a product and removes read-only fields that should not be included in PATCH requests

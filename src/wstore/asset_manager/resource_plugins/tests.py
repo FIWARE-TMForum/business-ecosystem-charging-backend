@@ -1000,6 +1000,181 @@ class DecoratorsTestCase(TestCase):
     #     self._module.on_usage_refresh.assert_called_once_with(offering.asset, self._contract, self._order)
 
 
+class ServiceActivationDispatchTests(SimpleTestCase):
+    def setUp(self):
+        self.provider = object()
+        self.order = {"id": "order-1", "productOrderItem": [{"id": "item-1"}]}
+        self.contract = object()
+        self.product = {"id": "product-1", "realizingService": [{"id": "service-1"}, {"id": "service-2"}]}
+        self.services = {
+            f"service-{n}": {
+                "id": f"service-{n}",
+                "serviceCharacteristic": [
+                    {"name": "Service Type", "value": f"category-{n}"},
+                    {"name": "File", "value": f"file-{n}"},
+                    {"name": "enabled", "value": "False"},
+                ],
+            }
+            for n in (1, 2)
+        }
+        self.models = {f"category-{n}": object() for n in (1, 2)}
+        self.plugins = {f"category-{n}": Mock() for n in (1, 2)}
+        self.modules = {model: self.plugins[category] for category, model in self.models.items()}
+        for name in ("InventoryClient", "_get_plugin_model", "_load_plugin_model"):
+            patcher = patch.object(decorators, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        patcher = patch("wstore.store_commons.service_catalog.ServiceCatalog.get_specification")
+        self.catalog_read = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.inventory = self.InventoryClient.return_value
+        self.inventory.get_service.side_effect = self.services.__getitem__
+        self._get_plugin_model.side_effect = lambda category_id: self.models.get(category_id)
+        self._load_plugin_model.side_effect = self.modules.get
+
+    def tearDown(self):
+        self.catalog_read.assert_not_called()
+
+    def dispatch(self, contract=None):
+        return decorators.on_product_activation(self.provider, self.product, self.order, contract)
+
+    def test_each_plugin_receives_its_inventory_service_and_purchase_arguments(self):
+        self.dispatch(self.contract)
+        self.assertEqual([call("service-1"), call("service-2")], self.inventory.get_service.call_args_list)
+        self.assertEqual(
+            [call(category_id="category-1"), call(category_id="category-2")],
+            self._get_plugin_model.call_args_list,
+        )
+        for n in (1, 2):
+            self.plugins[f"category-{n}"].on_service_activation.assert_called_once_with(
+                self.provider,
+                self.services[f"service-{n}"],
+                self.product,
+                self.order,
+                self.contract,
+            )
+        self.inventory.patch_product.assert_not_called()
+
+    def test_contract_is_optional(self):
+        self.dispatch()
+        self.assertIsNone(self.plugins["category-1"].on_service_activation.call_args.args[-1])
+
+    def test_ordinary_services_are_skipped_without_specification_lookup(self):
+        for characteristics in (None, {}, [], [{"name": "File", "value": "file-1"}]):
+            with self.subTest(characteristics=characteristics):
+                self.services["service-1"]["serviceCharacteristic"] = characteristics
+                self.services["service-1"]["serviceSpecification"] = {"id": "spec-1"}
+                self.plugins["category-2"].reset_mock()
+                self.dispatch()
+                self.plugins["category-1"].on_service_activation.assert_not_called()
+                self.plugins["category-2"].on_service_activation.assert_called_once()
+
+    def test_category_without_installed_plugin_is_skipped(self):
+        self.models.pop("category-1")
+        self.dispatch()
+        self.plugins["category-1"].on_service_activation.assert_not_called()
+        self.plugins["category-2"].on_service_activation.assert_called_once()
+
+    def test_characteristic_name_is_case_insensitive(self):
+        self.services["service-1"]["serviceCharacteristic"][0]["name"] = " SERVICE TYPE "
+        self.dispatch()
+        self.plugins["category-1"].on_service_activation.assert_called_once()
+
+    def test_same_category_dispatches_for_each_inventory_service(self):
+        self.services["service-2"]["serviceCharacteristic"][0]["value"] = "category-1"
+        self.dispatch()
+        self.assertEqual(
+            [
+                call(self.provider, self.services["service-1"], self.product, self.order, None),
+                call(self.provider, self.services["service-2"], self.product, self.order, None),
+            ],
+            self.plugins["category-1"].on_service_activation.call_args_list,
+        )
+        self.plugins["category-2"].on_service_activation.assert_not_called()
+
+    def test_product_without_services_does_not_dispatch(self):
+        self.product.pop("realizingService")
+        self.dispatch()
+        self.inventory.get_service.assert_not_called()
+        self._get_plugin_model.assert_not_called()
+
+    def test_invalid_service_references_are_logged(self):
+        for references in (None, {}, [None], [{}], [{"id": ""}], [{"id": 1}]):
+            with self.subTest(references=references):
+                self.product["realizingService"] = references
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+        self.inventory.get_service.assert_not_called()
+
+    def test_invalid_reference_does_not_prevent_later_service_notification(self):
+        self.product["realizingService"].insert(0, {})
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.plugins["category-1"].on_service_activation.assert_called_once()
+        self.plugins["category-2"].on_service_activation.assert_called_once()
+
+    def test_invalid_service_type_is_logged_and_remaining_services_continue(self):
+        for characteristics in (
+            [{"name": "Service Type", "value": ""}],
+            [{"name": "Service Type", "value": {"id": "category-1"}}],
+            [{"name": "Service Type"}],
+            [{"name": "Service Type", "value": "category-1"}] * 2,
+        ):
+            with self.subTest(characteristics=characteristics):
+                self.services["service-1"]["serviceCharacteristic"] = characteristics
+                self.plugins["category-2"].reset_mock()
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+                self.plugins["category-1"].on_service_activation.assert_not_called()
+                self.plugins["category-2"].on_service_activation.assert_called_once()
+
+    def test_invalid_downloaded_services_are_logged_and_remaining_services_continue(self):
+        for document in (None, [], {}, {"id": "different-id"}):
+            with self.subTest(document=document):
+                self.plugins["category-2"].reset_mock()
+                self.inventory.get_service.side_effect = (
+                    lambda id_: document if id_ == "service-1" else self.services[id_]
+                )
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+                self.plugins["category-1"].on_service_activation.assert_not_called()
+                self.plugins["category-2"].on_service_activation.assert_called_once()
+
+    def test_read_and_plugin_failures_are_logged_without_stopping_dispatch(self):
+        for operation in (
+            self.inventory.get_service,
+            self._get_plugin_model,
+            self._load_plugin_model,
+            self.plugins["category-1"].on_service_activation,
+        ):
+            original = operation.side_effect
+            for error_type in (PluginError, RuntimeError):
+                with self.subTest(operation=operation, error_type=error_type):
+                    self.plugins["category-2"].reset_mock()
+                    error = error_type("notification failed")
+
+                    def notify(*args, **kwargs):
+                        if operation.call_count == 1:
+                            raise error
+                        return original(*args, **kwargs) if original else None
+
+                    operation.reset_mock()
+                    operation.side_effect = notify
+                    with self.assertLogs("wstore.default_logger", level="ERROR") as logs:
+                        self.assertIsNone(self.dispatch())
+                    for identifier in ("order-1", "product-1", "service-1"):
+                        self.assertIn(identifier, logs.output[0])
+                    self.assertIs(error, logs.records[0].exc_info[1])
+                    self.plugins["category-2"].on_service_activation.assert_called_once_with(
+                        self.provider,
+                        self.services["service-2"],
+                        self.product,
+                        self.order,
+                        None,
+                    )
+            operation.side_effect = original
+
+
 class RecordingPlugin(Plugin):
     pass
 

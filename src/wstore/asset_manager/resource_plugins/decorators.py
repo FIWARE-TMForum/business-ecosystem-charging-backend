@@ -25,6 +25,7 @@ from logging import getLogger
 from wstore.asset_manager.errors import ServiceError
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import ResourcePlugin
+from wstore.ordering.inventory_client import InventoryClient
 
 logger = getLogger("wstore.default_logger")
 
@@ -64,6 +65,33 @@ def load_plugin_module(service_spec):
 
     category_id = values[0].get("value")
 
+    return _load_category_plugin(category_id)
+
+
+def load_service_plugin_module(service):
+    """Resolve an activation plugin from the inventory service's own characteristics."""
+    entries = service.get("serviceCharacteristic")
+    if not isinstance(entries, list):
+        return None
+
+    service_types = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and entry["name"].strip().lower() == "service type"
+    ]
+
+    if not service_types:
+        return None
+
+    if len(service_types) != 1:
+        raise ServiceError("The inventory service must contain exactly one Service Type characteristic")
+
+    return _load_category_plugin(service_types[0].get("value"))
+
+
+def _load_category_plugin(category_id):
     if not isinstance(category_id, str) or not category_id.strip():
         raise ServiceError("Service Type must contain a non-empty service category id string")
 
@@ -122,6 +150,46 @@ def on_product_offering_validation(func):
         return result
 
     return wrapper
+
+
+def on_product_activation(provider, product, order, contract=None):
+    """Dispatch product activation to its service plugins without interrupting purchase completion."""
+    references = product.get("realizingService", [])
+
+    if not isinstance(references, list):
+        logger.error(
+            "Cannot notify activation for product %s: realizingService must be a list", product.get("id")
+        )
+        return
+
+    inventory = InventoryClient()
+
+    for reference in references:
+        try:
+            if (
+                not isinstance(reference, dict)
+                or not isinstance(reference.get("id"), str)
+                or not reference["id"].strip()
+            ):
+                raise ServiceError("Each realizingService reference must contain a service id")
+
+            service = inventory.get_service(reference["id"])
+
+            if not isinstance(service, dict) or service.get("id") != reference["id"]:
+                raise ServiceError("Invalid inventory service reference: " + reference["id"])
+
+            plugin = load_service_plugin_module(service)
+
+            if plugin is not None:
+                plugin.on_service_activation(provider, service, product, order, contract)
+        except Exception:
+            # Payment has completed: a plugin notification must not block the purchase.
+            logger.exception(
+                "Service activation notification failed for order %s, product %s, service %s",
+                order.get("id"),
+                product.get("id"),
+                reference.get("id") if isinstance(reference, dict) else None,
+            )
 
 
 def process_product_notification(order, contract, type_):

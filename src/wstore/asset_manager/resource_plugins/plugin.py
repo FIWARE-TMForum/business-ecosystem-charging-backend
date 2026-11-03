@@ -34,7 +34,8 @@ class Plugin:
     def __init__(self, plugin_model):
         self._model = plugin_model
 
-    # The service specification is the asset; no separate asset object is passed.
+    # Catalog hooks use the service specification as the asset.
+    # Activation uses the inventory service and its instantiated characteristics.
     # provider is the organization providing the service, rather than the buyer.
     # Hooks return None on success and may raise PluginError on failure.
     # These declarations are integrated into callers in subsequent plan steps.
@@ -67,8 +68,8 @@ class Plugin:
         """Validate the offering after backend checks; publication is not implied."""
         pass
 
-    def on_service_activation(self, provider, service_spec, service, product, order, contract=None):
-        """Provision an inventory service when procurement permits activation."""
+    def on_service_activation(self, provider, service, product, order, contract=None):
+        """Provision using the inventory service's instantiated characteristics."""
         pass
 
     def on_service_suspension(self, provider, service_spec, service, product, order, contract=None):
