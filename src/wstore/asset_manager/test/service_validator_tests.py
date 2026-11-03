@@ -24,7 +24,7 @@ class ServiceSpecificationTests(SimpleTestCase):
     def setUp(self):
         self.validator = ServiceValidator()
         self.specification = {
-            "specCharacteristic": [characteristic("Service Type", {"id": "plugin-category"})],
+            "specCharacteristic": [characteristic("Service Type", "plugin-category")],
         }
         self.plugin = SimpleNamespace(requires_file=False, media_types=["application/json"], form={})
 
@@ -81,7 +81,7 @@ class ServiceLifecycleTests(SimpleTestCase):
             "version": "1.0",
             "relatedParty": [{"id": "seller", "role": "Seller"}],
             "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
+                characteristic("Service Type", "plugin-category"),
                 characteristic("URL", "https://provider.example/service"),
                 characteristic("Media Type", "application/json"),
             ],
@@ -218,7 +218,7 @@ class ServiceEndpointTests(SimpleTestCase):
             "action": "create",
             "service": {
                 "name": "example",
-                "specCharacteristic": [characteristic("Service Type", {"id": "plugin-category"})],
+                "specCharacteristic": [characteristic("Service Type", "plugin-category")],
             },
         }
         request = self.request(body)
@@ -282,7 +282,7 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
             "version": "1.0",
             "relatedParty": [{"id": "seller", "role": "Seller"}],
             "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
+                characteristic("Service Type", "plugin-category"),
                 characteristic("URL", "https://provider.example/service"),
                 characteristic("Media Type", "application/json"),
             ],
@@ -394,8 +394,8 @@ class ServicePluginDecoratorTests(SimpleTestCase):
     def setUp(self):
         self.model = object()
         self.validator = Mock()
-        self.validator.parse_spec_characteristics.return_value = ({"id": "category"}, {})
-        self.specification = {"specCharacteristic": [characteristic("Service Type", {"id": "category"})]}
+        self.validator.parse_spec_characteristics.return_value = {}
+        self.specification = {"specCharacteristic": [characteristic("Service Type", "category")]}
         self.plugin = Mock(_model=self.model)
         resolve_patch = patch.object(plugin_decorators, "_get_plugin_model", return_value=self.model)
         self.resolve = resolve_patch.start()
@@ -449,7 +449,7 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
         self.spec = {
             "relatedParty": [{"id": "seller", "role": "Seller"}],
             "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
+                characteristic("Service Type", "plugin-category"),
                 characteristic("URL", "https://provider.example/service"),
                 characteristic("Media Type", "application/json"),
                 characteristic("region", "eu"),
@@ -487,9 +487,9 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
             self.validator.validate("create", self.provider, self.spec)
         self.plugin.on_post_service_spec_validation.assert_not_called()
 
-    def test_metadata_object_does_not_replace_individual_characteristics(self):
+    def test_unrelated_characteristic_does_not_replace_required_form_fields(self):
         self.spec["specCharacteristic"] = self.spec["specCharacteristic"][:3] + [
-            characteristic("Metadata", {"region": "eu", "enabled": True})
+            characteristic("description", "Example service")
         ]
         with self.assertRaisesRegex(ServiceError, "region"):
             self.validator.validate("create", self.provider, self.spec)
@@ -548,14 +548,14 @@ class ServiceTypeResolutionTests(SimpleTestCase):
     def test_category_reference_selects_local_plugin_without_catalog_calls(self, lookup):
         model = object()
         lookup.return_value = [model]
-        specification = {"specCharacteristic": [characteristic("Service Type", {"id": "category-1"})]}
+        specification = {"specCharacteristic": [characteristic("Service Type", "category-1")]}
         with patch.object(ServiceCatalog, "_request") as request:
             self.assertIs(
                 model,
                 plugin_decorators._get_plugin_model(
                     category_id=ServiceValidator._get_spec_characteristic_value(
                         ServiceValidator().parse_spec_characteristics(specification), "service type"
-                    )["id"]
+                    )
                 ),
             )
             request.assert_not_called()
@@ -563,25 +563,32 @@ class ServiceTypeResolutionTests(SimpleTestCase):
 
     @patch("wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.filter")
     def test_present_duplicate_or_malformed_service_type_rejected(self, lookup):
-        valid = characteristic("Service Type", {"id": "category-1"})
+        valid = characteristic("Service Type", "category-1")
         for characteristics in [
-            [valid, characteristic("SERVICE TYPE", {"id": "category-2"})],
-            [characteristic("Service Type", "internal-plugin-id")],
+            [valid, characteristic("SERVICE TYPE", "category-2")],
+            [characteristic("Service Type", {"id": "category-1"})],
+            [characteristic("Service Type", [])],
+            [characteristic("Service Type", 123)],
+            [characteristic("Service Type", True)],
+            [characteristic("Service Type", None)],
             [characteristic("Service Type", {})],
-            [characteristic("Service Type", {"id": ""})],
-            [characteristic("Service Type", {"id": "  "})],
-            [characteristic("Service Type", {"id": None})],
+            [characteristic("Service Type", "")],
+            [characteristic("Service Type", "  ")],
             [{"name": "Service Type", "characteristicValueSpecification": []}],
             [
                 {
                     "name": "Service Type",
-                    "characteristicValueSpecification": [{"value": {"id": "a"}}, {"value": {"id": "b"}}],
+                    "characteristicValueSpecification": [{"value": "a"}, {"value": "b"}],
                 }
             ],
             [{"name": "Service Type", "characteristicValueSpecification": [{}]}],
         ]:
-            with self.subTest(characteristics=characteristics), self.assertRaises(ServiceError):
-                ServiceValidator().parse_spec_characteristics({"specCharacteristic": characteristics})
+            specification = {"specCharacteristic": characteristics}
+            with self.subTest(characteristics=characteristics):
+                with self.assertRaises(ServiceError):
+                    ServiceValidator().parse_spec_characteristics(specification)
+                with self.assertRaises(ServiceError):
+                    plugin_decorators.load_plugin_module(specification)
         lookup.assert_not_called()
 
     @patch("wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.filter")
@@ -593,22 +600,18 @@ class ServiceTypeResolutionTests(SimpleTestCase):
     @patch("wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.filter")
     def test_category_without_plugin_skips_plugin_specific_validation(self, lookup):
         lookup.return_value = []
-        specification = {"specCharacteristic": [characteristic("Service Type", {"id": "ordinary-category"})]}
+        specification = {"specCharacteristic": [characteristic("Service Type", "ordinary-category")]}
         with patch.object(plugin_decorators, "_load_plugin_model") as load:
             ServiceValidator().validate("create", object(), specification)
             load.assert_not_called()
 
     @patch("wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.filter")
-    def test_category_reference_id_is_used_and_other_reference_fields_preserved(self, lookup):
+    def test_category_id_string_is_used_without_modifying_the_specification(self, lookup):
         lookup.return_value = [object()]
-        reference = {"id": "category-1", "name": "Public service type", "href": "https://catalog.example/type"}
-        specification = {"specCharacteristic": [characteristic(" service TYPE ", reference)]}
+        specification = {"specCharacteristic": [characteristic(" service TYPE ", "category-1")]}
         original = deepcopy(specification)
-        plugin_decorators._get_plugin_model(
-            category_id=ServiceValidator._get_spec_characteristic_value(
-                ServiceValidator().parse_spec_characteristics(specification), "service type"
-            )["id"]
-        )
+        with patch.object(plugin_decorators, "_load_plugin_model"):
+            plugin_decorators.load_plugin_module(specification)
         lookup.assert_called_once_with(category_id="category-1")
         self.assertEqual(original, specification)
 
@@ -665,7 +668,7 @@ class OrdinaryServiceEarlyReturnTests(SimpleTestCase):
         )
         specification = {
             "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
+                characteristic("Service Type", "plugin-category"),
                 characteristic("URL", "https://provider.example/service"),
                 characteristic("Media Type", "application/json"),
                 characteristic("region", "EU"),
@@ -696,8 +699,8 @@ class ManagedFileValidationTests(SimpleTestCase):
         )
         self.spec = {
             "specCharacteristic": [
-                characteristic("Service Type", {"id": "plugin-category"}),
-                characteristic("File", {"id": self.file_id}),
+                characteristic("Service Type", "plugin-category"),
+                characteristic("File", self.file_id),
             ],
         }
         self.model = SimpleNamespace(requires_file=True, media_types=["application/json"], form={})
@@ -743,19 +746,19 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.lookup.assert_not_called()
 
     def test_malformed_file_references_are_rejected_without_lookup(self):
-        for value in [None, self.file_id, {}, {"id": 123}, {"id": "invalid"}, {"id": ""}]:
+        for value in [None, {}, {"id": self.file_id}, [], 123, True, "invalid", "", " "]:
             with self.subTest(value=value):
                 self.spec["specCharacteristic"][1] = characteristic("File", value)
-                with self.assertRaisesRegex(ServiceError, "uploaded file reference"):
+                with self.assertRaisesRegex(ServiceError, "uploaded file id string"):
                     self.validator.validate("create", self.provider, self.spec)
         self.lookup.assert_not_called()
 
     def test_file_must_have_one_characteristic_with_one_value(self):
         invalid_entries = [
-            [characteristic("File", {"id": self.file_id}), characteristic("FILE", {"id": self.file_id})],
+            [characteristic("File", self.file_id), characteristic("FILE", self.file_id)],
             [{"name": "File", "characteristicValueSpecification": []}],
             [{"name": "File", "characteristicValueSpecification": [{}]}],
-            [{"name": "File", "characteristicValueSpecification": [{"value": {}}, {"value": {}}]}],
+            [{"name": "File", "characteristicValueSpecification": [{"value": self.file_id}, {"value": self.file_id}]}],
         ]
         for entries in invalid_entries:
             with self.subTest(entries=entries):
@@ -801,7 +804,7 @@ class ManagedFileValidationTests(SimpleTestCase):
     def test_update_checks_proposed_file_and_passes_original_specification_to_hooks(self):
         self.spec.update({"id": "spec-1", "version": "1.0"})
         previous = deepcopy(self.spec)
-        previous["specCharacteristic"][1] = characteristic("File", {"id": "507f1f77bcf86cd799439012"})
+        previous["specCharacteristic"][1] = characteristic("File", "507f1f77bcf86cd799439012")
         self.validator._catalog = Mock()
         self.validator._catalog.get_specification.return_value = previous
         self.validator.validate("update", self.provider, self.spec)
