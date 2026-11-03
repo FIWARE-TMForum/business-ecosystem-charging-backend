@@ -62,8 +62,13 @@ class PluginCollection(Resource):
         # Load basic types
         result = []
 
-        # Get resource plugins
-        plugins = ResourcePlugin.objects.all()
+        plugin_type = request.GET.get("type")
+        if plugin_type is None:
+            plugins = ResourcePlugin.objects.all()
+        elif plugin_type in ("service", "resource"):
+            plugins = ResourcePlugin.objects.filter(type=plugin_type)
+        else:
+            return build_response(request, 400, "The type parameter must be service or resource")
 
         for plugin in plugins:
             result.append(get_plugin_info(plugin))

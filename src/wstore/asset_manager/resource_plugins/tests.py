@@ -1538,3 +1538,62 @@ class FilePluginContractTests(SimpleTestCase):
         for plugin_type in ("service", "resource"):
             model = ResourcePlugin(plugin_id="test", name="test", type=plugin_type, requires_file=False)
             self.assertEqual(plugin_type, get_plugin_info(model)["type"])
+
+
+class PluginCollectionTests(SimpleTestCase):
+    def setUp(self):
+        from django.test import RequestFactory
+        from wstore.asset_manager.resource_plugins import views
+
+        self.factory = RequestFactory()
+        self.view = views.PluginCollection(permitted_methods=("GET",))
+        self.plugins = [
+            ResourcePlugin(plugin_id="service-plugin", name="service plugin", type="service", requires_file=False),
+            ResourcePlugin(plugin_id="resource-plugin", name="resource plugin", type="resource", requires_file=True),
+        ]
+        patcher = patch.object(views, "ResourcePlugin")
+        self.registry = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.registry.objects.all.return_value = self.plugins
+        self.registry.objects.filter.side_effect = lambda type: [p for p in self.plugins if p.type == type]
+
+    def request(self, query=None, anonymous=False):
+        request = self.factory.get("/charging/api/assetManagement/assetTypes", query or {})
+        request.user = Mock(is_anonymous=anonymous)
+        return self.view(request)
+
+    def test_no_type_returns_all_plugins(self):
+        response = self.request()
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(["service", "resource"], [p["type"] for p in json.loads(response.content)])
+        self.registry.objects.all.assert_called_once_with()
+        self.registry.objects.filter.assert_not_called()
+
+    @parameterized.expand([("service",), ("resource",)])
+    def test_filter_by_type(self, plugin_type):
+        response = self.request({"type": plugin_type})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([plugin_type], [p["type"] for p in json.loads(response.content)])
+        self.registry.objects.filter.assert_called_once_with(type=plugin_type)
+        self.registry.objects.all.assert_not_called()
+
+    def test_filter_with_no_matches_returns_empty_list(self):
+        self.registry.objects.filter.side_effect = None
+        self.registry.objects.filter.return_value = []
+        response = self.request({"type": "resource"})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([], json.loads(response.content))
+
+    def test_invalid_type_returns_bad_request_without_reading_registry(self):
+        for plugin_type in ("", "other", "Service"):
+            with self.subTest(plugin_type=plugin_type):
+                response = self.request({"type": plugin_type})
+                self.assertEqual(400, response.status_code)
+        self.registry.objects.all.assert_not_called()
+        self.registry.objects.filter.assert_not_called()
+
+    def test_filter_still_requires_authentication(self):
+        response = self.request({"type": "resource"}, anonymous=True)
+        self.assertEqual(401, response.status_code)
+        self.registry.objects.all.assert_not_called()
+        self.registry.objects.filter.assert_not_called()
