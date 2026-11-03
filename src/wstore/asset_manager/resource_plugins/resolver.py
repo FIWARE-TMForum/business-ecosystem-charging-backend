@@ -23,6 +23,7 @@ from requests.exceptions import RequestException
 from wstore.asset_manager.errors import ProductError
 from wstore.store_commons.product_catalog import ProductCatalog
 from wstore.store_commons.service_catalog import ServiceCatalog
+from wstore.store_commons.resource_catalog import ResourceCatalog
 
 
 def reference_ids(document, field):
@@ -34,7 +35,11 @@ def reference_ids(document, field):
     ids = []
 
     for reference in references:
-        if not isinstance(reference, dict) or not isinstance(reference.get("id"), str) or not reference["id"].strip():
+        if (
+            not isinstance(reference, dict)
+            or not isinstance(reference.get("id"), str)
+            or not reference["id"].strip()
+        ):
             raise ProductError("Each " + field + " reference must contain an id")
 
         if reference["id"] in ids:
@@ -54,24 +59,37 @@ def _check_document(document, kind):
 
 
 class CatalogResolver:
-    """Resolve service/product associations without invoking catalog validation."""
+    """Resolve specification/product associations without invoking catalog validation."""
 
     def __init__(self):
         self._catalog = ProductCatalog()
         self._service_catalog = ServiceCatalog()
+        self._resource_catalog = ResourceCatalog()
 
     def product_services(self, product_spec):
+        return [
+            (specification, product)
+            for _, specification, product in self.product_specifications(
+                product_spec, plugin_types=("service",)
+            )
+        ]
+
+    def product_specifications(self, product_spec, plugin_types=("service", "resource")):
+        """Resolve typed service/resource associations for individual products or bundles."""
         _check_document(product_spec, "product specification")
 
         bundled_ids = reference_ids(product_spec, "bundledProductSpecification")
-        service_ids = reference_ids(product_spec, "serviceSpecification")
+        specification_ids = {
+            kind: reference_ids(product_spec, kind + "Specification") for kind in plugin_types
+        }
 
         if product_spec.get("isBundle", False):
             if len(bundled_ids) < 2:
                 raise ProductError("A product spec bundle must contain at least two bundled product specs")
 
-            if service_ids:
-                raise ProductError("Product spec bundles cannot define their own services")
+            for kind, ids in specification_ids.items():
+                if ids:
+                    raise ProductError("Product spec bundles cannot define their own " + kind + "s")
 
             products = [self._catalog.get_specification(specification_id) for specification_id in bundled_ids]
 
@@ -88,17 +106,23 @@ class CatalogResolver:
 
         associations = []
 
+        catalogs = {"service": self._service_catalog, "resource": self._resource_catalog}
         for product in products:
-            for specification_id in reference_ids(product, "serviceSpecification"):
-                try:
-                    service_spec = self._service_catalog.get_specification(specification_id)
-                except (RequestException, ValueError) as exc:
-                    raise ProductError("Cannot retrieve service specification: " + specification_id) from exc
+            for kind in plugin_types:
+                for specification_id in reference_ids(product, kind + "Specification"):
+                    try:
+                        specification = catalogs[kind].get_specification(specification_id)
+                    except (RequestException, ValueError) as exc:
+                        raise ProductError(
+                            "Cannot retrieve " + kind + " specification: " + specification_id
+                        ) from exc
 
-                if not isinstance(service_spec, dict) or service_spec.get("id") != specification_id:
-                    raise ProductError("Invalid service specification reference: " + specification_id)
+                    if not isinstance(specification, dict) or specification.get("id") != specification_id:
+                        raise ProductError(
+                            "Invalid " + kind + " specification reference: " + specification_id
+                        )
 
-                associations.append((service_spec, product))
+                    associations.append((kind, specification, product))
 
         return associations
 

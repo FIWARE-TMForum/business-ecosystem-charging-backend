@@ -28,6 +28,7 @@ from unittest.mock import Mock, call, patch
 from django.test import RequestFactory, SimpleTestCase
 from django.urls import resolve
 from requests.exceptions import ConnectionError, HTTPError
+from parameterized import parameterized
 
 from wstore.asset_manager.errors import ProductError, ServiceError
 from wstore.asset_manager.product_validator import ProductValidator
@@ -387,3 +388,196 @@ class ProductEndpointTests(SimpleTestCase):
         request = self.request({"action": "create", "product": product_spec()})
 
         self.assertEqual(403, resolve(request.path).func(request).status_code)
+
+
+def resource_spec(specification_id, category=None):
+    specification = {"id": specification_id, "resourceSpecCharacteristic": []}
+    if category is not None:
+        specification["resourceSpecCharacteristic"].append(
+            {
+                "name": "Resource Type",
+                "resourceSpecCharacteristicValue": [{"value": category}],
+            }
+        )
+    return specification
+
+
+class ResourceProductValidationTests(SimpleTestCase):
+    def setUp(self):
+        from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin
+
+        ValidatorTestCase.setUp(self)
+        self.resources = {
+            "resource-1": resource_spec("resource-1", "category-1"),
+            "resource-2": resource_spec("resource-2", "category-2"),
+            "ordinary-resource": resource_spec("ordinary-resource"),
+        }
+        patcher = patch.object(self.resolver, "_resource_catalog")
+        self.resource_catalog = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.resource_catalog.get_specification.side_effect = self.resources.get
+        self.resource_plugins = {
+            "category-1": Mock(spec=ResourcePlugin),
+            "category-2": Mock(spec=ResourcePlugin),
+        }
+        self.typed_plugins = {
+            **{("service", category): plugin for category, plugin in self.plugins.items()},
+            **{("resource", category): plugin for category, plugin in self.resource_plugins.items()},
+        }
+        self.lookup.side_effect = lambda category_id, plugin_type: (
+            (plugin_type, category_id) if (plugin_type, category_id) in self.typed_plugins else None
+        )
+        self.load.side_effect = self.typed_plugins.get
+        self.product["resourceSpecification"] = [{"id": id_} for id_ in self.resources]
+
+    def test_mixed_products_dispatch_each_domains_own_specification(self):
+        self.validator.validate("create", self.provider, self.product)
+        for n in (1, 2):
+            self.plugins[f"category-{n}"].on_product_spec_validation.assert_called_once_with(
+                self.provider,
+                self.services[f"service-{n}"],
+                self.product,
+            )
+            self.resource_plugins[f"category-{n}"].on_product_spec_validation.assert_called_once_with(
+                self.provider,
+                self.resources[f"resource-{n}"],
+                self.product,
+            )
+            self.resource_plugins[f"category-{n}"].on_pre_resource_spec_validation.assert_not_called()
+            self.resource_plugins[f"category-{n}"].on_post_resource_spec_validation.assert_not_called()
+        self.lookup.assert_any_call(category_id="category-1", plugin_type="service")
+        self.lookup.assert_any_call(category_id="category-1", plugin_type="resource")
+
+    def test_resource_only_product_needs_no_service_catalog_read(self):
+        self.product.pop("serviceSpecification")
+        self.validator.validate("create", self.provider, self.product)
+        self.catalog.get_specification.assert_not_called()
+        for plugin in self.resource_plugins.values():
+            plugin.on_product_spec_validation.assert_called_once()
+
+    def test_ordinary_or_uninstalled_resource_category_skips_hooks(self):
+        self.product["serviceSpecification"] = []
+        self.product["resourceSpecification"] = [{"id": "ordinary-resource"}, {"id": "external"}]
+        self.resources["external"] = resource_spec("external", "not-installed")
+        self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    @parameterized.expand([("create",), ("update",)])
+    def test_proposed_product_is_forwarded_without_fetching_previous_version(self, action):
+        before = deepcopy(self.product)
+        self.validator.validate(action, self.provider, self.product)
+        self.product_catalog.get_specification.assert_not_called()
+        self.assertEqual(before, self.product)
+        self.assertIs(
+            self.product, self.resource_plugins["category-1"].on_product_spec_validation.call_args.args[2]
+        )
+
+    def test_resources_sharing_plugin_receive_separate_calls(self):
+        self.resources["resource-2"] = resource_spec("resource-2", "category-1")
+        self.validator.validate("create", self.provider, self.product)
+        self.assertEqual(
+            [
+                call(self.provider, self.resources["resource-1"], self.product),
+                call(self.provider, self.resources["resource-2"], self.product),
+            ],
+            self.resource_plugins["category-1"].on_product_spec_validation.call_args_list,
+        )
+
+    def test_invalid_resource_references_prevent_any_plugin_hook(self):
+        for refs in (
+            {},
+            [None],
+            [{}],
+            [{"id": " "}],
+            [{"id": "resource-1"}, {"id": "resource-1"}],
+            [{"id": "missing"}],
+        ):
+            with self.subTest(refs=refs):
+                self.product["resourceSpecification"] = refs
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_invalid_downloaded_resource_document_prevents_all_hooks(self):
+        for response in (None, [], {}, {"id": "wrong"}):
+            with self.subTest(response=response):
+                self.resource_catalog.get_specification.side_effect = None
+                self.resource_catalog.get_specification.return_value = response
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_resource_catalog_errors_are_product_validation_errors(self):
+        for error in (ConnectionError("offline"), HTTPError("404"), ValueError("invalid JSON")):
+            with self.subTest(error=error):
+                self.resource_catalog.get_specification.side_effect = error
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_resource_plugin_rejection_blocks_product_validation(self):
+        self.resource_plugins["category-1"].on_product_spec_validation.side_effect = PluginError("reject")
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.product)
+        self.resource_plugins["category-2"].on_product_spec_validation.assert_not_called()
+
+    def test_bundle_resources_receive_directly_containing_products(self):
+        first = product_spec("p1", ("service-1",))
+        second = product_spec("p2")
+        for product in (first, second):
+            product["resourceSpecification"] = [{"id": "resource-1"}]
+        self.product_catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        bundle = {"isBundle": True, "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}]}
+        self.validator.validate("create", self.provider, bundle)
+        self.assertEqual(
+            [
+                call(self.provider, self.resources["resource-1"], first),
+                call(self.provider, self.resources["resource-1"], second),
+            ],
+            self.resource_plugins["category-1"].on_product_spec_validation.call_args_list,
+        )
+
+    def test_bundle_cannot_define_its_own_resources_or_include_nested_bundles(self):
+        bundle = {
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}],
+            "resourceSpecification": [{"id": "resource-1"}],
+        }
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, bundle)
+        bundle.pop("resourceSpecification")
+        self.product_catalog.get_specification.side_effect = [
+            product_spec("p1"),
+            {"id": "p2", "isBundle": True},
+        ]
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, bundle)
+        self.resource_catalog.get_specification.assert_not_called()
+        self.catalog.get_specification.assert_not_called()
+        self.load.assert_not_called()
+
+    def test_product_endpoint_dispatches_resource_hooks_and_reports_rejection(self):
+        from django.test import RequestFactory
+        from django.urls import resolve
+        from types import SimpleNamespace
+
+        def invoke():
+            request = RequestFactory().post(
+                "/charging/api/assetManagement/assets/validateJob",
+                data=json.dumps({"action": "create", "product": self.product}),
+                content_type="application/json",
+            )
+            request.user = SimpleNamespace(
+                is_anonymous=False,
+                is_staff=False,
+                userprofile=SimpleNamespace(
+                    current_organization=self.provider,
+                    get_current_roles=lambda: ["provider"],
+                ),
+            )
+            return resolve(request.path).func(request)
+
+        self.assertEqual(200, invoke().status_code)
+        self.resource_plugins["category-1"].on_product_spec_validation.assert_called_once()
+        self.resource_plugins["category-1"].on_product_spec_validation.side_effect = PluginError("reject")
+        self.assertEqual(422, invoke().status_code)

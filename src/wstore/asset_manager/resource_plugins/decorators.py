@@ -121,27 +121,28 @@ def _load_plugin_model(plugin_model):
 def _get_plugins(associations):
     plugins = []
 
-    for service_spec, product_spec in associations:
-        plugin = load_plugin_module(service_spec=service_spec)
+    for plugin_type, specification, product_spec in associations:
+        loader = load_resource_plugin_module if plugin_type == "resource" else load_plugin_module
+        plugin = loader(specification)
 
         if plugin is not None:
-            plugins.append((plugin, service_spec, product_spec))
+            plugins.append((plugin, specification, product_spec))
 
     return plugins
 
 
 def on_product_spec_validation(provider, product_spec):
-    associations = CatalogResolver().product_services(product_spec)
+    associations = CatalogResolver().product_specifications(product_spec)
 
-    for plugin, service_spec, product in _get_plugins(associations):
-        plugin.on_product_spec_validation(provider, service_spec, product)
+    for plugin, specification, product in _get_plugins(associations):
+        plugin.on_product_spec_validation(provider, specification, product)
 
 
 def on_product_offering_validation(func):
     @wraps(func)
     def wrapper(self, provider, product_offering):
         associations = CatalogResolver().offering_services(product_offering)
-        plugins = _get_plugins(associations)
+        plugins = _get_plugins(("service", specification, product) for specification, product in associations)
 
         for plugin, service_spec, product_spec in plugins:
             plugin.on_pre_product_offering_validation(provider, service_spec, product_spec, product_offering)
