@@ -20,11 +20,13 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from functools import wraps
+
+from django.conf import settings
 from logging import getLogger
 
 from wstore.asset_manager.errors import ServiceError
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
-from wstore.models import ResourcePlugin
+from wstore.models import Organization, ResourcePlugin
 from wstore.ordering.inventory_client import InventoryClient
 
 logger = getLogger("wstore.default_logger")
@@ -152,7 +154,24 @@ def on_product_offering_validation(func):
     return wrapper
 
 
-def on_product_activation(provider, product, order, contract=None):
+def _get_product_organization(product, role):
+    party_ids = {
+        party["id"]
+        for party in product.get("relatedParty", [])
+        if isinstance(party, dict)
+        and isinstance(party.get("role"), str)
+        and party["role"].lower() == role.lower()
+        and isinstance(party.get("id"), str)
+        and party["id"].strip()
+    }
+
+    if len(party_ids) != 1:
+        raise ServiceError("The inventory product must identify one organization for role " + role)
+
+    return Organization.objects.get(actor_id=party_ids.pop())
+
+
+def on_product_activation(product, order, contract=None):
     """Dispatch product activation to its service plugins without interrupting purchase completion."""
     references = product.get("realizingService", [])
 
@@ -163,6 +182,7 @@ def on_product_activation(provider, product, order, contract=None):
         return
 
     inventory = InventoryClient()
+    organizations = None
 
     for reference in references:
         try:
@@ -181,7 +201,13 @@ def on_product_activation(provider, product, order, contract=None):
             plugin = load_service_plugin_module(service)
 
             if plugin is not None:
-                plugin.on_service_activation(provider, service, product, order, contract)
+                if organizations is None:
+                    organizations = (
+                        _get_product_organization(product, settings.PROVIDER_ROLE),
+                        _get_product_organization(product, settings.CUSTOMER_ROLE),
+                    )
+                provider, buyer = organizations
+                plugin.on_service_activation(provider, buyer, service, product, order, contract)
         except Exception:
             # Payment has completed: a plugin notification must not block the purchase.
             logger.exception(
@@ -195,10 +221,6 @@ def on_product_activation(provider, product, order, contract=None):
 def process_product_notification(order, contract, type_):
     # Purchased-service dispatch is integrated in its own lifecycle step.
     pass
-
-
-def on_product_acquired(order, contract):
-    process_product_notification(order, contract, "activate")
 
 
 def on_product_suspended(order, contract):

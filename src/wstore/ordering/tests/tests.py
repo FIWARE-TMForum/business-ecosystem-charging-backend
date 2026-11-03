@@ -1228,6 +1228,10 @@ class NotifyItemCompletedTestCase(TestCase):
     tags = ("ordering", "notify-item")
 
     def setUp(self):
+        patcher = patch.object(ordering_management, "on_product_activation")
+        self.on_product_activation = patcher.start()
+        self.addCleanup(patcher.stop)
+
         ordering_management.Order = MagicMock()
 
         # Mock order model
@@ -1565,3 +1569,120 @@ class NotifyItemCompletedTestCase(TestCase):
         # But product should still be activated
         ordering_manager.activate_product.assert_called_once()
 
+    @parameterized.expand(
+        [
+            (path + "_" + mode, path, mode)
+            for path in ("batch", "item")
+            for mode in ("automatic", "manual", "payment-automatic", "missing")
+        ]
+    )
+    def test_activation_dispatch_respects_procurement(self, name, path, mode):
+        manager, product = self._prepare_activation_completion(mode)
+        sequence = MagicMock()
+        sequence.attach_mock(manager.activate_product, "activate")
+        sequence.attach_mock(self.on_product_activation, "notify")
+        sequence.attach_mock(self._order_model.mark_contract_as_processed, "processed")
+
+        self._run_activation_completion(manager, path)
+
+        if mode == "automatic":
+            self.on_product_activation.assert_called_once_with(product, self._raw_order, self._contract)
+            self.assertEqual(["activate", "notify", "processed"], [entry[0] for entry in sequence.mock_calls])
+        else:
+            self.on_product_activation.assert_not_called()
+
+    def _prepare_activation_completion(self, mode="automatic"):
+        offering = self._offering_no_terms()
+        if mode != "missing":
+            offering["productOfferingTerm"] = [{"name": "procurement", "description": mode}]
+        self._response.json.return_value = offering
+        self._raw_order["productOrderItem"][0]["productOffering"]["href"] = "offering_1"
+        self._order_model.get_contracts.return_value = [self._contract]
+        product = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"},
+            "realizingService": [{"id": "service-1"}],
+            "relatedParty": [
+                {"id": "buyer-party", "role": "Buyer"},
+                {"id": "operator-party", "role": "SellerOperator"},
+                {"id": "seller-party", "role": "sElLeR"},
+            ],
+        }
+        manager = ordering_management.OrderingManager()
+        manager.complete_inventory_product = MagicMock(return_value=product)
+        manager.activate_product = MagicMock()
+        return manager, product
+
+    def _run_activation_completion(self, manager, path):
+        if path == "batch":
+            manager.notify_completed(self._raw_order)
+        else:
+            manager.notify_item_completed(self._order_model, self._contract, self._raw_order)
+
+    def test_batch_passes_each_product_and_contract_to_dispatcher(self):
+        manager, first = self._prepare_activation_completion()
+        second_contract = MagicMock(item_id="item_2", customer_bill={"id": "cb_456"})
+        second = deepcopy(first)
+        second["id"] = "product_456"
+        second["relatedParty"] = [{"id": "other-seller", "role": "Seller"}]
+        second["realizingService"] = [{"id": "service-2"}]
+        self._raw_order["productOrderItem"].append(
+            {"id": "item_2", "productOffering": {"href": "offering_2"}, "state": "inProgress"}
+        )
+        self._order_model.get_contracts.return_value = [self._contract, second_contract]
+        manager.complete_inventory_product.side_effect = [first, second]
+
+        self._run_activation_completion(manager, "batch")
+
+        self.assertEqual(
+            [
+                call(first, self._raw_order, self._contract),
+                call(second, self._raw_order, second_contract),
+            ],
+            self.on_product_activation.call_args_list,
+        )
+        self.assertEqual(2, self._order_model.mark_contract_as_processed.call_count)
+
+    @parameterized.expand([("batch",), ("item",)])
+    def test_real_dispatcher_continues_after_plugin_failure(self, path):
+        from wstore.asset_manager.resource_plugins import decorators
+
+        manager, product = self._prepare_activation_completion()
+        product["realizingService"].append({"id": "service-2"})
+        services = {
+            f"service-{n}": {
+                "id": f"service-{n}",
+                "serviceCharacteristic": [{"name": "Service Type", "value": f"category-{n}"}],
+            }
+            for n in (1, 2)
+        }
+        inventory = MagicMock()
+        inventory.get_service.side_effect = services.__getitem__
+        plugins = {"category-1": MagicMock(), "category-2": MagicMock()}
+        provider, buyer = object(), object()
+        organizations = {"seller-party": provider, "buyer-party": buyer}
+        plugins["category-1"].on_service_activation.side_effect = RuntimeError("provisioning failed")
+        with patch.object(
+            ordering_management, "on_product_activation", decorators.on_product_activation
+        ), patch.object(decorators, "InventoryClient", return_value=inventory), patch.object(
+            decorators, "_get_plugin_model", side_effect=lambda category_id: category_id
+        ), patch.object(
+            decorators, "_load_plugin_model", side_effect=plugins.get
+        ), patch.object(
+            decorators.Organization.objects, "get", side_effect=lambda actor_id: organizations[actor_id]
+        ), self.assertLogs(
+            "wstore.default_logger", level="ERROR"
+        ):
+            self._run_activation_completion(manager, path)
+
+        for n in (1, 2):
+            plugins[f"category-{n}"].on_service_activation.assert_called_once_with(
+                provider,
+                buyer,
+                services[f"service-{n}"],
+                product,
+                self._raw_order,
+                self._contract,
+            )
+        self._order_model.mark_contract_as_processed.assert_called_once_with(self._contract.item_id)
+        self._ordering_client_inst.update_items_state.assert_called_once()
