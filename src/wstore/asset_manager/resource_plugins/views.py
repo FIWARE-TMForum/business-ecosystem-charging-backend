@@ -42,7 +42,7 @@ def get_plugin_info(plugin):
         "version": plugin.version,
         "categoryId": plugin.category_id,
         "mediaTypes": plugin.media_types,
-        "formats": plugin.formats,
+        "requiresFile": plugin.requires_file,
         "overrides": plugin.overrides,
         "formOrder": plugin.form_order,
     }

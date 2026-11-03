@@ -422,7 +422,7 @@ class UploadAssetTestCase(TestCase):
         asset_manager.ResourcePlugin = MagicMock()
         asset_manager.Resource.objects.filter.return_value = []
         asset_manager.ResourcePlugin.objects.filter.return_value = [
-            MagicMock(media_types=[], name="service", formats=["URL"], form=form)
+            MagicMock(media_types=[], name="service", requires_file=True, form=form)
         ]
 
     BASIC_META = {"field1": "value", "field2": True, "field3": "value2"}
@@ -454,36 +454,15 @@ class UploadAssetTestCase(TestCase):
             ),
         ]
     )
-    def test_upload_asset_url_type(self, name, meta, exp_meta, form):
-        content = deepcopy(self.LINK_CONTENT)
-
-        if meta is not None:
-            content["metadata"] = meta
-
+    def test_validate_uploaded_file_metadata(self, name, meta, exp_meta, form):
+        metadata = deepcopy(meta or {})
         self._mock_resource_type(form)
 
         am = asset_manager.AssetManager()
-        am.rollback_logger = {"files": [], "models": []}
+        am._validate_asset_type("service", "application/json", "FILE", metadata)
 
-        am.upload_asset(self._user, content)
-
-        self.assertEquals({"files": [], "models": [self.res_mock]}, am.rollback_logger)
-
-        # Check calls
+        self.assertEqual(exp_meta, metadata)
         asset_manager.ResourcePlugin.objects.filter.assert_called_once_with(name="service")
-
-        # Check resource creation
-        asset_manager.Resource.objects.create.assert_called_once_with(
-            provider=self._user.userprofile.current_organization,
-            version="",
-            download_link=self.LINK,
-            resource_path="",
-            content_type="application/json",
-            resource_type="service",
-            state="",
-            is_public=False,
-            meta_info=exp_meta,
-        )
 
     def _existing_asset(self):
         asset_manager.Resource.objects.filter.return_value = [MagicMock(product_id="1")]
@@ -496,7 +475,7 @@ class UploadAssetTestCase(TestCase):
             MagicMock(
                 media_types=["text"],
                 name="service",
-                formats=["URL"],
+                requires_file=True,
             )
         ]
 
@@ -505,7 +484,7 @@ class UploadAssetTestCase(TestCase):
             MagicMock(
                 media_types=[],
                 name="service",
-                formats=["FILE"],
+                requires_file=True,
             )
         ]
 
@@ -627,12 +606,22 @@ class UploadAssetTestCase(TestCase):
 
         error = None
         try:
-            am.upload_asset(self._user, content)
+            if meta is not None and content.get("resourceType"):
+                am._validate_asset_type("service", "application/json", "FILE", content["metadata"])
+            else:
+                am.upload_asset(self._user, content)
         except Exception as e:
             error = e
 
         self.assertTrue(isinstance(error, err_type))
         self.assertEquals(err_msg, str(error))
+
+    def test_plugin_without_managed_files_rejects_typed_file_upload(self):
+        self._mock_resource_type({})
+        asset_manager.ResourcePlugin.objects.filter.return_value[0].requires_file = False
+
+        with self.assertRaisesRegex(ValueError, "not valid for the given asset type"):
+            asset_manager.AssetManager()._validate_asset_type("service", "application/json", "FILE", {})
 
     def _mock_timer(self):
         timer = MagicMock()

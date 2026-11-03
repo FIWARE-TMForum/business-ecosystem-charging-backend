@@ -85,7 +85,7 @@ class ResourcePlugin(models.Model):
     form_order = models.JSONField(default=[])  # String List
     module = models.CharField(max_length=200)
     media_types = models.JSONField(default=[])  # String List
-    formats = models.JSONField(default=[])  # String List
+    requires_file = models.BooleanField()
     overrides = models.JSONField(default=[])  # String List
     options = models.JSONField(default={})  # Dict
     form = models.JSONField(default={})  # Dict

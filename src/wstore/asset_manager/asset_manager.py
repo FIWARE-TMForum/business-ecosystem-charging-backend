@@ -198,7 +198,7 @@ class AssetManager:
             raise ValueError(f"The content type {content_type} is not valid for the specified asset type")
 
         # Validate providing method
-        if provided_as not in asset_type.formats:
+        if not asset_type.requires_file or provided_as != "FILE":
             logger.error("Invalid format for given asset type")
             raise ValueError(
                 f"The format used for providing the digital asset ({provided_as}) "

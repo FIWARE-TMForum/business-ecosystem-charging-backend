@@ -231,7 +231,7 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(plugin_model.plugin_id, expected["name"].lower().replace(" ", "-"))
             self.assertEquals(plugin_model.author, expected["author"])
             self.assertEquals(plugin_model.version, expected["version"])
-            self.assertEquals(plugin_model.formats, expected["formats"])
+            self.assertEquals(plugin_model.requires_file, expected["requires_file"])
 
             plugin_dir_name = f"{plugin_model.plugin_id}-{plugin_model.version.replace('.', '-')}"
             self.assertEquals(
@@ -461,7 +461,7 @@ class PluginValidatorTestCase(TestCase):
             ("missing_name", MISSING_NAME, "Missing required field: name"),
             ("invalid_name", INVALID_NAME, "Invalid name format: invalid character"),
             ("missing_author", MISSING_AUTHOR, "Missing required field: author"),
-            ("missing_formats", MISSING_FORMATS, "Missing required field: formats"),
+            ("missing_requires_file", MISSING_REQUIRES_FILE, "Missing required field: requires_file"),
             ("missing_module", MISSING_MODULE, "Missing required field: module"),
             ("missing_version", MISSING_VERSION, "Missing required field: version"),
             (
@@ -475,19 +475,19 @@ class PluginValidatorTestCase(TestCase):
                 "Field `author` should be str but found int.",
             ),
             (
-                "invalid_formats_type",
-                INVALID_FORMAT_TYPE,
-                "Field `formats` should be list but found str.",
+                "invalid_requires_file_type",
+                INVALID_REQUIRES_FILE_TYPE,
+                "Field `requires_file` should be bool but found str.",
             ),
             (
-                "invalid_format",
-                INVALID_FORMAT,
-                "Format must contain at least one format of: ['FILE', 'URL']",
+                "invalid_requires_file",
+                INVALID_REQUIRES_FILE,
+                "Field `requires_file` should be bool but found int.",
             ),
             (
                 "invalid_media_type",
                 INVALID_MEDIA_TYPE,
-                "Plugin `media_types` must be a list",
+                "Plugin `media_types` must be a list of non-empty strings",
             ),
             (
                 "invalid_module_type",
@@ -1026,11 +1026,11 @@ class PackageManagementTests(SimpleTestCase):
             category_id="category-1",
             version_history=[],
             module="previous.Plugin",
-            formats=["URL"],
+            requires_file=False,
         )
         self.lookup = patch.object(ResourcePlugin.objects, "get", return_value=self.model).start()
 
-    def package(self, version):
+    def package(self, version, requires_file=False):
         path = os.path.join(self.directory.name, "package.zip")
         with ZipFile(path, "w") as archive:
             archive.writestr(
@@ -1041,7 +1041,7 @@ class PackageManagementTests(SimpleTestCase):
                         "version": version,
                         "author": "author",
                         "module": "test.Plugin",
-                        "formats": ["URL"],
+                        "requires_file": requires_file,
                     }
                 ),
             )
@@ -1056,10 +1056,12 @@ class PackageManagementTests(SimpleTestCase):
         model = update.call_args.args[0]
         self.assertEqual("category-1", model.category_id)
         self.assertEqual("test", model.plugin_id)
+        self.assertIs(False, model.requires_file)
         self.catalog.create_category.assert_called_once_with("test", "1.0")
 
     def test_upgrade_keeps_category_identity(self):
-        self.loader.install_plugin(self.package("2.0"))
+        self.loader.install_plugin(self.package("2.0", requires_file=True))
+        self.assertIs(True, self.model.requires_file)
         self.assertEqual("category-1", self.model.category_id)
         self.assertEqual(["1.0"], self.model.version_history)
         self.catalog.create_category.assert_not_called()
@@ -1158,7 +1160,7 @@ class PackageManagementTests(SimpleTestCase):
         os.mkdir(path)
         with open(os.path.join(path, "package.json"), "w") as manifest:
             json.dump(
-                {"name": "test", "version": "1.0", "author": "author", "module": "test.Plugin", "formats": ["URL"]},
+                {"name": "test", "version": "1.0", "author": "author", "module": "test.Plugin", "requires_file": False},
                 manifest,
             )
         os.mkdir(os.path.join(self.directory.name, "test-2-0"))
@@ -1166,3 +1168,46 @@ class PackageManagementTests(SimpleTestCase):
         self.assertEqual("1.0", self.model.version)
         self.assertEqual("category-1", self.model.category_id)
         self.catalog.update_category.assert_called_once_with("category-1", "test", "1.0")
+
+
+class FilePluginContractTests(SimpleTestCase):
+    def setUp(self):
+        self.info = {
+            "name": "test",
+            "version": "1.0",
+            "author": "author",
+            "module": "test.Plugin",
+            "requires_file": False,
+        }
+        self.validator = PluginValidator()
+
+    def test_requires_file_is_an_explicit_boolean_including_false(self):
+        for value in (True, False):
+            self.info["requires_file"] = value
+            self.assertEqual([], self.validator.validate_plugin_info(self.info))
+
+        for value in (0, 1, "true", None, []):
+            self.info["requires_file"] = value
+            self.assertTrue(self.validator.validate_plugin_info(self.info))
+
+    def test_file_characteristic_name_is_reserved_case_insensitively(self):
+        for name in ("File", "file", "FILE"):
+            self.info["form"] = {name: {"type": "text"}}
+            self.assertTrue(self.validator.validate_plugin_info(self.info))
+
+    def test_url_is_allowed_as_a_plugin_defined_text_field(self):
+        self.info["form"] = {"URL": {"type": "text", "mandatory": True}}
+        self.assertEqual([], self.validator.validate_plugin_info(self.info))
+
+    def test_supported_media_types_must_be_strings(self):
+        for value in ([123], [None], [""], [" "]):
+            self.info["media_types"] = value
+            self.assertTrue(self.validator.validate_plugin_info(self.info))
+
+    def test_asset_type_api_exposes_requires_file_boolean(self):
+        from wstore.asset_manager.resource_plugins.views import get_plugin_info
+
+        model = ResourcePlugin(plugin_id="test", name="test", requires_file=False)
+        info = get_plugin_info(model)
+        self.assertIs(False, info["requiresFile"])
+        self.assertNotIn("formats", info)
