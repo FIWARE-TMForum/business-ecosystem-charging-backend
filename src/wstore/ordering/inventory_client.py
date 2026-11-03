@@ -296,6 +296,10 @@ class InventoryClient:
         parties = [normalize_party_ref(party) for party in rel_parties]
 
         resource = {
+            "resourceSpecification": {
+                "id": str(resource_id),
+                "href": resource_spec.get("href") or str(resource_id),
+            },
             "resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
             "relatedParty": parties,
             "resourceStatus": "reserved",
@@ -304,6 +308,7 @@ class InventoryClient:
 
         if "name" in resource_spec:
             resource["name"] = resource_spec["name"]
+            resource["resourceSpecification"]["name"] = resource_spec["name"]
 
         if "description" in resource_spec:
             resource["description"] = resource_spec["description"]
@@ -323,6 +328,10 @@ class InventoryClient:
         parties = [normalize_party_ref(party) for party in rel_parties]
 
         service = {
+            "serviceSpecification": {
+                "id": str(service_id),
+                "href": service_spec.get("href") or str(service_id),
+            },
             "serviceCharacteristic": [self.build_inventory_char(char, "characteristicValueSpecification") for char in service_spec["specCharacteristic"]],
             "relatedParty": parties,
             "state": "reserved",
@@ -330,6 +339,7 @@ class InventoryClient:
         }
         if "name" in service_spec:
             service["name"] = service_spec["name"]
+            service["serviceSpecification"]["name"] = service_spec["name"]
 
         if "description" in service_spec:
             service["description"] = service_spec["description"]
