@@ -20,7 +20,12 @@
 
 from wstore.asset_manager.errors import ResourceError
 from wstore.asset_manager.specification_validator import SpecificationValidator
-from wstore.asset_manager.resource_plugins.decorators import on_resource_spec_validation
+from wstore.asset_manager.resource_plugins.decorators import (
+    on_pre_resource_spec_creation,
+    on_pre_resource_spec_update,
+    on_post_resource_spec_creation,
+    on_post_resource_spec_update,
+)
 from wstore.store_commons.resource_catalog import ResourceCatalog, ResourceCatalogError
 
 
@@ -36,10 +41,18 @@ class ResourceValidator(SpecificationValidator):
     def __init__(self):
         super().__init__(ResourceCatalog())
 
-    @on_resource_spec_validation
+    def post_create(self, provider, resource_spec):
+        self._prepare_post_action(resource_spec, "created")
+        on_post_resource_spec_creation(provider, resource_spec)
+
+    def post_update(self, provider, resource_spec):
+        self._prepare_post_action(resource_spec, "updated")
+        on_post_resource_spec_update(provider, resource_spec)
+
+    @on_pre_resource_spec_creation
     def _validate_specification(self, provider, resource_spec, plugin_model):
         return super()._validate_specification(provider, resource_spec, plugin_model)
 
-    @on_resource_spec_validation
+    @on_pre_resource_spec_update
     def _validate_specification_update(self, provider, resource_spec, plugin_model):
         return super()._validate_specification_update(provider, resource_spec, plugin_model)

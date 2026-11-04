@@ -166,12 +166,20 @@ class Plugin:
 class ServicePlugin(Plugin):
     """Service specification and inventory lifecycle interface."""
 
-    def on_pre_service_spec_validation(self, provider, service_spec):
-        """Validate a proposed service specification before backend validation."""
+    def on_pre_service_spec_creation(self, provider, service_spec):
+        """Validate a proposed service specification before the TMForum write."""
         pass
 
-    def on_post_service_spec_validation(self, provider, service_spec):
-        """Validate after backend checks; catalog creation is not implied."""
+    def on_post_service_spec_creation(self, provider, service_spec):
+        """Handle the created TMForum specification; failures do not undo creation."""
+        pass
+
+    def on_pre_service_spec_update(self, provider, service_spec):
+        """Validate an ordinary specification update before the TMForum write."""
+        pass
+
+    def on_post_service_spec_update(self, provider, service_spec):
+        """Handle the updated TMForum specification; failures do not undo the update."""
         pass
 
     def on_pre_service_spec_upgrade(self, provider, service_spec):
@@ -230,12 +238,20 @@ class ServicePlugin(Plugin):
 class ResourcePlugin(Plugin):
     """Resource specification and inventory lifecycle interface."""
 
-    def on_pre_resource_spec_validation(self, provider, resource_spec):
-        """Validate a proposed resource specification before backend validation."""
+    def on_pre_resource_spec_creation(self, provider, resource_spec):
+        """Validate a proposed resource specification before the TMForum write."""
         pass
 
-    def on_post_resource_spec_validation(self, provider, resource_spec):
-        """Validate after backend checks; catalog creation is not implied."""
+    def on_post_resource_spec_creation(self, provider, resource_spec):
+        """Handle the created TMForum specification; failures do not undo creation."""
+        pass
+
+    def on_pre_resource_spec_update(self, provider, resource_spec):
+        """Validate an ordinary specification update before the TMForum write."""
+        pass
+
+    def on_post_resource_spec_update(self, provider, resource_spec):
+        """Handle the updated TMForum specification; failures do not undo the update."""
         pass
 
     def on_pre_resource_spec_upgrade(self, provider, resource_spec):

@@ -57,16 +57,15 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
     def validate(self, action="create", spec=None):
         self.validator.validate(action, self.provider, self.spec if spec is None else spec)
 
-    def test_resource_schema_resolves_typed_plugin_and_runs_pre_post_before_write(self):
+    def test_resource_schema_resolves_typed_plugin_and_runs_pre_creation_before_write(self):
         original = deepcopy(self.spec)
         self.validate()
         self.registry.assert_called_once_with(category_id="resource-category", type="resource")
         self.assertEqual(
-            ["on_pre_resource_spec_validation", "on_post_resource_spec_validation"],
+            ["on_pre_resource_spec_creation"],
             [call[0] for call in self.plugin.method_calls],
         )
-        self.plugin.on_pre_resource_spec_validation.assert_called_once_with(self.provider, self.spec)
-        self.plugin.on_post_resource_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_resource_spec_creation.assert_called_once_with(self.provider, self.spec)
         self.file_lookup.assert_not_called()
         self.validator._catalog.get_specification.assert_not_called()
         self.assertEqual(original, self.spec)
@@ -129,7 +128,7 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
     def test_characteristic_names_are_case_insensitive(self):
         self.spec["resourceSpecCharacteristic"][0]["name"] = " RESOURCE TYPE "
         self.validate()
-        self.plugin.on_post_resource_spec_validation.assert_called_once()
+        self.plugin.on_pre_resource_spec_creation.assert_called_once()
 
     def test_required_upload_uses_stored_metadata_without_attaching_or_writing(self):
         self.model.requires_file = True
@@ -139,19 +138,19 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
         self.validate()
         self.file_lookup.assert_called_once()
         self.assertEqual(before, self.spec)
-        self.plugin.on_post_resource_spec_validation.assert_called_once()
+        self.plugin.on_pre_resource_spec_creation.assert_called_once()
 
     @parameterized.expand(
         [("missing", None), ("invalid", "invalid"), ("object", {"id": "507f1f77bcf86cd799439011"})]
     )
-    def test_invalid_managed_file_blocks_post_validation(self, name, value):
+    def test_invalid_managed_file_does_not_invoke_post_creation(self, name, value):
         self.model.requires_file = True
         if value is not None:
             self.spec["resourceSpecCharacteristic"].append(characteristic("File", value))
         with self.assertRaises(ResourceError):
             self.validate()
-        self.plugin.on_pre_resource_spec_validation.assert_called_once()
-        self.plugin.on_post_resource_spec_validation.assert_not_called()
+        self.plugin.on_pre_resource_spec_creation.assert_called_once()
+        self.plugin.on_post_resource_spec_creation.assert_not_called()
 
     def test_upload_owner_must_be_provider(self):
         self.model.requires_file = True
@@ -175,7 +174,7 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
                 self.upload.resource_path, self.upload.content_type = path, media_type
                 with self.assertRaises(ResourceError):
                     self.validate()
-        self.plugin.on_post_resource_spec_validation.assert_not_called()
+        self.plugin.on_post_resource_spec_creation.assert_not_called()
 
     def test_empty_media_type_list_does_not_restrict_upload(self):
         self.model.requires_file = True
@@ -217,7 +216,7 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
         proposed = {**self.spec, "description": "updated"}
         self.validate("update", proposed)
         self.validator._catalog.get_specification.assert_called_once_with("resource-spec-1")
-        self.plugin.on_post_resource_spec_validation.assert_called_once_with(self.provider, proposed)
+        self.plugin.on_pre_resource_spec_update.assert_called_once_with(self.provider, proposed)
 
     def test_update_rejects_version_changes_and_invalid_catalog_identity(self):
         with self.assertRaises(ResourceError):
@@ -227,7 +226,7 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
             self.validate("update")
 
     @parameterized.expand(
-        [("pre", "on_pre_resource_spec_validation"), ("post", "on_post_resource_spec_validation")]
+        [("pre", "on_pre_resource_spec_creation")]
     )
     def test_plugin_rejections_propagate_before_catalog_write(self, name, handler):
         getattr(self.plugin, handler).side_effect = PluginError("rejected")
@@ -252,17 +251,17 @@ class ResourceSpecificationValidationTests(SimpleTestCase):
 
     def test_endpoint_runs_real_resource_validator_and_hooks(self):
         self.assertEqual(200, self.endpoint().status_code)
-        self.plugin.on_post_resource_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_resource_spec_creation.assert_called_once_with(self.provider, self.spec)
 
     def test_endpoint_returns_plugin_rejection_and_upload_permission_failure(self):
-        self.plugin.on_pre_resource_spec_validation.side_effect = PluginError("rejected")
+        self.plugin.on_pre_resource_spec_creation.side_effect = PluginError("rejected")
         self.assertEqual(422, self.endpoint().status_code)
-        self.plugin.on_pre_resource_spec_validation.side_effect = None
+        self.plugin.on_pre_resource_spec_creation.side_effect = None
         self.model.requires_file = True
         self.spec["resourceSpecCharacteristic"].append(characteristic("File", self.file_id))
         self.upload.provider_id = "other-provider"
         self.assertEqual(403, self.endpoint().status_code)
-        self.plugin.on_post_resource_spec_validation.assert_not_called()
+        self.plugin.on_post_resource_spec_creation.assert_not_called()
 
     def test_update_reads_configured_resource_catalog(self):
         from wstore.store_commons.resource_catalog import ResourceCatalog

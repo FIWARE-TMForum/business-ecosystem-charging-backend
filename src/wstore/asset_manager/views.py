@@ -306,7 +306,7 @@ class ValidateServiceCollection(Resource):
     @supported_request_mime_types(("application/json",))
     @authentication_required
     def create(self, request):
-        """Validate proposed service specifications before catalog writes."""
+        """Validate proposed service specifications or notify successful catalog writes."""
         return _validate_catalog_element(request, "service", ServiceValidator())
 
 
@@ -314,5 +314,5 @@ class ValidateResourceCollection(Resource):
     @supported_request_mime_types(("application/json",))
     @authentication_required
     def create(self, request):
-        """Validate proposed resource specifications before catalog writes."""
+        """Validate proposed resource specifications or notify successful catalog writes."""
         return _validate_catalog_element(request, "resource", ResourceValidator())

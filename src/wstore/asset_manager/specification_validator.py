@@ -168,6 +168,13 @@ class SpecificationValidator(CatalogValidator):
         self._prepare(catalog_element)
         self._validate_specification(provider, catalog_element)
 
+    def _prepare_post_action(self, catalog_element, operation):
+        """Require a persisted specification before notifying its plugin."""
+        if not isinstance(catalog_element, dict):
+            raise self.error_type("The " + self.kind + " specification must be an object")
+        if not isinstance(catalog_element.get("id"), str) or not catalog_element["id"].strip():
+            raise self.error_type("A " + operation + " " + self.kind + " specification id is required")
+
     def _persisted(self, specification):
         if (
             not isinstance(specification, dict)

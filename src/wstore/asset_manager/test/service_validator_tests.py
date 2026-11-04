@@ -96,35 +96,34 @@ class ServiceLifecycleTests(SimpleTestCase):
         self.addCleanup(load_patch.stop)
         self.validator._catalog.get_specification.return_value = deepcopy(self.spec)
 
-    def test_creation_validation_runs_pre_and_post_plugin_signals(self):
+    def test_creation_validation_runs_only_pre_creation_hook(self):
         proposed = deepcopy(self.spec)
         proposed.pop("id")
         self.validator.validate("create", self.provider, proposed)
         self.assertEqual(
-            ["on_pre_service_spec_validation", "on_post_service_spec_validation"],
+            ["on_pre_service_spec_creation"],
             [c[0] for c in self.plugin.method_calls],
         )
         self.resolve_plugin.assert_called_once_with(category_id="plugin-category", plugin_type="service")
         self.validator._catalog.get_specification.assert_not_called()
 
-    def test_invalid_metadata_prevents_post_validation(self):
+    def test_invalid_metadata_does_not_invoke_post_creation(self):
         self.model.requires_file = True
         with self.assertRaises(ServiceError):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_pre_service_spec_validation.assert_called_once()
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_pre_service_spec_creation.assert_called_once()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_rejecting_plugin_propagates_and_stops_processing(self):
-        self.plugin.on_pre_service_spec_validation.side_effect = PluginError("rejected")
+        self.plugin.on_pre_service_spec_creation.side_effect = PluginError("rejected")
         with self.assertRaises(PluginError):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_proxy_validated_ownership_is_not_rechecked(self):
         self.spec.pop("relatedParty")
         self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_pre_service_spec_validation.assert_called_once_with(self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_service_spec_creation.assert_called_once_with(self.provider, self.spec)
 
     def test_partial_update_merges_existing_characteristics(self):
         self.validator.validate(
@@ -132,7 +131,7 @@ class ServiceLifecycleTests(SimpleTestCase):
             self.provider,
             {"id": "spec-1", "description": "changed", "specCharacteristic": self.spec["specCharacteristic"]},
         )
-        proposed = self.plugin.on_post_service_spec_validation.call_args.args[1]
+        proposed = self.plugin.on_pre_service_spec_update.call_args.args[1]
         self.assertEqual(self.spec["specCharacteristic"], proposed["specCharacteristic"])
         self.assertEqual("changed", proposed["description"])
 
@@ -143,7 +142,7 @@ class ServiceLifecycleTests(SimpleTestCase):
                 with self.assertRaises(ServiceCatalogError):
                     self.validator.validate("update", self.provider, self.spec)
 
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_update_cannot_bypass_upgrade(self):
         for changes in [{"version": "2.0"}]:
@@ -310,7 +309,7 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
         load.return_value = self.plugin
         response = self.post({"action": "create", "service": self.spec})
         self.assertEqual(200, response.status_code)
-        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_service_spec_creation.assert_called_once_with(self.provider, self.spec)
         self.assertEqual([], catalog.return_value.method_calls)
 
     @patch("wstore.asset_manager.resource_plugins.decorators._load_plugin_model")
@@ -318,7 +317,7 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
     def test_plugin_rejection_propagates_through_route(self, lookup, load):
         lookup.return_value = [self.model]
         load.return_value = self.plugin
-        self.plugin.on_post_service_spec_validation.side_effect = PluginError("rejected")
+        self.plugin.on_pre_service_spec_creation.side_effect = PluginError("rejected")
         response = self.post({"action": "create", "service": self.spec})
         self.assertEqual(422, response.status_code)
 
@@ -335,7 +334,7 @@ class ServiceEndpointIntegrationTests(SimpleTestCase):
 
         self.assertEqual(422, response.status_code)
         get.assert_called_once()
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_malformed_json_rejected(self):
         from django.urls import resolve
@@ -409,11 +408,10 @@ class ServicePluginDecoratorTests(SimpleTestCase):
 
     def test_validation_decorator_wraps_backend_operation_in_order(self):
         events = []
-        self.plugin.on_pre_service_spec_validation.side_effect = lambda *args: events.append("pre")
-        self.plugin.on_post_service_spec_validation.side_effect = lambda *args: events.append("post")
+        self.plugin.on_pre_service_spec_creation.side_effect = lambda *args: events.append("pre")
         provider, specification = object(), self.specification
 
-        @plugin_decorators.on_service_spec_validation
+        @plugin_decorators.on_pre_service_spec_creation
         def operation(validator, actual_provider, actual_specification, model):
             self.assertIs(provider, actual_provider)
             self.assertIs(specification, actual_specification)
@@ -422,23 +420,23 @@ class ServicePluginDecoratorTests(SimpleTestCase):
             return "validated"
 
         self.assertEqual("validated", operation(self.validator, provider, specification))
-        self.assertEqual(["pre", "backend", "post"], events)
+        self.assertEqual(["pre", "backend"], events)
         self.validator.parse_spec_characteristics.assert_not_called()
 
-    def test_backend_failure_does_not_invoke_post_validation(self):
-        @plugin_decorators.on_service_spec_validation
+    def test_backend_failure_does_not_invoke_post_creation(self):
+        @plugin_decorators.on_pre_service_spec_creation
         def operation(validator, provider, specification, model):
             raise ServiceError("invalid")
 
         with self.assertRaises(ServiceError):
             operation(self.validator, object(), self.specification)
-        self.plugin.on_pre_service_spec_validation.assert_called_once()
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_pre_service_spec_creation.assert_called_once()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_no_matching_plugin_returns_without_running_backend_operation(self):
         self.resolve.return_value = None
         backend = Mock(return_value="ordinary")
-        wrapped = plugin_decorators.on_service_spec_validation(backend)
+        wrapped = plugin_decorators.on_pre_service_spec_creation(backend)
         validator, provider, specification = self.validator, object(), self.specification
         self.assertIsNone(wrapped(validator, provider, specification))
         backend.assert_not_called()
@@ -476,9 +474,9 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
         load_patch.start()
         self.addCleanup(load_patch.stop)
 
-    def test_individual_form_characteristics_reach_post_validation(self):
+    def test_individual_form_characteristics_reach_pre_creation(self):
         self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_service_spec_creation.assert_called_once_with(self.provider, self.spec)
         values = parse_values(self.validator, self.spec, self.model.form)
         self.assertEqual("eu", values["region"])
         self.assertIs(False, values["enabled"])
@@ -488,7 +486,7 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
         self.spec["specCharacteristic"].pop(3)
         with self.assertRaisesRegex(ServiceError, "region"):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_unrelated_characteristic_does_not_replace_required_form_fields(self):
         self.spec["specCharacteristic"] = self.spec["specCharacteristic"][:3] + [
@@ -505,7 +503,7 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
                 spec["specCharacteristic"].append(characteristic(name, value))
                 with self.assertRaises(ServiceError):
                     self.validator.validate("create", self.provider, spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_duplicate_multivalue_and_missing_form_values_are_rejected(self):
         for extra in [
@@ -524,14 +522,14 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
         self.spec["specCharacteristic"].pop(3)
         with self.assertRaisesRegex(ServiceError, "Missing mandatory service characteristic region"):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_optional_field_default_is_ignored_by_backend(self):
         self.model.form["description"]["default"] = 123
         before = deepcopy(self.spec)
         self.validator.validate("create", self.provider, self.spec)
         self.assertEqual(before, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_called_once()
+        self.plugin.on_pre_service_spec_creation.assert_called_once()
 
     def test_partial_updates_validate_the_existing_form_characteristics(self):
         self.spec.update({"id": "spec-1", "version": "1.0"})
@@ -542,7 +540,7 @@ class ServiceFormCharacteristicTests(SimpleTestCase):
             self.provider,
             {"id": "spec-1", "description": "updated", "specCharacteristic": self.spec["specCharacteristic"]},
         )
-        validated = self.plugin.on_post_service_spec_validation.call_args.args[1]
+        validated = self.plugin.on_pre_service_spec_update.call_args.args[1]
         self.assertEqual("eu", parse_values(self.validator, validated, self.model.form)["region"])
 
 
@@ -686,7 +684,7 @@ class OrdinaryServiceEarlyReturnTests(SimpleTestCase):
             validator.validate("create", object(), specification)
             parse.assert_called_once_with(specification)
             resolve.assert_called_once_with(category_id="plugin-category", plugin_type="service")
-            plugin.on_post_service_spec_validation.assert_called_once()
+            plugin.on_pre_service_spec_creation.assert_called_once()
 
 
 class ManagedFileValidationTests(SimpleTestCase):
@@ -725,14 +723,14 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.validator.validate("create", self.provider, self.spec)
         self.lookup.assert_called_once_with(pk=ObjectId(self.file_id))
         self.assertEqual(original, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
+        self.plugin.on_pre_service_spec_creation.assert_called_once_with(self.provider, self.spec)
 
     def test_missing_file_rejected_when_required(self):
         self.spec["specCharacteristic"].pop()
         with self.assertRaisesRegex(ServiceError, "File characteristic"):
             self.validator.validate("create", self.provider, self.spec)
         self.lookup.assert_not_called()
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_non_file_plugin_needs_only_its_form_fields(self):
         self.model.requires_file = False
@@ -740,7 +738,7 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.spec["specCharacteristic"][1] = characteristic("endpoint", "plugin-defined-value")
         self.validator.validate("create", self.provider, self.spec)
         self.lookup.assert_not_called()
-        self.plugin.on_post_service_spec_validation.assert_called_once()
+        self.plugin.on_pre_service_spec_creation.assert_called_once()
 
     def test_non_file_plugin_does_not_process_file_characteristic(self):
         self.model.requires_file = False
@@ -783,7 +781,7 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.file.provider_id = "other-provider"
         with self.assertRaisesRegex(PermissionDenied, "does not belong"):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_url_only_resource_is_not_an_uploaded_file(self):
         self.file.resource_path = ""
@@ -795,7 +793,7 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.spec["specCharacteristic"].append(characteristic("Media Type", "application/json"))
         with self.assertRaisesRegex(ServiceError, "media type is not supported"):
             self.validator.validate("create", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_media_types_are_case_insensitive_and_empty_list_is_unrestricted(self):
         self.file.content_type = "APPLICATION/JSON"
@@ -811,8 +809,8 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.validator._catalog = Mock()
         self.validator._catalog.get_specification.return_value = previous
         self.validator.validate("update", self.provider, self.spec)
-        self.plugin.on_post_service_spec_validation.assert_called_once_with(self.provider, self.spec)
-        self.assertIs(self.spec, self.plugin.on_post_service_spec_validation.call_args.args[1])
+        self.plugin.on_pre_service_spec_update.assert_called_once_with(self.provider, self.spec)
+        self.assertIs(self.spec, self.plugin.on_pre_service_spec_update.call_args.args[1])
         self.file.provider_id = "other-provider"
         from django.core.exceptions import PermissionDenied
 
@@ -828,8 +826,8 @@ class ManagedFileValidationTests(SimpleTestCase):
         self.spec["specCharacteristic"][0] = characteristic("File", "ordinary-catalog-value")
         self.validator.validate("create", self.provider, self.spec)
         self.lookup.assert_not_called()
-        self.plugin.on_pre_service_spec_validation.assert_not_called()
-        self.plugin.on_post_service_spec_validation.assert_not_called()
+        self.plugin.on_pre_service_spec_creation.assert_not_called()
+        self.plugin.on_post_service_spec_creation.assert_not_called()
 
     def test_file_permissions_are_returned_as_403_by_service_endpoint(self):
         import json
