@@ -140,6 +140,21 @@ def on_product_spec_validation(provider, product_spec):
         plugin.on_product_spec_validation(provider, specification, product)
 
 
+def _on_post_specification_write(provider, specification, plugin_type, loader, operation):
+    """Dispatch a post-write callback without repeating pre-write validation."""
+    plugin = loader(specification)
+    if plugin is not None:
+        getattr(plugin, "on_post_" + plugin_type + "_spec_" + operation)(provider, specification)
+
+
+def on_post_service_spec_creation(provider, service_spec):
+    return _on_post_specification_write(provider, service_spec, "service", load_plugin_module, "creation")
+
+
+def on_post_resource_spec_creation(provider, resource_spec):
+    return _on_post_specification_write(provider, resource_spec, "resource", load_resource_plugin_module, "creation")
+
+
 def on_product_offering_validation(func):
     @wraps(func)
     def wrapper(self, provider, product_offering):
@@ -241,28 +256,46 @@ def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
 
 
-def _on_specification_validation(func, plugin_type, loader):
+def _on_pre_specification_write(func, plugin_type, loader, operation):
     @wraps(func)
     def wrapper(self, provider, specification):
         plugin = loader(specification)
         if plugin is None:
             return
 
-        getattr(plugin, "on_pre_" + plugin_type + "_spec_validation")(provider, specification)
-        result = func(self, provider, specification, plugin._model)
-        getattr(plugin, "on_post_" + plugin_type + "_spec_validation")(provider, specification)
-        return result
+        getattr(plugin, "on_pre_" + plugin_type + "_spec_" + operation)(provider, specification)
+        return func(self, provider, specification, plugin._model)
 
     return wrapper
 
 
-def on_service_spec_validation(func):
-    return _on_specification_validation(
-        func, "service", lambda specification: load_plugin_module(service_spec=specification)
+def on_pre_service_spec_creation(func):
+    return _on_pre_specification_write(
+        func, "service", lambda specification: load_plugin_module(service_spec=specification), "creation"
     )
 
 
-def on_resource_spec_validation(func):
-    return _on_specification_validation(
-        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification)
+def on_pre_resource_spec_creation(func):
+    return _on_pre_specification_write(
+        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification), "creation"
     )
+
+
+def on_pre_service_spec_update(func):
+    return _on_pre_specification_write(
+        func, "service", lambda specification: load_plugin_module(service_spec=specification), "update"
+    )
+
+
+def on_pre_resource_spec_update(func):
+    return _on_pre_specification_write(
+        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification), "update"
+    )
+
+
+def on_post_service_spec_update(provider, service_spec):
+    return _on_post_specification_write(provider, service_spec, "service", load_plugin_module, "update")
+
+
+def on_post_resource_spec_update(provider, resource_spec):
+    return _on_post_specification_write(provider, resource_spec, "resource", load_resource_plugin_module, "update")

@@ -374,7 +374,7 @@ class OfferingPluginTests(SimpleTestCase):
             events.mock_calls,
         )
         self.plugins["c1"].on_product_spec_validation.assert_not_called()
-        self.plugins["c1"].on_pre_service_spec_validation.assert_not_called()
+        self.plugins["c1"].on_pre_service_spec_creation.assert_not_called()
 
     def test_pre_failure_prevents_price_validation_and_post_hooks(self):
         self.plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
@@ -611,7 +611,7 @@ class ResourceOfferingPluginTests(SimpleTestCase):
                 *expected
             )
             self.resource_plugins[f"c{n}"].on_product_spec_validation.assert_not_called()
-            self.resource_plugins[f"c{n}"].on_pre_resource_spec_validation.assert_not_called()
+            self.resource_plugins[f"c{n}"].on_pre_resource_spec_creation.assert_not_called()
         self.lookup.assert_any_call(category_id="c1", plugin_type="service")
         self.lookup.assert_any_call(category_id="c1", plugin_type="resource")
 

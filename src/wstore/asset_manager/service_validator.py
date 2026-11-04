@@ -20,7 +20,12 @@
 
 from wstore.asset_manager.errors import ServiceError
 from wstore.asset_manager.specification_validator import SpecificationValidator
-from wstore.asset_manager.resource_plugins.decorators import on_service_spec_validation
+from wstore.asset_manager.resource_plugins.decorators import (
+    on_pre_service_spec_creation,
+    on_pre_service_spec_update,
+    on_post_service_spec_creation,
+    on_post_service_spec_update,
+)
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
 
 
@@ -36,10 +41,18 @@ class ServiceValidator(SpecificationValidator):
     def __init__(self):
         super().__init__(ServiceCatalog())
 
-    @on_service_spec_validation
+    def post_create(self, provider, service_spec):
+        self._prepare_post_action(service_spec, "created")
+        on_post_service_spec_creation(provider, service_spec)
+
+    def post_update(self, provider, service_spec):
+        self._prepare_post_action(service_spec, "updated")
+        on_post_service_spec_update(provider, service_spec)
+
+    @on_pre_service_spec_creation
     def _validate_specification(self, provider, service_spec, plugin_model):
         return super()._validate_specification(provider, service_spec, plugin_model)
 
-    @on_service_spec_validation
+    @on_pre_service_spec_update
     def _validate_specification_update(self, provider, service_spec, plugin_model):
         return super()._validate_specification_update(provider, service_spec, plugin_model)

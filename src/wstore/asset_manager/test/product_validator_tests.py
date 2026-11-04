@@ -109,8 +109,8 @@ class ValidatorTestCase(SimpleTestCase):
         )
 
         for plugin in self.plugins.values():
-            plugin.on_pre_service_spec_validation.assert_not_called()
-            plugin.on_post_service_spec_validation.assert_not_called()
+            plugin.on_pre_service_spec_creation.assert_not_called()
+            plugin.on_post_service_spec_creation.assert_not_called()
         self.catalog.get_specification.assert_has_calls([call("service-1"), call("ordinary"), call("service-2")])
 
     def test_two_services_using_same_plugin_receive_separate_calls(self):
@@ -443,8 +443,8 @@ class ResourceProductValidationTests(SimpleTestCase):
                 self.resources[f"resource-{n}"],
                 self.product,
             )
-            self.resource_plugins[f"category-{n}"].on_pre_resource_spec_validation.assert_not_called()
-            self.resource_plugins[f"category-{n}"].on_post_resource_spec_validation.assert_not_called()
+            self.resource_plugins[f"category-{n}"].on_pre_resource_spec_creation.assert_not_called()
+            self.resource_plugins[f"category-{n}"].on_post_resource_spec_creation.assert_not_called()
         self.lookup.assert_any_call(category_id="category-1", plugin_type="service")
         self.lookup.assert_any_call(category_id="category-1", plugin_type="resource")
 

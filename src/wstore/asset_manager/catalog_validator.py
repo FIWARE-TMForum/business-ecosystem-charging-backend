@@ -85,7 +85,13 @@ class CatalogValidator:
     def validate_creation(self, provider, catalog_element):
         pass
 
+    def post_create(self, provider, catalog_element):
+        pass
+
     def validate_update(self, provider, catalog_element):
+        pass
+
+    def post_update(self, provider, catalog_element):
         pass
 
     def validate_upgrade(self, provider, catalog_element):
@@ -97,14 +103,16 @@ class CatalogValidator:
     def validate(self, action, provider, catalog_element):
         validators = {
             "create": self.validate_creation,
+            "post-create": self.post_create,
             "update": self.validate_update,
+            "post-update": self.post_update,
             "upgrade": self.validate_upgrade,
             "delete": self.validate_deletion,
         }
 
         if action not in validators:
             msg = "The provided action (" + action
-            msg += ") is not valid. Allowed values are create, update, upgrade, and delete"
+            msg += ") is not valid. Allowed values are create, post-create, update, post-update, upgrade, and delete"
             raise ValueError(msg)
 
         validators[action](provider, catalog_element)
