@@ -50,7 +50,6 @@ class AssetManager:
         )
 
     def _save_resource_file(self, provider, file_, isPublic):
-        logger.debug(f"Saving resource file {file_['name']}")
         # Load file contents
         if isinstance(file_, dict):
             file_name = file_["name"]
@@ -59,6 +58,7 @@ class AssetManager:
             file_name = file_.name
             file_.seek(0)
             content = file_.read()
+        logger.debug(f"Saving resource file {file_name}")
         # Check file name
         if not is_valid_file(file_name):
             logger.debug(f"`{file_name}` is not a valid file name")
