@@ -494,9 +494,9 @@ class OrderingManager:
                 billing_client.set_customer_bill("settled", item_cb["id"])
 
             logger.info("customer bill updated")
-            self.activate_product(order["id"], new_product)
             if self._get_mode(offering_info) == "automatic":
                 on_product_activation(new_product, order, contract)
+            self.activate_product(order["id"], new_product)
             order_model.mark_contract_as_processed(contract.item_id)
             processed_items.append(orderItem)
 
@@ -567,9 +567,9 @@ class OrderingManager:
                     billing_client.set_customer_bill("settled", item_cb["id"])
 
                 logger.info("customer bill updated")
-                self.activate_product(raw_order["id"], new_product)
                 if self._get_mode(offering_info) == "automatic":
                     on_product_activation(new_product, raw_order, contract)
+                self.activate_product(raw_order["id"], new_product)
                 order_model.mark_contract_as_processed(contract.item_id)
                 processed_items.append(orderItem)
             else:

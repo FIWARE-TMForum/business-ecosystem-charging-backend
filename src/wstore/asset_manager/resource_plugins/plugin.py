@@ -223,7 +223,7 @@ class ServicePlugin(Plugin):
         pass
 
     def on_service_activation(self, provider, buyer, service, product, order, contract=None):
-        """Provision using the inventory service's instantiated characteristics."""
+        """Provision the inventory service; raise on failure to prevent product activation."""
         pass
 
     def on_service_suspension(self, provider, buyer, service, product, order, contract=None):
@@ -315,7 +315,7 @@ class ResourcePlugin(Plugin):
         pass
 
     def on_resource_activation(self, provider, buyer, resource, product, order, contract=None):
-        """Provision using the inventory resource's instantiated characteristics."""
+        """Provision the inventory resource; raise on failure to prevent product activation."""
         pass
 
     def on_resource_suspension(self, provider, buyer, resource, product, order, contract=None):
