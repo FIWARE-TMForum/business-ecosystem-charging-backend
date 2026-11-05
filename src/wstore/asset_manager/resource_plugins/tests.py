@@ -1011,7 +1011,10 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.dispatch(self.contract)
         self.assertEqual([call("service-1"), call("service-2")], self.inventory.get_service.call_args_list)
         self.assertEqual(
-            [call(category_id="category-1", plugin_type="service"), call(category_id="category-2", plugin_type="service")],
+            [
+                call(category_id="category-1", plugin_type="service"),
+                call(category_id="category-2", plugin_type="service"),
+            ],
             self._get_plugin_model.call_args_list,
         )
         for n in (1, 2):
@@ -1766,3 +1769,136 @@ class PluginCollectionTests(SimpleTestCase):
         self.assertEqual(401, response.status_code)
         self.registry.objects.all.assert_not_called()
         self.registry.objects.filter.assert_not_called()
+
+
+class SuspensionDispatchTests(SimpleTestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+
+        self.local_order = SimpleNamespace(order_id="order-1")
+        self.contract = SimpleNamespace(product_id="p1", suspended=False)
+        self.raw_order = {"id": "order-1", "productOrderItem": [{"id": "i1"}]}
+        self.provider, self.buyer = object(), object()
+        self.product = {
+            "id": "p1",
+            "relatedParty": [{"id": "seller", "role": "Seller"}, {"id": "buyer", "role": "Buyer"}],
+            "realizingService": [{"id": "s1"}],
+            "realizingResource": [{"id": "r1"}],
+        }
+        self.instances = {
+            kind: {"id": id_, kind + "Characteristic": [{"name": kind.title() + " Type", "value": "same-category"}]}
+            for kind, id_ in (("service", "s1"), ("resource", "r1"))
+        }
+        self.plugins = {"service": Mock(spec=ServicePlugin), "resource": Mock(spec=ResourcePluginHandler)}
+        for name in ("InventoryClient", "OrderingClient", "Organization", "_get_plugin_model", "_load_plugin_model"):
+            patcher = patch.object(decorators, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.inventory = self.InventoryClient.return_value
+        self.inventory.get_product.return_value = self.product
+        self.inventory.get_service.return_value = self.instances["service"]
+        self.inventory.get_resource.return_value = self.instances["resource"]
+        self.OrderingClient.return_value.get_order.return_value = self.raw_order
+        self.Organization.objects.get.side_effect = (
+            lambda actor_id: self.provider if actor_id == "seller" else self.buyer
+        )
+        self._get_plugin_model.side_effect = lambda category_id, plugin_type: plugin_type
+        self._load_plugin_model.side_effect = self.plugins.__getitem__
+        self.catalog_reads = []
+        for catalog in (ServiceCatalog, ResourceCatalog):
+            patcher = patch.object(catalog, "get_specification")
+            self.catalog_reads.append(patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def dispatch(self):
+        decorators.on_product_suspended(self.local_order, self.contract)
+
+    def test_mixed_instances_receive_buyer_provider_inventory_and_raw_order(self):
+        self.dispatch()
+        self.inventory.get_product.assert_called_once_with("p1")
+        self.OrderingClient.return_value.get_order.assert_called_once_with("order-1")
+        for kind, plugin in self.plugins.items():
+            getattr(plugin, "on_" + kind + "_suspension").assert_called_once_with(
+                self.provider, self.buyer, self.instances[kind], self.product, self.raw_order, self.contract
+            )
+            self.assertEqual(["on_" + kind + "_suspension"], [invocation[0] for invocation in plugin.method_calls])
+            self._get_plugin_model.assert_any_call(category_id="same-category", plugin_type=kind)
+        for read in self.catalog_reads:
+            read.assert_not_called()
+        self.inventory.patch_product.assert_not_called()
+        self.assertFalse(self.contract.suspended)
+
+    @parameterized.expand([("service",), ("resource",)])
+    def test_each_domain_can_be_suspended_alone(self, kind):
+        other = "resource" if kind == "service" else "service"
+        del self.product["realizing" + other.title()]
+        self.dispatch()
+        getattr(self.plugins[kind], "on_" + kind + "_suspension").assert_called_once()
+        self.assertEqual([], self.plugins[other].method_calls)
+
+    def test_ordinary_and_uninstalled_instances_skip_handlers(self):
+        self.instances["service"]["serviceCharacteristic"] = [{"name": "File", "value": "ordinary-file"}]
+        self._get_plugin_model.side_effect = None
+        self._get_plugin_model.return_value = None
+        self.dispatch()
+        self._load_plugin_model.assert_not_called()
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    def test_failure_is_logged_and_remaining_instances_are_notified(self):
+        self.plugins["service"].on_service_suspension.side_effect = PluginError("external failure")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.plugins["resource"].on_resource_suspension.assert_called_once()
+        self.assertFalse(self.contract.suspended)
+        self.inventory.suspend_product.assert_not_called()
+
+    def test_bad_instance_reference_does_not_prevent_other_domain_notification(self):
+        self.inventory.get_service.return_value = {"id": "wrong"}
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.plugins["service"].on_service_suspension.assert_not_called()
+        self.plugins["resource"].on_resource_suspension.assert_called_once()
+
+    def test_malformed_collection_does_not_prevent_other_domain_notification(self):
+        self.product["realizingService"] = None
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        self.plugins["resource"].on_resource_suspension.assert_called_once()
+
+    def test_dispatch_does_not_add_a_suspended_state_guard(self):
+        self.contract.suspended = True
+        self.dispatch()
+        self.plugins["service"].on_service_suspension.assert_called_once()
+        self.plugins["resource"].on_resource_suspension.assert_called_once()
+
+    def test_invalid_product_or_order_is_logged_without_changing_callers(self):
+        for product, raw_order in (
+            ({"id": "wrong"}, self.raw_order),
+            (self.product, None),
+            (self.product, {"id": "wrong"}),
+        ):
+            with self.subTest(product=product, order=raw_order):
+                self.inventory.get_product.return_value = product
+                self.OrderingClient.return_value.get_order.return_value = raw_order
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.dispatch()
+        self._load_plugin_model.assert_not_called()
+
+    def test_missing_provider_is_logged_without_invoking_handlers(self):
+        self.product["relatedParty"] = [{"id": "buyer", "role": "Buyer"}]
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.dispatch()
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    def test_inherited_suspension_hooks_are_optional_and_match_activation_arguments(self):
+        self._load_plugin_model.side_effect = lambda kind: (
+            ServicePlugin if kind == "service" else ResourcePluginHandler
+        )(object())
+        self.dispatch()
+
+    def test_usage_remains_disconnected(self):
+        decorators.on_usage_refreshed(self.local_order, self.contract)
+        self.InventoryClient.assert_not_called()
+        self.OrderingClient.assert_not_called()

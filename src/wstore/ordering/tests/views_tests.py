@@ -23,7 +23,7 @@
 import json
 from datetime import datetime
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from mock import MagicMock, call
 from parameterized import parameterized
 
@@ -396,3 +396,32 @@ class RenovationCollectionTestCase(TestCase):
                 views.Order.objects.get(),
                 views.Order.objects.get().get_product_contract(),
             )
+
+
+class DeleteOrderSuspensionIntegrationTests(SimpleTestCase):
+    def test_delete_order_terminates_without_notifying_suspension(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from wstore.ordering import ordering_management
+        manager = ordering_management.OrderingManager()
+        order = Mock()
+        contract = SimpleNamespace(product_id="p1", suspended=False)
+        manager._get_existing_contract = Mock(return_value=(order, contract))
+        with patch.object(ordering_management, "InventoryClient") as inventory, patch.object(
+            ordering_management, "on_product_suspended", create=True
+        ) as suspension:
+            manager._process_delete_items([{"product": {"id": "p1"}}])
+        suspension.assert_not_called()
+        inventory.return_value.terminate_product.assert_called_once_with("p1")
+        order.claim_contract_for_termination.assert_called_once_with("p1")
+        order.save.assert_not_called()
+        self.assertFalse(contract.suspended)
+
+    def test_removed_unsubscribe_endpoint_is_not_routable(self):
+        from django.urls import Resolver404, resolve
+        for path in (
+            "/charging/api/orderManagement/products/unsubscribeJob",
+            "/charging/api/orderManagement/products/unsubscribeJob/",
+        ):
+            with self.subTest(path=path), self.assertRaises(Resolver404):
+                resolve(path)

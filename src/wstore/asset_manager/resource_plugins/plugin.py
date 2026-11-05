@@ -226,7 +226,7 @@ class ServicePlugin(Plugin):
         """Provision using the inventory service's instantiated characteristics."""
         pass
 
-    def on_service_suspension(self, provider, service_spec, service, product, order, contract=None):
+    def on_service_suspension(self, provider, buyer, service, product, order, contract=None):
         """Temporarily withdraw access to an inventory service."""
         pass
 
@@ -318,7 +318,7 @@ class ResourcePlugin(Plugin):
         """Provision using the inventory resource's instantiated characteristics."""
         pass
 
-    def on_resource_suspension(self, provider, resource_spec, resource, product, order, contract=None):
+    def on_resource_suspension(self, provider, buyer, resource, product, order, contract=None):
         """Temporarily withdraw access to an inventory resource."""
         pass
 

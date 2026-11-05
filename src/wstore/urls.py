@@ -128,10 +128,6 @@ urlpatterns = [
         ordering_views.RenovationCollection(permitted_methods=("POST",)),
     ),
     url(
-        r"^charging/api/orderManagement/products/unsubscribeJob/?$",
-        ordering_views.UnsubscriptionCollection(permitted_methods=("POST",)),
-    ),
-    url(
         r"^charging/api/orderManagement/accounting/?$",
         accounting_views.ServiceRecordCollection(permitted_methods=("POST",)),
     ),
