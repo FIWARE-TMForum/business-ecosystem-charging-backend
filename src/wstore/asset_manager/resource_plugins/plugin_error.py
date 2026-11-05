@@ -25,3 +25,23 @@ class PluginError(Exception):
 
     def __str__(self):
         return "Plugin Error: " + self.value
+
+
+class PluginConflictError(PluginError):
+    pass
+
+
+class PluginSizeError(PluginError):
+    pass
+
+
+class PluginCatalogError(PluginError):
+    pass
+
+
+class PluginUnavailableError(PluginError):
+    pass
+
+
+class PluginUsageError(PluginError):
+    pass

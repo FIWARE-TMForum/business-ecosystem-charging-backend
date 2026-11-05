@@ -50,6 +50,9 @@ BASEDIR = path.dirname(path.abspath(__file__))
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800
 
+PLUGIN_EXPANDED_MAX_BYTES = int(environ.get("BAE_CB_PLUGIN_EXPANDED_MAX_BYTES", 100 * 1024 * 1024))
+PLUGIN_ARCHIVE_MAX_ENTRIES = int(environ.get("BAE_CB_PLUGIN_ARCHIVE_MAX_ENTRIES", 1000))
+
 STORE_NAME = "WStore"
 AUTH_PROFILE_MODULE = "wstore.models.UserProfile"
 

@@ -26,22 +26,10 @@ class ServiceCatalogTests(SimpleTestCase):
         request.return_value.raise_for_status.assert_called_once_with()
 
     @patch("wstore.store_commons.service_catalog.requests.request")
-    def test_candidate_reference_check(self, request):
-        client = ServiceCatalog()
-        request.return_value.json.return_value = [{"id": "candidate"}]
-        self.assertTrue(client.category_in_use("category-1"))
-        self.assertEqual({"category.id": "category-1", "limit": 1}, request.call_args.kwargs["params"])
-        request.return_value.json.return_value = []
-        self.assertFalse(client.category_in_use("category-1"))
-        request.return_value.json.return_value = {"error": "invalid"}
-        with self.assertRaises(ServiceCatalogError):
-            client.category_in_use("category-1")
-
-    @patch("wstore.store_commons.service_catalog.requests.request")
-    def test_http_failure_is_not_treated_as_unused(self, request):
+    def test_category_http_failure_propagates(self, request):
         request.return_value.raise_for_status.side_effect = HTTPError("offline")
         with self.assertRaises(HTTPError):
-            ServiceCatalog().category_in_use("category-1")
+            ServiceCatalog().delete_category("category-1")
 
     @patch("wstore.store_commons.service_catalog.requests.request")
     def test_invalid_category_response_raises_catalog_error(self, request):
@@ -185,15 +173,6 @@ class ResourceCatalogTests(SimpleTestCase):
             ("PATCH", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCategory/category%3A1"),
             request.call_args.args,
         )
-        request.return_value.json.return_value = []
-        self.assertFalse(client.category_in_use("category-1"))
-        self.assertEqual(
-            ("GET", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCandidate"),
-            request.call_args.args,
-        )
-        self.assertEqual({"category.id": "category-1", "limit": 1}, request.call_args.kwargs["params"])
-        request.return_value.json.return_value = [{"id": "candidate"}]
-        self.assertTrue(client.category_in_use("category-1"))
         client.delete_category("category-1")
         self.assertEqual(
             ("DELETE", "https://resources.example/tmf-api/resourceCatalog/v4/resourceCategory/category-1"),
@@ -209,9 +188,6 @@ class ResourceCatalogTests(SimpleTestCase):
             request.return_value.json.return_value = document
             with self.assertRaises(ResourceCatalogError):
                 ResourceCatalog().create_category("test", "1.0")
-        request.return_value.json.return_value = {}
-        with self.assertRaises(ResourceCatalogError):
-            ResourceCatalog().category_in_use("category-1")
         request.return_value.raise_for_status.side_effect = HTTPError("offline")
         with self.assertRaises(HTTPError):
-            ResourceCatalog().category_in_use("category-1")
+            ResourceCatalog().delete_category("category-1")

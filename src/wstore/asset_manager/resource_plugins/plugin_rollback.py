@@ -19,11 +19,31 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import fcntl
+import os
 from functools import wraps
 from logging import getLogger
 from shutil import rmtree
 
+from wstore.asset_manager.resource_plugins.plugin_error import PluginConflictError
+
 logger = getLogger("wstore.default_logger")
+
+
+def package_management(func):
+    """Coordinate CLI and worker mutations on the shared installed-package volume."""
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        with open(os.path.join(self._plugins_path, ".package-management.lock"), "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise PluginConflictError("Another plugin management operation is in progress") from exc
+            # Closing the descriptor releases the lock, including on errors/rollback.
+            return func(self, *args, **kwargs)
+
+    return wrapper
 
 
 class RollbackLog:
@@ -37,7 +57,10 @@ class RollbackLog:
         for action, value in reversed(self._actions):
             try:
                 if action == "PATH":
-                    rmtree(value, True)
+                    try:
+                        rmtree(value)
+                    except FileNotFoundError:
+                        pass
                 elif action == "MODEL":
                     if value.pk is not None:
                         value.delete()
