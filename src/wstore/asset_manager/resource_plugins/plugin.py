@@ -234,8 +234,8 @@ class ServicePlugin(Plugin):
         """Restore access to a suspended service without initial provisioning."""
         pass
 
-    def on_service_termination(self, provider, service_spec, service, product, order, contract=None):
-        """Permanently withdraw access to an inventory service and clean up."""
+    def on_service_termination(self, provider, buyer, service, product, order, contract=None):
+        """Release the inventory service; raise on failure. Must tolerate retries."""
         pass
 
     def on_service_modification(
@@ -326,8 +326,8 @@ class ResourcePlugin(Plugin):
         """Restore access to a suspended resource without initial provisioning."""
         pass
 
-    def on_resource_termination(self, provider, resource_spec, resource, product, order, contract=None):
-        """Permanently withdraw access to an inventory resource and clean up."""
+    def on_resource_termination(self, provider, buyer, resource, product, order, contract=None):
+        """Release the inventory resource; raise on failure. Must tolerate retries."""
         pass
 
     def on_resource_modification(

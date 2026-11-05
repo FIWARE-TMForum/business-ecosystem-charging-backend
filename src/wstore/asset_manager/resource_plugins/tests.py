@@ -1904,3 +1904,84 @@ class SuspensionDispatchTests(SimpleTestCase):
         decorators.on_usage_refreshed(self.local_order, self.contract)
         self.InventoryClient.assert_not_called()
         self.OrderingClient.assert_not_called()
+
+
+class TerminationDispatchTests(SimpleTestCase):
+    setUp = SuspensionDispatchTests.setUp
+
+    def dispatch(self):
+        decorators.on_product_termination(self.local_order, self.contract)
+
+    def test_mixed_instances_receive_inventory_context_without_specification_reads(self):
+        self.dispatch()
+        self.inventory.get_product.assert_called_once_with("p1")
+        self.OrderingClient.return_value.get_order.assert_called_once_with("order-1")
+        for kind, plugin in self.plugins.items():
+            getattr(plugin, "on_" + kind + "_termination").assert_called_once_with(
+                self.provider, self.buyer, self.instances[kind], self.product, self.raw_order, self.contract
+            )
+            self.assertEqual(["on_" + kind + "_termination"], [c[0] for c in plugin.method_calls])
+            self._get_plugin_model.assert_any_call(category_id="same-category", plugin_type=kind)
+        for read in self.catalog_reads:
+            read.assert_not_called()
+        self.inventory.patch_product.assert_not_called()
+
+    @parameterized.expand([("service",), ("resource",)])
+    def test_each_domain_can_be_terminated_alone(self, kind):
+        other = "resource" if kind == "service" else "service"
+        del self.product["realizing" + other.title()]
+        self.dispatch()
+        getattr(self.plugins[kind], "on_" + kind + "_termination").assert_called_once()
+        self.assertEqual([], self.plugins[other].method_calls)
+
+    def test_ordinary_and_uninstalled_instances_skip_hooks(self):
+        self.instances["service"]["serviceCharacteristic"] = []
+        self._get_plugin_model.side_effect = None
+        self._get_plugin_model.return_value = None
+        self.dispatch()
+        self._load_plugin_model.assert_not_called()
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    def test_failure_propagates_and_stops_remaining_hooks(self):
+        self.plugins["service"].on_service_termination.side_effect = PluginError("cleanup failed")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            with self.assertRaisesRegex(PluginError, "cleanup failed"):
+                self.dispatch()
+        self.plugins["resource"].on_resource_termination.assert_not_called()
+        self.inventory.patch_product.assert_not_called()
+
+    def test_invalid_context_blocks_termination(self):
+        for product, raw_order in (
+            ({"id": "wrong"}, self.raw_order),
+            (self.product, None),
+            (self.product, {"id": "wrong"}),
+        ):
+            with self.subTest(product=product, order=raw_order):
+                self.inventory.get_product.return_value = product
+                self.OrderingClient.return_value.get_order.return_value = raw_order
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    with self.assertRaises(PluginError):
+                        self.dispatch()
+        self._load_plugin_model.assert_not_called()
+
+    def test_missing_provider_blocks_termination(self):
+        self.product["relatedParty"] = [{"id": "buyer", "role": "Buyer"}]
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            with self.assertRaises(ServiceError):
+                self.dispatch()
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    def test_invalid_reference_blocks_termination(self):
+        self.inventory.get_service.return_value = {"id": "wrong"}
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            with self.assertRaises(ServiceError):
+                self.dispatch()
+        self.plugins["resource"].on_resource_termination.assert_not_called()
+
+    def test_inherited_termination_hooks_are_optional(self):
+        self._load_plugin_model.side_effect = lambda kind: (
+            ServicePlugin if kind == "service" else ResourcePluginHandler
+        )(object())
+        self.dispatch()
