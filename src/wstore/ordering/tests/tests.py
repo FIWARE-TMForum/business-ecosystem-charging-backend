@@ -1600,7 +1600,7 @@ class NotifyItemCompletedTestCase(TestCase):
 
         if mode == "automatic":
             self.on_product_activation.assert_called_once_with(product, self._raw_order, self._contract)
-            self.assertEqual(["activate", "notify", "processed"], [entry[0] for entry in sequence.mock_calls])
+            self.assertEqual(["notify", "activate", "processed"], [entry[0] for entry in sequence.mock_calls])
         else:
             self.on_product_activation.assert_not_called()
 
@@ -1657,7 +1657,7 @@ class NotifyItemCompletedTestCase(TestCase):
         self.assertEqual(2, self._order_model.mark_contract_as_processed.call_count)
 
     @parameterized.expand([("batch",), ("item",)])
-    def test_real_dispatcher_continues_after_plugin_failure(self, path):
+    def test_real_dispatcher_failure_prevents_product_activation_and_completion(self, path):
         from wstore.asset_manager.resource_plugins import decorators
 
         manager, product = self._prepare_activation_completion()
@@ -1686,22 +1686,19 @@ class NotifyItemCompletedTestCase(TestCase):
         ), self.assertLogs(
             "wstore.default_logger", level="ERROR"
         ):
-            self._run_activation_completion(manager, path)
+            with self.assertRaisesRegex(RuntimeError, "provisioning failed"):
+                self._run_activation_completion(manager, path)
 
-        for n in (1, 2):
-            plugins[f"category-{n}"].on_service_activation.assert_called_once_with(
-                provider,
-                buyer,
-                services[f"service-{n}"],
-                product,
-                self._raw_order,
-                self._contract,
-            )
-        self._order_model.mark_contract_as_processed.assert_called_once_with(self._contract.item_id)
-        self._ordering_client_inst.update_items_state.assert_called_once()
+        plugins["category-1"].on_service_activation.assert_called_once_with(
+            provider, buyer, services["service-1"], product, self._raw_order, self._contract
+        )
+        plugins["category-2"].on_service_activation.assert_not_called()
+        manager.activate_product.assert_not_called()
+        self._order_model.mark_contract_as_processed.assert_not_called()
+        self._ordering_client_inst.update_items_state.assert_not_called()
 
     @parameterized.expand([("batch",), ("item",)])
-    def test_real_resource_dispatch_failure_does_not_interrupt_completion(self, path):
+    def test_real_resource_failure_prevents_product_activation_and_completion(self, path):
         from wstore.asset_manager.resource_plugins import decorators
 
         manager, product = self._prepare_activation_completion()
@@ -1728,10 +1725,12 @@ class NotifyItemCompletedTestCase(TestCase):
         ), self.assertLogs(
             "wstore.default_logger", level="ERROR"
         ):
-            self._run_activation_completion(manager, path)
+            with self.assertRaisesRegex(RuntimeError, "provisioning failed"):
+                self._run_activation_completion(manager, path)
         plugin.on_resource_activation.assert_called_once_with(
             provider, buyer, resource, product, self._raw_order, self._contract
         )
         inventory.get_service.assert_not_called()
-        self._order_model.mark_contract_as_processed.assert_called_once_with(self._contract.item_id)
-        self._ordering_client_inst.update_items_state.assert_called_once()
+        manager.activate_product.assert_not_called()
+        self._order_model.mark_contract_as_processed.assert_not_called()
+        self._ordering_client_inst.update_items_state.assert_not_called()

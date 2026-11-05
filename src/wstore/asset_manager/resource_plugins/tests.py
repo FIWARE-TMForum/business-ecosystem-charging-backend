@@ -34,6 +34,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from mock import MagicMock, Mock, call, patch
 from parameterized import parameterized
 from requests.exceptions import HTTPError
+from wstore.asset_manager.errors import ResourceError, ServiceError
 from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loader
 from wstore.asset_manager.resource_plugins.plugin import Plugin, ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin as ResourcePluginHandler
@@ -1071,22 +1072,22 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         self.inventory.get_service.assert_not_called()
         self._get_plugin_model.assert_not_called()
 
-    def test_invalid_service_references_are_logged(self):
+    def test_invalid_service_references_stop_activation(self):
         for references in (None, {}, [None], [{}], [{"id": ""}], [{"id": 1}]):
             with self.subTest(references=references):
                 self.product["realizingService"] = references
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ServiceError):
                     self.dispatch()
         self.inventory.get_service.assert_not_called()
 
-    def test_invalid_reference_does_not_prevent_later_service_notification(self):
+    def test_invalid_reference_prevents_later_service_activation(self):
         self.product["realizingService"].insert(0, {})
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ServiceError):
             self.dispatch()
-        self.plugins["category-1"].on_service_activation.assert_called_once()
-        self.plugins["category-2"].on_service_activation.assert_called_once()
+        self.plugins["category-1"].on_service_activation.assert_not_called()
+        self.plugins["category-2"].on_service_activation.assert_not_called()
 
-    def test_invalid_service_type_is_logged_and_remaining_services_continue(self):
+    def test_invalid_service_type_stops_activation(self):
         for characteristics in (
             [{"name": "Service Type", "value": ""}],
             [{"name": "Service Type", "value": {"id": "category-1"}}],
@@ -1096,24 +1097,24 @@ class ServiceActivationDispatchTests(SimpleTestCase):
             with self.subTest(characteristics=characteristics):
                 self.services["service-1"]["serviceCharacteristic"] = characteristics
                 self.plugins["category-2"].reset_mock()
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ServiceError):
                     self.dispatch()
                 self.plugins["category-1"].on_service_activation.assert_not_called()
-                self.plugins["category-2"].on_service_activation.assert_called_once()
+                self.plugins["category-2"].on_service_activation.assert_not_called()
 
-    def test_invalid_downloaded_services_are_logged_and_remaining_services_continue(self):
+    def test_invalid_downloaded_services_stop_activation(self):
         for document in (None, [], {}, {"id": "different-id"}):
             with self.subTest(document=document):
                 self.plugins["category-2"].reset_mock()
                 self.inventory.get_service.side_effect = (
                     lambda id_: document if id_ == "service-1" else self.services[id_]
                 )
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ServiceError):
                     self.dispatch()
                 self.plugins["category-1"].on_service_activation.assert_not_called()
-                self.plugins["category-2"].on_service_activation.assert_called_once()
+                self.plugins["category-2"].on_service_activation.assert_not_called()
 
-    def test_read_and_plugin_failures_are_logged_without_stopping_dispatch(self):
+    def test_read_and_plugin_failures_are_logged_and_propagated(self):
         for operation in (
             self.inventory.get_service,
             self._get_plugin_model,
@@ -1134,18 +1135,13 @@ class ServiceActivationDispatchTests(SimpleTestCase):
                     operation.reset_mock()
                     operation.side_effect = notify
                     with self.assertLogs("wstore.default_logger", level="ERROR") as logs:
-                        self.assertIsNone(self.dispatch())
+                        with self.assertRaises(error_type) as raised:
+                            self.dispatch()
+                    self.assertIs(error, raised.exception)
                     for identifier in ("order-1", "product-1", "service-1"):
                         self.assertIn(identifier, logs.output[0])
                     self.assertIs(error, logs.records[0].exc_info[1])
-                    self.plugins["category-2"].on_service_activation.assert_called_once_with(
-                        self.provider,
-                        self.buyer,
-                        self.services["service-2"],
-                        self.product,
-                        self.order,
-                        None,
-                    )
+                    self.plugins["category-2"].on_service_activation.assert_not_called()
             operation.side_effect = original
 
     def test_parties_are_resolved_once_for_all_services(self):
@@ -1169,7 +1165,7 @@ class ServiceActivationDispatchTests(SimpleTestCase):
             None,
         )
 
-    def test_missing_or_ambiguous_organizations_are_logged_without_dispatch(self):
+    def test_missing_or_ambiguous_organizations_stop_activation(self):
         for parties in (
             [],
             [{"id": "provider-party", "role": "Seller"}],
@@ -1178,15 +1174,15 @@ class ServiceActivationDispatchTests(SimpleTestCase):
         ):
             with self.subTest(parties=parties):
                 self.product["relatedParty"] = parties
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ServiceError):
                     self.dispatch()
                 for plugin in self.plugins.values():
                     plugin.on_service_activation.assert_not_called()
 
-    def test_organization_lookup_failure_does_not_escape(self):
+    def test_organization_lookup_failure_is_propagated(self):
         self.Organization.objects.get.side_effect = RuntimeError("organization unavailable")
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
-            self.assertIsNone(self.dispatch())
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(RuntimeError):
+            self.dispatch()
         for plugin in self.plugins.values():
             plugin.on_service_activation.assert_not_called()
 
@@ -1294,22 +1290,23 @@ class ResourceActivationDispatchTests(SimpleTestCase):
         self.dispatch()
         self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
 
-    def test_plugin_failure_is_logged_and_later_resources_still_run(self):
+    def test_plugin_failure_stops_resource_activation(self):
         self.resource_plugins["category-1"].on_resource_activation.side_effect = RuntimeError("failed")
         with self.assertLogs("wstore.default_logger", level="ERROR") as logs:
-            self.assertIsNone(self.dispatch())
+            with self.assertRaises(RuntimeError):
+                self.dispatch()
         for identifier in ("order-1", "product-1", "resource-1"):
             self.assertIn(identifier, logs.output[0])
-        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-2"].on_resource_activation.assert_not_called()
 
-    def test_service_plugin_failure_does_not_prevent_resource_callbacks(self):
+    def test_service_plugin_failure_prevents_resource_activation(self):
         self.product["realizingService"] = [{"id": "service-1"}]
         self.plugins["category-1"].on_service_activation.side_effect = PluginError("failed")
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(PluginError):
             self.dispatch()
-        self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
 
-    def test_malformed_domain_collection_does_not_block_other_domain(self):
+    def test_malformed_domain_collection_stops_activation(self):
         for field, other, plugin, handler in (
             (
                 "realizingService",
@@ -1323,37 +1320,42 @@ class ResourceActivationDispatchTests(SimpleTestCase):
                 self.product[field] = {}
                 self.product[other] = [{"id": "resource-1" if other == "realizingResource" else "service-1"}]
                 plugin.reset_mock()
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                error = ServiceError if field == "realizingService" else ResourceError
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(error):
                     self.dispatch()
-                getattr(plugin, handler).assert_called_once()
+                if field == "realizingService":
+                    getattr(plugin, handler).assert_not_called()
+                else:
+                    # Services run before resources; successful work is not rolled back.
+                    getattr(plugin, handler).assert_called_once()
 
-    def test_invalid_resource_reference_does_not_block_later_resource(self):
+    def test_invalid_resource_reference_stops_activation(self):
         self.product["realizingResource"].insert(0, {})
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ResourceError):
             self.dispatch()
-        self.resource_plugins["category-1"].on_resource_activation.assert_called_once()
-        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
+        self.resource_plugins["category-2"].on_resource_activation.assert_not_called()
 
-    def test_resource_read_failure_does_not_block_later_resource(self):
+    def test_resource_read_failure_stops_activation(self):
         def read(id_):
             if id_ == "resource-1":
                 raise RuntimeError("inventory offline")
             return self.resources[id_]
 
         self.inventory.get_resource.side_effect = read
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(RuntimeError):
             self.dispatch()
         self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
-        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-2"].on_resource_activation.assert_not_called()
 
-    def test_invalid_resource_identity_is_logged(self):
+    def test_invalid_resource_identity_stops_activation(self):
         self.resources["resource-1"]["id"] = "wrong-resource"
-        with self.assertLogs("wstore.default_logger", level="ERROR"):
+        with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ResourceError):
             self.dispatch()
         self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
-        self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+        self.resource_plugins["category-2"].on_resource_activation.assert_not_called()
 
-    def test_invalid_or_duplicate_resource_type_is_logged(self):
+    def test_invalid_or_duplicate_resource_type_stops_activation(self):
         for entries in (
             [{"name": "Resource Type", "value": {"id": "category-1"}}],
             [{"name": "Resource Type", "value": "category-1"}] * 2,
@@ -1361,10 +1363,10 @@ class ResourceActivationDispatchTests(SimpleTestCase):
             with self.subTest(entries=entries):
                 self.resources["resource-1"]["resourceCharacteristic"] = entries
                 self.resource_plugins["category-2"].reset_mock()
-                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                with self.assertLogs("wstore.default_logger", level="ERROR"), self.assertRaises(ResourceError):
                     self.dispatch()
                 self.resource_plugins["category-1"].on_resource_activation.assert_not_called()
-                self.resource_plugins["category-2"].on_resource_activation.assert_called_once()
+                self.resource_plugins["category-2"].on_resource_activation.assert_not_called()
 
 
 class RecordingPlugin(ServicePlugin):

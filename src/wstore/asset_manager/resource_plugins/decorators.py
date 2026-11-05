@@ -242,18 +242,20 @@ def _get_product_organization(product, role):
     return Organization.objects.get(actor_id=party_ids.pop())
 
 
-def _notify_inventory_plugins(product, order, contract, event):
-    """Notify each realizing instance, logging failures without interrupting the caller."""
+def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False):
+    """Dispatch to realizing instances, propagating failures when the operation requires it."""
     inventory = InventoryClient()
     organizations = None
 
     for plugin_type, field in (("service", "realizingService"), ("resource", "realizingResource")):
+        error = ResourceError if plugin_type == "resource" else ServiceError
         references = product.get(field, [])
         if not isinstance(references, list):
             logger.error("Cannot notify %s for product %s: %s must be a list", event, product.get("id"), field)
+            if raise_on_error:
+                raise error(field + " must be a list")
             continue
 
-        error = ResourceError if plugin_type == "resource" else ServiceError
         for reference in references:
             try:
                 if (
@@ -286,11 +288,13 @@ def _notify_inventory_plugins(product, order, contract, event):
                     plugin_type,
                     reference.get("id") if isinstance(reference, dict) else None,
                 )
+                if raise_on_error:
+                    raise
 
 
 def on_product_activation(product, order, contract=None):
-    """Notify service/resource plugins without interrupting purchase completion."""
-    _notify_inventory_plugins(product, order, contract, "activation")
+    """Activate service/resource instances before marking the product active."""
+    _notify_inventory_plugins(product, order, contract, "activation", raise_on_error=True)
 
 
 def process_product_notification(order, contract, type_):
