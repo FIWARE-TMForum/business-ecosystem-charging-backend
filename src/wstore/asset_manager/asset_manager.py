@@ -26,6 +26,7 @@ import threading
 from logging import getLogger
 from urllib.parse import urljoin
 
+from bson import ObjectId
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -413,7 +414,7 @@ class AssetManager:
 
     def get_asset_info(self, asset_id):
         try:
-            asset = Resource.objects.get(pk=asset_id)
+            asset = Resource.objects.get(pk=ObjectId(asset_id))
         except:
             raise ObjectDoesNotExist("The specified digital asset does not exist")
 

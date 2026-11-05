@@ -24,6 +24,7 @@ from copy import deepcopy
 from importlib import reload
 from urllib.parse import quote
 
+from bson import ObjectId
 from django.core.exceptions import ObjectDoesNotExist
 from django.test import TestCase
 from django.test.utils import override_settings
@@ -134,11 +135,18 @@ class ResourceRetrievingTestCase(TestCase):
         result = None
         try:
             am = asset_manager.AssetManager()
-            result = am.get_asset_info("111")
+            result = am.get_asset_info("6aec863fd5e5e842c21f7deb")
         except Exception as e:
             error = e
 
         self.validate_response(result, expected_result, error, err_type, err_msg)
+
+        asset_manager.Resource.objects.get.assert_called_once_with(pk=ObjectId("6aec863fd5e5e842c21f7deb"))
+
+    def test_invalid_asset_id_does_not_query_database(self):
+        with self.assertRaisesRegex(ObjectDoesNotExist, "The specified digital asset does not exist"):
+            asset_manager.AssetManager().get_asset_info("invalid-id")
+        asset_manager.Resource.objects.get.assert_not_called()
 
     @parameterized.expand([("basic", [RESOURCE_DATA1, RESOURCE_DATA2, RESOURCE_DATA3, RESOURCE_DATA4])])
     def test_assets_from_product(self, name, expected_result, side_effect=None, err_type=None, err_msg=None):
