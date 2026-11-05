@@ -13,6 +13,8 @@ from wstore.asset_manager.models import Resource
 from wstore.asset_manager.resource_validator import ResourceValidator
 from wstore.asset_manager.resource_plugins import decorators
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
+from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin
+from wstore.asset_manager.test.service_validator_tests import _SpecificationPostActionTests
 from wstore.store_commons.resource_catalog import ResourceCatalogError
 
 
@@ -336,3 +338,16 @@ class ResourceValidationEndpointTests(SimpleTestCase):
         self.user.userprofile.get_current_roles = lambda: ["customer"]
         request = self.request({})
         self.assertEqual(403, resolve(request.path).func(request).status_code)
+
+
+class ResourcePostCreationTests(_SpecificationPostActionTests, SimpleTestCase):
+    operation = "creation"
+    kind = "resource"
+    validator_class = ResourceValidator
+    handler_class = ResourcePlugin
+    characteristics_field = "resourceSpecCharacteristic"
+    values_field = "resourceSpecCharacteristicValue"
+
+
+class ResourcePostUpdateTests(ResourcePostCreationTests):
+    operation = "update"

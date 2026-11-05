@@ -32,7 +32,9 @@ from wstore.asset_manager.errors import ProductError
 from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.asset_manager.test import offering_validator_test_data as data
-from wstore.asset_manager.test.product_validator_tests import product_spec, service_spec, resource_spec
+from wstore.asset_manager.test.product_validator_tests import (
+    product_spec, service_spec, resource_spec, _CatalogPostActionTests,
+)
 from wstore.store_commons.product_catalog import ProductCatalog, ProductCatalogError
 
 
@@ -353,56 +355,83 @@ class OfferingPluginTests(SimpleTestCase):
 
         self.validator = OfferingValidator()
 
-    def test_pre_pricing_post_order_and_service_arguments(self):
+    @parameterized.expand([("create", "creation"), ("update", "update")])
+    def test_pricing_before_pre_hooks_without_post_hooks(self, action, operation):
         events = Mock()
         events.attach_mock(self.plugins["c1"], "first")
         events.attach_mock(self.plugins["c2"], "second")
         events.attach_mock(self.catalog.get_price, "price")
 
-        self.validator.validate("create", self.provider, self.offer)
+        self.validator.validate(action, self.provider, self.offer)
 
         first = (self.provider, self.specs["s1"], self.product, self.offer)
         second = (self.provider, self.specs["s2"], self.product, self.offer)
         self.assertEqual(
             [
-                call.first.on_pre_product_offering_validation(*first),
-                call.second.on_pre_product_offering_validation(*second),
                 call.price(self.offer["productOfferingPrice"][0]["id"]),
-                call.first.on_post_product_offering_validation(*first),
-                call.second.on_post_product_offering_validation(*second),
+                getattr(call.first, "on_pre_product_offering_" + operation)(*first),
+                getattr(call.second, "on_pre_product_offering_" + operation)(*second),
             ],
             events.mock_calls,
         )
-        self.plugins["c1"].on_product_spec_validation.assert_not_called()
+        self.plugins["c1"].on_pre_product_spec_creation.assert_not_called()
         self.plugins["c1"].on_pre_service_spec_creation.assert_not_called()
 
-    def test_pre_failure_prevents_price_validation_and_post_hooks(self):
-        self.plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
+    @parameterized.expand([("post-create", "creation"), ("post-update", "update")])
+    def test_post_offering_bundle_notifies_each_product_without_pricing(self, action, operation):
+        first = product_spec("p1", services=("s1",))
+        second = product_spec("p2", services=("s2",))
+        self.catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        self.catalog.get_offering.side_effect = {
+            "o1": {"id": "o1", "productSpecification": {"id": "p1"}},
+            "o2": {"id": "o2", "productSpecification": {"id": "p2"}},
+        }.get
+        persisted = {
+            "id": "created-offering-bundle",
+            "isBundle": True,
+            "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}],
+        }
+        self.validator.validate(action, self.provider, persisted)
+        self.catalog.get_price.assert_not_called()
+        for category, spec, product in (("c1", "s1", first), ("c2", "s2", second)):
+            plugin = self.plugins[category]
+            getattr(plugin, "on_post_product_offering_" + operation).assert_called_once_with(
+                self.provider, self.specs[spec], product, persisted
+            )
+            self.assertEqual(
+                ["on_post_product_offering_" + operation], [invocation[0] for invocation in plugin.method_calls]
+            )
+
+    def test_pre_failure_after_pricing_stops_remaining_hooks(self):
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
 
         with self.assertRaises(PluginError):
             self.validator.validate("create", self.provider, self.offer)
 
-        self.catalog.get_price.assert_not_called()
-        self.plugins["c2"].on_pre_product_offering_validation.assert_not_called()
-        self.plugins["c1"].on_post_product_offering_validation.assert_not_called()
+        self.catalog.get_price.assert_called_once()
+        self.plugins["c2"].on_pre_product_offering_creation.assert_not_called()
+        self.plugins["c1"].on_post_product_offering_creation.assert_not_called()
 
-    def test_backend_failure_prevents_all_post_hooks(self):
+    @parameterized.expand([("create",), ("update",)])
+    def test_pricing_failure_prevents_all_plugin_hooks(self, action):
         self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
 
         with self.assertRaisesRegex(ValueError, "greater than zero"):
-            self.validator.validate("create", self.provider, self.offer)
+            self.validator.validate(action, self.provider, self.offer)
 
         for plugin in self.plugins.values():
-            plugin.on_pre_product_offering_validation.assert_called_once()
-            plugin.on_post_product_offering_validation.assert_not_called()
+            self.assertEqual([], plugin.method_calls)
+        for plugin in getattr(self, "resource_plugins", {}).values():
+            self.assertEqual([], plugin.method_calls)
 
     def test_post_failure_is_reported(self):
-        self.plugins["c1"].on_post_product_offering_validation.side_effect = PluginError("reject")
+        self.plugins["c1"].on_post_product_offering_creation.side_effect = PluginError("reject")
 
+        self.offer["id"] = "persisted-offer"
         with self.assertRaises(PluginError):
-            self.validator.validate("create", self.provider, self.offer)
+            self.validator.validate("post-create", self.provider, self.offer)
 
-        self.plugins["c2"].on_post_product_offering_validation.assert_not_called()
+        self.plugins["c2"].on_post_product_offering_creation.assert_not_called()
 
     def test_ordinary_service_still_receives_price_validation(self):
         self.product["serviceSpecification"] = [{"id": "ordinary"}]
@@ -412,7 +441,7 @@ class OfferingPluginTests(SimpleTestCase):
             self.validator.validate("create", self.provider, self.offer)
 
         self.catalog.get_price.assert_called_once()
-        self.plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
 
     def test_free_open_and_custom_offerings_still_invoke_plugins(self):
         for prices in ([], [data.OPEN_OFFERING_PRICE], [data.CUSTOM_OFFERING_PRICING]):
@@ -423,7 +452,7 @@ class OfferingPluginTests(SimpleTestCase):
 
                 self.validator.validate("create", self.provider, self.offer)
 
-                self.plugins["c1"].on_post_product_offering_validation.assert_called_once_with(
+                self.plugins["c1"].on_pre_product_offering_creation.assert_called_once_with(
                     self.provider, self.specs["s1"], self.product, self.offer
                 )
 
@@ -435,7 +464,7 @@ class OfferingPluginTests(SimpleTestCase):
 
         self.catalog.get_offering.assert_not_called()
         self.assertEqual(original, proposed)
-        self.assertIs(proposed, self.plugins["c1"].on_pre_product_offering_validation.call_args.args[3])
+        self.assertIs(proposed, self.plugins["c1"].on_pre_product_offering_update.call_args.args[3])
 
     def test_product_bundle_reuses_product_service_resolution(self):
         first = product_spec("p1", ("s1",))
@@ -452,9 +481,9 @@ class OfferingPluginTests(SimpleTestCase):
                 call(self.provider, self.specs["s1"], first, self.offer),
                 call(self.provider, self.specs["s1"], second, self.offer),
             ],
-            self.plugins["c1"].on_post_product_offering_validation.call_args_list,
+            self.plugins["c1"].on_pre_product_offering_creation.call_args_list,
         )
-        self.plugins["c2"].on_post_product_offering_validation.assert_called_once_with(
+        self.plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
             self.provider, self.specs["s2"], second, self.offer
         )
 
@@ -471,7 +500,7 @@ class OfferingPluginTests(SimpleTestCase):
         self.validator.validate("create", self.provider, offer)
 
         self.assertEqual([call("o1"), call("o2")], self.catalog.get_offering.call_args_list)
-        self.plugins["c2"].on_post_product_offering_validation.assert_called_once_with(
+        self.plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
             self.provider, self.specs["s2"], second, offer
         )
 
@@ -493,7 +522,7 @@ class OfferingPluginTests(SimpleTestCase):
         self.catalog.get_specification.assert_not_called()
         self.services.get_specification.assert_not_called()
         self.catalog.get_price.assert_not_called()
-        self.plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
 
     def test_invalid_references_stop_before_hooks(self):
         self.services.get_specification.side_effect = None
@@ -503,7 +532,7 @@ class OfferingPluginTests(SimpleTestCase):
             self.validator.validate("create", self.provider, self.offer)
 
         self.catalog.get_price.assert_not_called()
-        self.plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
 
     def test_parent_dispatch_and_signatures_are_preserved(self):
         from inspect import signature
@@ -530,9 +559,9 @@ class OfferingPluginTests(SimpleTestCase):
             return resolve(request.path).func(request)
 
         self.assertEqual(200, invoke().status_code)
-        self.plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
         self.assertEqual(422, invoke().status_code)
-        self.plugins["c1"].on_pre_product_offering_validation.side_effect = None
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = None
         self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
         self.assertEqual(400, invoke().status_code)
         self.catalog.get_specification.side_effect = ProductCatalogError("offline")
@@ -577,7 +606,8 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_mixed_plugins_all_run_pre_then_pricing_then_post(self):
+    @parameterized.expand([("create", "creation"), ("update", "update")])
+    def test_mixed_plugins_run_pricing_before_pre_hooks(self, action, operation):
         events = Mock()
         for name, plugin in (
             ("s1", self.plugins["c1"]),
@@ -587,30 +617,21 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         ):
             events.attach_mock(plugin, name)
         events.attach_mock(self.catalog.get_price, "price")
-        self.validator.validate("create", self.provider, self.offer)
+        self.validator.validate(action, self.provider, self.offer)
         self.assertEqual(
             [
-                "s1.on_pre_product_offering_validation",
-                "s2.on_pre_product_offering_validation",
-                "r1.on_pre_product_offering_validation",
-                "r2.on_pre_product_offering_validation",
                 "price",
-                "s1.on_post_product_offering_validation",
-                "s2.on_post_product_offering_validation",
-                "r1.on_post_product_offering_validation",
-                "r2.on_post_product_offering_validation",
+                "s1.on_pre_product_offering_" + operation,
+                "s2.on_pre_product_offering_" + operation,
+                "r1.on_pre_product_offering_" + operation,
+                "r2.on_pre_product_offering_" + operation,
             ],
             [invocation[0] for invocation in events.mock_calls],
         )
         for n in (1, 2):
             expected = (self.provider, self.resource_specs[f"r{n}"], self.product, self.offer)
-            self.resource_plugins[f"c{n}"].on_pre_product_offering_validation.assert_called_once_with(
-                *expected
-            )
-            self.resource_plugins[f"c{n}"].on_post_product_offering_validation.assert_called_once_with(
-                *expected
-            )
-            self.resource_plugins[f"c{n}"].on_product_spec_validation.assert_not_called()
+            getattr(self.resource_plugins[f"c{n}"], "on_pre_product_offering_" + operation).assert_called_once_with(*expected)
+            self.resource_plugins[f"c{n}"].on_pre_product_spec_creation.assert_not_called()
             self.resource_plugins[f"c{n}"].on_pre_resource_spec_creation.assert_not_called()
         self.lookup.assert_any_call(category_id="c1", plugin_type="service")
         self.lookup.assert_any_call(category_id="c1", plugin_type="resource")
@@ -619,7 +640,7 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         self.product.pop("serviceSpecification")
         self.validator.validate("create", self.provider, self.offer)
         self.services.get_specification.assert_not_called()
-        self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once()
 
     def test_ordinary_and_uninstalled_resource_types_skip_hooks_but_keep_pricing(self):
         self.product["serviceSpecification"] = []
@@ -638,7 +659,11 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         self.catalog.get_offering.assert_not_called()
         self.assertEqual(before, self.offer)
         self.assertIs(
-            self.offer, self.resource_plugins["c1"].on_post_product_offering_validation.call_args.args[3]
+            self.offer,
+            getattr(
+                self.resource_plugins["c1"],
+                "on_pre_product_offering_" + ("creation" if action == "create" else "update"),
+            ).call_args.args[3],
         )
 
     def test_free_open_custom_offerings_still_run_resource_hooks(self):
@@ -648,7 +673,7 @@ class ResourceOfferingPluginTests(SimpleTestCase):
                 self.offer["productOfferingPrice"] = [{"id": price["id"]} for price in prices]
                 self.catalog.get_price.side_effect = deepcopy(prices)
                 self.validator.validate("create", self.provider, self.offer)
-                self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once()
+                self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once()
 
     def test_product_bundle_resource_hooks_keep_containing_product(self):
         first, second = product_spec("p1"), product_spec("p2")
@@ -668,7 +693,7 @@ class ResourceOfferingPluginTests(SimpleTestCase):
                 call(self.provider, self.resource_specs["r1"], first, self.offer),
                 call(self.provider, self.resource_specs["r1"], second, self.offer),
             ],
-            self.resource_plugins["c1"].on_post_product_offering_validation.call_args_list,
+            self.resource_plugins["c1"].on_pre_product_offering_creation.call_args_list,
         )
 
     def test_offering_bundle_resource_hooks_receive_original_offering(self):
@@ -682,10 +707,10 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         }.get
         offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
         self.validator.validate("create", self.provider, offer)
-        self.resource_plugins["c1"].on_post_product_offering_validation.assert_called_once_with(
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once_with(
             self.provider, self.resource_specs["r1"], first, offer
         )
-        self.resource_plugins["c2"].on_post_product_offering_validation.assert_called_once_with(
+        self.resource_plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
             self.provider, self.resource_specs["r2"], second, offer
         )
 
@@ -698,7 +723,7 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         with self.assertRaises(ProductError):
             self.validator.validate("create", self.provider, offer)
         self.resources.get_specification.assert_not_called()
-        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
 
     def test_invalid_resource_reference_prevents_all_pre_hooks_and_pricing(self):
         self.resources.get_specification.side_effect = None
@@ -706,30 +731,31 @@ class ResourceOfferingPluginTests(SimpleTestCase):
         with self.assertRaises(ProductError):
             self.validator.validate("create", self.provider, self.offer)
         self.catalog.get_price.assert_not_called()
-        self.plugins["c1"].on_pre_product_offering_validation.assert_not_called()
-        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
 
-    def test_resource_pre_hook_failure_blocks_pricing_and_all_post_hooks(self):
-        self.resource_plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
-        with self.assertRaises(PluginError):
-            self.validator.validate("create", self.provider, self.offer)
-        self.catalog.get_price.assert_not_called()
-        self.resource_plugins["c2"].on_pre_product_offering_validation.assert_not_called()
-        self.plugins["c1"].on_post_product_offering_validation.assert_not_called()
-
-    def test_pricing_failure_prevents_resource_post_hooks(self):
-        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
-        with self.assertRaises(ValueError):
-            self.validator.validate("create", self.provider, self.offer)
-        self.resource_plugins["c1"].on_pre_product_offering_validation.assert_called_once()
-        self.resource_plugins["c1"].on_post_product_offering_validation.assert_not_called()
-
-    def test_resource_post_hook_rejection_is_reported(self):
-        self.resource_plugins["c1"].on_post_product_offering_validation.side_effect = PluginError("reject")
+    def test_resource_pre_hook_failure_after_pricing_stops_remaining_hooks(self):
+        self.resource_plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
         with self.assertRaises(PluginError):
             self.validator.validate("create", self.provider, self.offer)
         self.catalog.get_price.assert_called_once()
-        self.resource_plugins["c2"].on_post_product_offering_validation.assert_not_called()
+        self.resource_plugins["c2"].on_pre_product_offering_creation.assert_not_called()
+        self.plugins["c1"].on_post_product_offering_creation.assert_not_called()
+
+    def test_pricing_failure_prevents_resource_pre_and_post_hooks(self):
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+        with self.assertRaises(ValueError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+        self.resource_plugins["c1"].on_post_product_offering_creation.assert_not_called()
+
+    def test_resource_post_hook_rejection_is_reported(self):
+        self.resource_plugins["c1"].on_post_product_offering_creation.side_effect = PluginError("reject")
+        self.offer["id"] = "persisted-offer"
+        with self.assertRaises(PluginError):
+            self.validator.validate("post-create", self.provider, self.offer)
+        self.catalog.get_price.assert_not_called()
+        self.resource_plugins["c2"].on_post_product_offering_creation.assert_not_called()
 
     def test_endpoint_invokes_resource_hooks_and_reports_plugin_failure(self):
         user = SimpleNamespace(
@@ -751,5 +777,16 @@ class ResourceOfferingPluginTests(SimpleTestCase):
             return resolve(request.path).func(request)
 
         self.assertEqual(200, invoke().status_code)
-        self.resource_plugins["c1"].on_pre_product_offering_validation.side_effect = PluginError("reject")
+        self.resource_plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
         self.assertEqual(422, invoke().status_code)
+
+
+class OfferingPostCreationTests(_CatalogPostActionTests, SimpleTestCase):
+    operation = "creation"
+    element = "offering"
+    validator_class = OfferingValidator
+    target = "product_offering"
+
+
+class OfferingPostUpdateTests(OfferingPostCreationTests):
+    operation = "update"

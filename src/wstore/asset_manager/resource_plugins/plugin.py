@@ -190,16 +190,36 @@ class ServicePlugin(Plugin):
         """Notify successful catalog update of the upgraded service specification."""
         pass
 
-    def on_product_spec_validation(self, provider, service_spec, product_spec):
-        """Check this service's inclusion before the product is created or updated."""
+    def on_pre_product_spec_creation(self, provider, service_spec, product_spec):
+        """Validate before the TMForum write."""
         pass
 
-    def on_pre_product_offering_validation(self, provider, service_spec, product_spec, product_offering):
-        """Validate an offering with its product and this service specification."""
+    def on_post_product_spec_creation(self, provider, service_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
         pass
 
-    def on_post_product_offering_validation(self, provider, service_spec, product_spec, product_offering):
-        """Validate the offering after backend checks; publication is not implied."""
+    def on_pre_product_spec_update(self, provider, service_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_update(self, provider, service_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_creation(self, provider, service_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_creation(self, provider, service_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_update(self, provider, service_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_update(self, provider, service_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
         pass
 
     def on_service_activation(self, provider, buyer, service, product, order, contract=None):
@@ -262,16 +282,36 @@ class ResourcePlugin(Plugin):
         """Notify successful catalog update of the upgraded resource specification."""
         pass
 
-    def on_product_spec_validation(self, provider, resource_spec, product_spec):
-        """Check this resource's inclusion before the product is created or updated."""
+    def on_pre_product_spec_creation(self, provider, resource_spec, product_spec):
+        """Validate before the TMForum write."""
         pass
 
-    def on_pre_product_offering_validation(self, provider, resource_spec, product_spec, product_offering):
-        """Validate an offering with its product and this resource specification."""
+    def on_post_product_spec_creation(self, provider, resource_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
         pass
 
-    def on_post_product_offering_validation(self, provider, resource_spec, product_spec, product_offering):
-        """Validate the offering after backend checks; publication is not implied."""
+    def on_pre_product_spec_update(self, provider, resource_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_update(self, provider, resource_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_creation(self, provider, resource_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_creation(self, provider, resource_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_update(self, provider, resource_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_update(self, provider, resource_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
         pass
 
     def on_resource_activation(self, provider, buyer, resource, product, order, contract=None):
