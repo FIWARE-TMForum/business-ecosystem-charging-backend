@@ -28,6 +28,8 @@ from wstore.asset_manager.errors import ProductError, ServiceError, ResourceErro
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import Organization, ResourcePlugin
 from wstore.ordering.inventory_client import InventoryClient
+from wstore.ordering.ordering_client import OrderingClient
+from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
 logger = getLogger("wstore.default_logger")
 
@@ -240,17 +242,15 @@ def _get_product_organization(product, role):
     return Organization.objects.get(actor_id=party_ids.pop())
 
 
-def on_product_activation(product, order, contract=None):
-    """Notify service/resource plugins without interrupting purchase completion."""
+def _notify_inventory_plugins(product, order, contract, event):
+    """Notify each realizing instance, logging failures without interrupting the caller."""
     inventory = InventoryClient()
     organizations = None
 
     for plugin_type, field in (("service", "realizingService"), ("resource", "realizingResource")):
         references = product.get(field, [])
         if not isinstance(references, list):
-            logger.error(
-                "Cannot notify activation for product %s: %s must be a list", product.get("id"), field
-            )
+            logger.error("Cannot notify %s for product %s: %s must be a list", event, product.get("id"), field)
             continue
 
         error = ResourceError if plugin_type == "resource" else ServiceError
@@ -275,14 +275,12 @@ def on_product_activation(product, order, contract=None):
                             _get_product_organization(product, settings.CUSTOMER_ROLE),
                         )
                     provider, buyer = organizations
-                    getattr(plugin, "on_" + plugin_type + "_activation")(
-                        provider, buyer, instance, product, order, contract
-                    )
+                    getattr(plugin, "on_" + plugin_type + "_" + event)(provider, buyer, instance, product, order, contract)
             except Exception:
-                # Payment has completed: plugin notifications must not block the purchase.
                 logger.exception(
-                    "%s activation notification failed for order %s, product %s, %s %s",
+                    "%s %s notification failed for order %s, product %s, %s %s",
                     plugin_type.title(),
+                    event,
                     order.get("id"),
                     product.get("id"),
                     plugin_type,
@@ -290,13 +288,28 @@ def on_product_activation(product, order, contract=None):
                 )
 
 
+def on_product_activation(product, order, contract=None):
+    """Notify service/resource plugins without interrupting purchase completion."""
+    _notify_inventory_plugins(product, order, contract, "activation")
+
+
 def process_product_notification(order, contract, type_):
-    # Purchased-service dispatch is integrated in its own lifecycle step.
+    # Usage dispatch remains deferred.
     pass
 
 
 def on_product_suspended(order, contract):
-    process_product_notification(order, contract, "suspend")
+    """Notify plugins at the existing suspension call sites without changing their flow."""
+    try:
+        product = InventoryClient().get_product(contract.product_id)
+        if not isinstance(product, dict) or product.get("id") != contract.product_id:
+            raise PluginError("Invalid inventory product for suspension")
+        raw_order = OrderingClient().get_order(order.order_id)
+        if not isinstance(raw_order, dict) or raw_order.get("id") != order.order_id:
+            raise PluginError("Invalid order for product suspension")
+        _notify_inventory_plugins(product, raw_order, contract, "suspension")
+    except Exception:
+        logger.exception("Suspension notification failed for order %s, product %s", order.order_id, contract.product_id)
 
 
 def on_usage_refreshed(order, contract):

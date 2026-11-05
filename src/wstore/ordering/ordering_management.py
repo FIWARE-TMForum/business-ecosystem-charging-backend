@@ -28,7 +28,6 @@ from django.conf import settings
 
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.asset_manager.resource_plugins.decorators import (
-    on_product_suspended,
     on_product_activation,
 )
 from wstore.charging_engine.charging_engine import ChargingEngine
@@ -296,9 +295,6 @@ class OrderingManager:
             if not order.claim_contract_for_termination(product["id"]):
                 logger.error("Only activated products are deletable")
                 raise OrderingError("Only activated products are deletable")
-
-            # Suspend the access to the service
-            on_product_suspended(order, contract)
 
             # Terminate product in the inventory
             client.terminate_product(product["id"])

@@ -201,7 +201,6 @@ TEST_RUNNER = "django_nose.NoseTestSuiteRunner"
 
 # Daily job that checks pending pay-per-use charges
 CRONJOBS = [
-    # ("0 5 * * *", "django.core.management.call_command", ["pending_charges_daemon"]),
     # ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
     # ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
     # Recurring billing: creates new CustomerBills for expired billing periods (off-peak hours)
