@@ -24,7 +24,7 @@ from functools import wraps
 from django.conf import settings
 from logging import getLogger
 
-from wstore.asset_manager.errors import ServiceError, ResourceError
+from wstore.asset_manager.errors import ProductError, ServiceError, ResourceError
 from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import Organization, ResourcePlugin
 from wstore.ordering.inventory_client import InventoryClient
@@ -133,11 +133,36 @@ def _get_plugins(associations):
     return plugins
 
 
-def on_product_spec_validation(provider, product_spec):
+def _check_post_catalog_document(document, description):
+    if not isinstance(document, dict):
+        raise ProductError("The " + description + " must be an object")
+    if not isinstance(document.get("id"), str) or not document["id"].strip():
+        raise ProductError("A persisted " + description + " id is required")
+
+
+def _on_product_spec_write(provider, product_spec, phase, operation):
+    if phase == "post":
+        _check_post_catalog_document(product_spec, "product specification")
     associations = CatalogResolver().product_specifications(product_spec)
 
     for plugin, specification, product in _get_plugins(associations):
-        plugin.on_product_spec_validation(provider, specification, product)
+        getattr(plugin, "on_" + phase + "_product_spec_" + operation)(provider, specification, product)
+
+
+def on_pre_product_spec_creation(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "pre", "creation")
+
+
+def on_post_product_spec_creation(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "post", "creation")
+
+
+def on_pre_product_spec_update(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "pre", "update")
+
+
+def on_post_product_spec_update(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "post", "update")
 
 
 def _on_post_specification_write(provider, specification, plugin_type, loader, operation):
@@ -155,25 +180,47 @@ def on_post_resource_spec_creation(provider, resource_spec):
     return _on_post_specification_write(provider, resource_spec, "resource", load_resource_plugin_module, "creation")
 
 
-def on_product_offering_validation(func):
+def _on_pre_product_offering_write(func, operation):
     @wraps(func)
-    def wrapper(self, provider, product_offering):
+    def wrapper(self, provider, catalog_element):
+        product_offering = catalog_element
         associations = CatalogResolver().offering_specifications(product_offering)
-        plugins = _get_plugins(associations)
-
-        for plugin, specification, product_spec in plugins:
-            plugin.on_pre_product_offering_validation(provider, specification, product_spec, product_offering)
-
         result = func(self, provider, product_offering)
 
-        for plugin, specification, product_spec in plugins:
-            plugin.on_post_product_offering_validation(
+        for plugin, specification, product_spec in _get_plugins(associations):
+            getattr(plugin, "on_pre_product_offering_" + operation)(
                 provider, specification, product_spec, product_offering
             )
 
         return result
 
     return wrapper
+
+
+def on_pre_product_offering_creation(func):
+    return _on_pre_product_offering_write(func, "creation")
+
+
+def on_pre_product_offering_update(func):
+    return _on_pre_product_offering_write(func, "update")
+
+
+def _on_post_product_offering_write(provider, product_offering, operation):
+    _check_post_catalog_document(product_offering, "product offering")
+    associations = CatalogResolver().offering_specifications(product_offering)
+
+    for plugin, specification, product_spec in _get_plugins(associations):
+        getattr(plugin, "on_post_product_offering_" + operation)(
+            provider, specification, product_spec, product_offering
+        )
+
+
+def on_post_product_offering_creation(provider, product_offering):
+    return _on_post_product_offering_write(provider, product_offering, "creation")
+
+
+def on_post_product_offering_update(provider, product_offering):
+    return _on_post_product_offering_write(provider, product_offering, "update")
 
 
 def _get_product_organization(product, role):

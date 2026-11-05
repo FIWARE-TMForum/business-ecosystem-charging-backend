@@ -281,7 +281,7 @@ class ValidateCollection(Resource):
     @authentication_required
     def create(self, request):
         """
-        Validates service associations in a proposed TMForum product specification
+        Validates proposed TMForum products or notifies successful catalog writes
         :param request:
         :return:
         """
@@ -294,7 +294,7 @@ class ValidateOfferingCollection(Resource):
     @authentication_required
     def create(self, request):
         """
-        Validates the TMForum product offering selling a product specification
+        Validates TMForum offerings or notifies successful catalog writes
         :param request:
         :return:
         """

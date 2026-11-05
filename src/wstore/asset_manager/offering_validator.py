@@ -23,7 +23,12 @@ from decimal import Decimal
 from logging import getLogger
 
 from wstore.asset_manager.catalog_validator import CatalogValidator
-from wstore.asset_manager.resource_plugins.decorators import on_product_offering_validation
+from wstore.asset_manager.resource_plugins.decorators import (
+    on_pre_product_offering_creation,
+    on_post_product_offering_creation,
+    on_pre_product_offering_update,
+    on_post_product_offering_update,
+)
 from wstore.store_commons.product_catalog import ProductCatalog
 from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 
@@ -165,7 +170,6 @@ class OfferingValidator(CatalogValidator):
         self._validate_value_price(price_component["price"])
         self._validate_char_value_use(price_component, product_spec, anti_collision_record=anti_collision)
 
-    @on_product_offering_validation
     def _validate_offering_pricing(self, provider, product_offering):
         self._product_spec = None
 
@@ -268,8 +272,16 @@ class OfferingValidator(CatalogValidator):
 
         return None
 
+    @on_pre_product_offering_creation
     def validate_creation(self, provider, catalog_element):
         self._validate_offering_pricing(provider, catalog_element)
 
+    @on_pre_product_offering_update
     def validate_update(self, provider, catalog_element):
         self._validate_offering_pricing(provider, catalog_element)
+
+    def post_create(self, provider, catalog_element):
+        on_post_product_offering_creation(provider, catalog_element)
+
+    def post_update(self, provider, catalog_element):
+        on_post_product_offering_update(provider, catalog_element)
