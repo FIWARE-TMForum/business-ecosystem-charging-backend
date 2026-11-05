@@ -84,8 +84,12 @@ urlpatterns = [
         plugins_views.PluginCollection(permitted_methods=("GET",)),
     ),
     url(
+        r"^charging/api/assetManagement/assetTypes/installJob/?$",
+        plugins_views.PluginInstallCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/assetManagement/assetTypes/(?P<plugin_id>[\w -]+)/?$",
-        plugins_views.PluginEntry(permitted_methods=("GET",)),
+        plugins_views.PluginEntry(permitted_methods=("GET", "DELETE")),
     ),
     url(
         r"^charging/api/assetManagement/chargePeriods/?$",

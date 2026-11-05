@@ -447,7 +447,7 @@ class ServeMediaTestCase(TestCase):
         self.serve.assert_not_called()
 
     @patch("wstore.ordering.inventory_client.requests.get")
-    def test_real_inventory_client_queries_and_post_filters_api_candidates(self, get):
+    def test_real_inventory_client_queries_and_post_filters_api_results(self, get):
         self._acquired()
         self.inventory_patch.stop()
         bad_service = deepcopy(self.service)

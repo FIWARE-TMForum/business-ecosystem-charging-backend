@@ -20,13 +20,18 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+import fcntl
+import select
+import subprocess
+import types
+import zipfile
 import os
 import sys
 from importlib import reload
 from json import dump as jsondump
 from shutil import rmtree
 from tempfile import TemporaryDirectory
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 from bson.objectid import ObjectId
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
@@ -39,7 +44,9 @@ from wstore.asset_manager.resource_plugins import decorators, plugin, plugin_loa
 from wstore.asset_manager.resource_plugins.plugin import Plugin, ServicePlugin
 from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin as ResourcePluginHandler
 from wstore.store_commons.resource_catalog import ResourceCatalog, ResourceCatalogError
-from wstore.asset_manager.resource_plugins.plugin_error import PluginError
+from wstore.asset_manager.resource_plugins.plugin_error import (
+    PluginError, PluginConflictError, PluginSizeError, PluginCatalogError, PluginUnavailableError, PluginUsageError,
+)
 from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
 from wstore.store_commons.service_catalog import ServiceCatalog, ServiceCatalogError
 from wstore.asset_manager.resource_plugins.plugin_validator import PluginValidator
@@ -64,8 +71,11 @@ class PluginLoaderTestCase(TestCase):
         catalog_patch = patch.object(plugin_loader, "ServiceCatalog")
         self.catalog_mock = catalog_patch.start().return_value
         self.catalog_mock.create_category.return_value = "category-1"
-        self.catalog_mock.category_in_use.return_value = False
         self.addCleanup(catalog_patch.stop)
+        usage_patch = patch.object(plugin_loader.requests, "get")
+        self.usage_get = usage_patch.start()
+        self.usage_get.return_value.json.return_value = []
+        self.addCleanup(usage_patch.stop)
         # Create PluginManager mock
         plugin_loader.PluginValidator = MagicMock(name="PluginManager")
         self.manager_mock = MagicMock()
@@ -360,7 +370,13 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(str(error), err_msg)
 
     def _plugin_in_use(self):
-        self.catalog_mock.category_in_use.return_value = True
+        self.usage_get.return_value.json.return_value = [{
+            "id": "spec-1",
+            "specCharacteristic": [{
+                "name": "Service Type",
+                "characteristicValueSpecification": [{"value": "category-1"}],
+            }],
+        }]
 
     def _plugin_not_exists(self):
         plugin_loader.ResourcePlugin.objects.get.side_effect = ObjectDoesNotExist()
@@ -385,7 +401,7 @@ class PluginLoaderTestCase(TestCase):
                 False,
                 _plugin_in_use,
                 PermissionDenied,
-                "The plugin test_plugin is being used by service candidates",
+                "The plugin test_plugin is being used by specifications or inventory instances",
             ),
             (
                 "not_exists",
@@ -404,6 +420,7 @@ class PluginLoaderTestCase(TestCase):
 
         plugin_mock = MagicMock()
         plugin_mock.name = plugin_name
+        plugin_mock.type = "service"
         plugin_mock.version = "1.0"
         plugin_mock.category_id = "category-1"
         plugin_mock.version_history = []
@@ -437,7 +454,6 @@ class PluginLoaderTestCase(TestCase):
             self.assertEquals(error, None)
             # Check calls
             plugin_loader.ResourcePlugin.objects.get.assert_called_once_with(plugin_id="test_plugin")
-            self.catalog_mock.category_in_use.assert_called_once_with("category-1")
             self.catalog_mock.delete_category.assert_called_once_with("category-1")
             expected_versions = ["1.0", "0.1"] if name == "two_versions" else ["1.0"]
             self.assertEqual(
@@ -1392,7 +1408,10 @@ class PackageManagementTests(SimpleTestCase):
         self.catalog = self.catalog_patch.start().return_value
         self.addCleanup(self.catalog_patch.stop)
         self.catalog.create_category.return_value = "category-1"
-        self.catalog.category_in_use.return_value = False
+        usage_patch = patch.object(plugin_loader.requests, "get")
+        self.usage_get = usage_patch.start()
+        self.usage_get.return_value.json.return_value = []
+        self.addCleanup(usage_patch.stop)
         self.loader = PluginLoader()
         self.loader._plugins_path = self.directory.name
         self.loader._get_plugin_module = Mock(return_value=self.handler_class)
@@ -1469,40 +1488,21 @@ class PackageManagementTests(SimpleTestCase):
         self.catalog.delete_category.assert_called_once_with("category-1")
         self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-1-0")))
 
-    def test_referenced_category_blocks_removal(self):
-        self.catalog.category_in_use.return_value = True
-        with self.assertRaises(PermissionDenied):
+    def test_catalog_failure_leaves_package_installed(self):
+        self.catalog.delete_category.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
             self.loader.uninstall_plugin("test")
-        self.catalog.delete_category.assert_not_called()
         self.delete.assert_not_called()
 
-    def test_catalog_failure_leaves_package_installed(self):
-        for method in [self.catalog.category_in_use, self.catalog.delete_category]:
-            with self.subTest(method=method):
-                method.side_effect = HTTPError("offline")
-                with self.assertRaises(HTTPError):
-                    self.loader.uninstall_plugin("test")
-                self.delete.assert_not_called()
-                method.side_effect = None
-
-    def test_invalid_catalog_response_retains_plugin_error_and_installed_files(self):
+    def test_invalid_usage_response_retains_plugin_error_and_installed_files(self):
         path = os.path.join(self.directory.name, "test-1-0")
         os.mkdir(path)
-        setattr(
-            self.loader,
-            "_catalog" if self.plugin_type == "service" else "_resource_catalog",
-            self.catalog_class(),
-        )
-
-        with patch("wstore.store_commons.service_catalog.requests.request") as request:
-            request.return_value.json.return_value = {"error": "invalid candidates"}
-            with self.assertRaises(PluginError) as error:
-                self.loader.uninstall_plugin("test")
-
-        self.assertIsInstance(error.exception.__cause__, self.catalog_error)
+        self.usage_get.return_value.json.return_value = {"error": "invalid specification collection"}
+        with self.assertRaises(PluginUsageError):
+            self.loader.uninstall_plugin("test")
         self.assertTrue(os.path.isdir(path))
         self.delete.assert_not_called()
-        self.assertEqual(1, request.call_count)
+        self.catalog.delete_category.assert_not_called()
 
     def test_invalid_category_response_retains_plugin_error_and_rolls_back_install(self):
         self.lookup.side_effect = ObjectDoesNotExist
@@ -1630,6 +1630,469 @@ class PackageManagementTests(SimpleTestCase):
         setattr(self.loader, "_resource_catalog" if self.plugin_type == "service" else "_catalog", other)
         self.loader.install_plugin(self.package("1.0"))
         self.assertEqual([], other.mock_calls)
+
+    @parameterized.expand([
+        ("traversal", "../escaped.py"),
+        ("absolute", "/escaped.py"),
+        ("drive", "C:/escaped.py"),
+        ("nested_escape", "dir/../../escaped.py"),
+        ("windows_escape", "dir\\..\\..\\escaped.py"),
+        ("unc", "\\\\server/share/escaped.py"),
+    ])
+    def test_unsafe_archive_entry_is_rejected_before_mutation(self, _, name):
+        package = self.package("2.0")
+        with ZipFile(package, "a") as archive:
+            archive.writestr(name, "payload")
+        with self.assertRaises(PluginError):
+            self.loader.install_plugin(package)
+        self.lookup.assert_not_called()
+        self.loader._get_plugin_module.assert_not_called()
+        self.catalog.update_category.assert_not_called()
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+
+    @parameterized.expand([
+        ("windows", 0, 0x20),
+        ("unix_link_metadata", 3, 0o120777 << 16),
+        ("other_platform_attributes", 0, 0xFFFFFFFF),
+    ])
+    def test_archive_attributes_do_not_control_extracted_file_type(self, _, system, attributes):
+        package = self.package("2.0")
+        entry = ZipInfo("payload.txt")
+        entry.create_system = system
+        entry.external_attr = attributes
+        with ZipFile(package, "a") as archive:
+            archive.writestr(entry, "../target")
+        self.loader.install_plugin(package)
+        path = os.path.join(self.directory.name, "test-2-0", "payload.txt")
+        self.assertTrue(os.path.isfile(path))
+        self.assertFalse(os.path.islink(path))
+        with open(path) as payload:
+            self.assertEqual("../target", payload.read())
+
+    @parameterized.expand([
+        ("dot", "./payload.txt", "payload.txt"),
+        ("repeated_separator", "helpers//payload.txt", "helpers/payload.txt"),
+        ("backslash", "helpers\\payload.txt", "helpers/payload.txt"),
+        ("internal_parent", "helpers/../payload.txt", "payload.txt"),
+    ])
+    def test_safe_relative_paths_are_normalized(self, _, name, expected):
+        package = self.package("2.0")
+        with ZipFile(package, "a") as archive:
+            archive.writestr(name, "payload")
+            archive.writestr("./", "")
+            archive.writestr("empty\\", "")
+        self.loader.install_plugin(package)
+        root = os.path.join(self.directory.name, "test-2-0")
+        with open(os.path.join(root, *expected.split("/"))) as payload:
+            self.assertEqual("payload", payload.read())
+        self.assertTrue(os.path.isdir(os.path.join(root, "empty")))
+
+    @parameterized.expand([
+        ("stored", zipfile.ZIP_STORED),
+        ("deflate", zipfile.ZIP_DEFLATED),
+        ("bzip2", zipfile.ZIP_BZIP2),
+        ("lzma", zipfile.ZIP_LZMA),
+    ])
+    def test_compression_support_is_delegated_to_python(self, _, compression):
+        package = self.package("2.0")
+        with ZipFile(package) as archive:
+            manifest = archive.read("package.json")
+        with ZipFile(package, "w", compression=compression) as archive:
+            archive.writestr("package.json", manifest)
+            archive.writestr("payload.txt", "compressed payload")
+        self.loader.install_plugin(package)
+        with open(os.path.join(self.directory.name, "test-2-0", "payload.txt")) as payload:
+            self.assertEqual("compressed payload", payload.read())
+
+    def test_native_zip_read_error_is_reported_before_installation(self):
+        package = self.package("2.0")
+        with patch.object(ZipFile, "read", side_effect=RuntimeError("Password required")):
+            with self.assertRaisesRegex(PluginError, "Plugin archive could not be read"):
+                self.loader.install_plugin(package)
+        self.lookup.assert_not_called()
+        self.loader._get_plugin_module.assert_not_called()
+
+    def test_native_zip_crc_error_rolls_back_partial_extraction(self):
+        package = self.package("2.0")
+        payload = b"unique payload to corrupt after archive creation"
+        with ZipFile(package, "a") as archive:
+            archive.writestr("payload.txt", payload)
+        with open(package, "rb") as source:
+            data = bytearray(source.read())
+        data[data.index(payload)] ^= 1
+        with open(package, "wb") as target:
+            target.write(data)
+        with self.assertRaisesRegex(PluginError, "Invalid plugin archive contents"):
+            self.loader.install_plugin(package)
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+        self.lookup.assert_not_called()
+        self.loader._get_plugin_module.assert_not_called()
+
+    def test_duplicate_normalized_paths_are_rejected(self):
+        package = self.package("2.0")
+        with ZipFile(package, "a") as archive:
+            archive.writestr("payload.txt", "first")
+            archive.writestr("./payload.txt", "second")
+        with self.assertRaisesRegex(PluginError, "duplicate entry paths"):
+            self.loader.install_plugin(package)
+        self.lookup.assert_not_called()
+
+    def test_conflicting_archive_paths_are_rejected(self):
+        package = self.package("2.0")
+        with ZipFile(package, "a") as archive:
+            archive.writestr("module", "file")
+            archive.writestr("module/child.py", "child")
+        with self.assertRaises(PluginError):
+            self.loader.install_plugin(package)
+        self.lookup.assert_not_called()
+
+    def test_duplicate_manifest_is_rejected(self):
+        import warnings
+        package = self.package("2.0")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with ZipFile(package, "a") as archive:
+                archive.writestr("package.json", "{}")
+        with self.assertRaises(PluginError):
+            self.loader.install_plugin(package)
+        self.lookup.assert_not_called()
+
+    @parameterized.expand([
+        ("expanded", "PLUGIN_EXPANDED_MAX_BYTES", 1),
+        ("entries", "PLUGIN_ARCHIVE_MAX_ENTRIES", 0),
+    ])
+    def test_archive_limits_are_enforced_before_mutation(self, _, setting, limit):
+        with override_settings(**{setting: limit}):
+            with self.assertRaises(PluginSizeError):
+                self.loader.install_plugin(self.package("2.0"))
+        self.lookup.assert_not_called()
+        self.loader._get_plugin_module.assert_not_called()
+
+    def test_actual_expansion_limit_removes_partially_extracted_package(self):
+        package = self.package("2.0")
+        with ZipFile(package) as archive:
+            entries = self.loader._validate_archive(archive)
+        with patch.object(self.loader, "_validate_archive", return_value=entries):
+            with override_settings(PLUGIN_EXPANDED_MAX_BYTES=1):
+                with self.assertRaises(PluginSizeError):
+                    self.loader.install_plugin(package)
+        self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+
+    def test_package_mutations_share_a_nonblocking_lock(self):
+        package = self.package("2.0")
+        with open(os.path.join(self.directory.name, ".package-management.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            operations = (
+                lambda: self.loader.install_plugin(package),
+                lambda: self.loader.downgrade_plugin("test"),
+                lambda: self.loader.uninstall_plugin("test"),
+                lambda: self.loader.synchronize_plugin_category("test"),
+            )
+            for operation in operations:
+                with self.assertRaises(PluginConflictError):
+                    operation()
+        self.lookup.assert_not_called()
+        self.loader.install_plugin(package)
+        self.assertEqual("2.0", self.model.version)
+
+    def test_another_process_cannot_mutate_while_management_lock_is_held(self):
+        code = """
+import sys
+from types import SimpleNamespace
+from wstore.asset_manager.resource_plugins.plugin_rollback import package_management
+from wstore.asset_manager.resource_plugins.plugin_error import PluginConflictError
+@package_management
+def mutate(instance):
+    raise AssertionError('Concurrent mutation was admitted')
+try:
+    mutate(SimpleNamespace(_plugins_path=sys.argv[1]))
+except PluginConflictError:
+    pass
+else:
+    raise AssertionError('No conflict reported')
+"""
+        with open(os.path.join(self.directory.name, ".package-management.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = subprocess.run(
+                [sys.executable, "-c", code, self.directory.name],
+                env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+                capture_output=True, text=True, timeout=10,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_rollback_holds_lock_until_cleanup_finishes(self):
+        original = self.loader._clear_module_namespace
+        def cleanup(namespace):
+            with self.assertRaises(PluginConflictError):
+                self.loader.synchronize_plugin_category("test")
+            original(namespace)
+        self.loader._clear_module_namespace = Mock(side_effect=cleanup)
+        self.save.side_effect = [RuntimeError("save failed"), None]
+        with self.assertRaises(RuntimeError):
+            self.loader.install_plugin(self.package("2.0"))
+        self.loader._clear_module_namespace.assert_called_once()
+        self.lookup.reset_mock()
+        self.loader.synchronize_plugin_category("test")
+        self.lookup.assert_called_once()
+
+    def test_failed_install_clears_only_attempted_module_namespace(self):
+        namespace = self.loader._plugins_module + "test-2-0"
+        previous = self.loader._plugins_module + "test-1-0"
+        sentinel = types.ModuleType(previous)
+        sys.modules[previous] = sentinel
+        self.addCleanup(sys.modules.pop, previous, None)
+        def import_attempt(module):
+            sys.modules[namespace] = types.ModuleType(namespace)
+            sys.modules[namespace + ".implementation"] = types.ModuleType(namespace + ".implementation")
+            return self.handler_class
+        self.loader._get_plugin_module.side_effect = import_attempt
+        self.save.side_effect = [RuntimeError("save failed"), None]
+        with self.assertRaises(RuntimeError):
+            self.loader.install_plugin(self.package("2.0"))
+        self.assertNotIn(namespace, sys.modules)
+        self.assertNotIn(namespace + ".implementation", sys.modules)
+        self.assertIs(sentinel, sys.modules[previous])
+        self.save.side_effect = None
+        self.assertEqual("test", self.loader.install_plugin(self.package("2.0")))
+        self.addCleanup(self.loader._clear_module_namespace, namespace)
+
+    def test_catalog_failures_have_typed_errors_and_rollback(self):
+        from requests.exceptions import ConnectionError, Timeout
+        for failure, expected in (
+            (self.catalog_error("bad response"), PluginCatalogError),
+            (HTTPError("upstream rejected"), PluginCatalogError),
+            (ConnectionError("offline"), PluginUnavailableError),
+            (Timeout("timed out"), PluginUnavailableError),
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                self.catalog.update_category.side_effect = [failure, None]
+                with self.assertRaises(expected):
+                    self.loader.install_plugin(self.package("2.0"))
+                self.assertEqual("1.0", self.model.version)
+                self.assertFalse(os.path.exists(os.path.join(self.directory.name, "test-2-0")))
+
+    def test_installed_and_older_versions_raise_conflicts(self):
+        for version in ("1.0", "0.1"):
+            with self.assertRaises(PluginConflictError):
+                self.loader.install_plugin(self.package(version))
+        self.catalog.update_category.assert_not_called()
+
+    def test_real_failed_import_can_be_retried_with_corrected_same_version(self):
+        namespace = "retry_plugin_" + self.plugin_type
+        root = os.path.join(self.directory.name, namespace)
+        os.mkdir(root)
+        with open(os.path.join(root, "__init__.py"), "w"):
+            pass
+        self.loader._plugins_path = root
+        self.loader._plugins_module = namespace + "."
+        self.loader._get_plugin_module = PluginLoader._get_plugin_module.__get__(self.loader)
+        self.addCleanup(self.loader._clear_module_namespace, namespace)
+        self.lookup.side_effect = ObjectDoesNotExist
+        package = self.package("1.0")
+        with ZipFile(package) as archive:
+            info = json.loads(archive.read("package.json"))
+        info["module"] = "implementation.Installed"
+        def write(source):
+            with ZipFile(package, "w") as archive:
+                archive.writestr("package.json", json.dumps(info))
+                archive.writestr("implementation.py", source)
+        handler = "ServicePlugin" if self.plugin_type == "service" else "ResourcePlugin"
+        with patch.object(sys, "path", [self.directory.name] + sys.path):
+            write("raise RuntimeError('initial import failed')")
+            with self.assertRaises(PluginError):
+                self.loader.install_plugin(package)
+            self.assertFalse(any(name.startswith(namespace + ".test-1-0") for name in sys.modules))
+            self.catalog.create_category.assert_not_called()
+            write(
+                f"from wstore.asset_manager.resource_plugins.plugin import {handler}\n"
+                f"class Installed({handler}):\n    pass\n"
+            )
+            self.assertEqual("test", self.loader.install_plugin(package))
+        self.catalog.create_category.assert_called_once_with("test", "1.0")
+
+    def test_filesystem_import_errors_are_not_reported_as_invalid_packages(self):
+        with patch.object(plugin_loader, "__import__", side_effect=PermissionError("unreadable"), create=True):
+            with self.assertRaises(PermissionError):
+                PluginLoader._get_plugin_module(self.loader, "package.Implementation")
+
+    def test_rollback_logs_cleanup_failure_without_masking_original_error(self):
+        self.save.side_effect = [RuntimeError("save failed"), None]
+        with patch("wstore.asset_manager.resource_plugins.plugin_rollback.rmtree", side_effect=PermissionError("denied")):
+            with self.assertLogs("wstore.default_logger", level="ERROR") as logs:
+                with self.assertRaisesRegex(RuntimeError, "save failed"):
+                    self.loader.install_plugin(self.package("2.0"))
+        self.assertTrue(any("reconciliation required" in message for message in logs.output))
+        self.assertEqual("1.0", self.model.version)
+
+    def test_preexisting_worker_imports_new_package_without_restart(self):
+        namespace = "runtime_worker_" + self.plugin_type
+        root = os.path.join(self.directory.name, namespace)
+        os.mkdir(root)
+        with open(os.path.join(root, "__init__.py"), "w"):
+            pass
+        self.loader._plugins_path = root
+        self.loader._plugins_module = namespace + "."
+        self.loader._get_plugin_module = PluginLoader._get_plugin_module.__get__(self.loader)
+        self.addCleanup(self.loader._clear_module_namespace, namespace)
+        self.lookup.side_effect = ObjectDoesNotExist
+        package = self.package("1.0")
+        with ZipFile(package) as archive:
+            info = json.loads(archive.read("package.json"))
+        info["module"] = "implementation.Installed"
+        handler = "ServicePlugin" if self.plugin_type == "service" else "ResourcePlugin"
+        with ZipFile(package, "w") as archive:
+            archive.writestr("package.json", json.dumps(info))
+            archive.writestr("implementation.py",
+                f"from wstore.asset_manager.resource_plugins.plugin import {handler}\n"
+                f"class Installed({handler}):\n    pass\n")
+        code = """
+import sys, importlib, logging
+from types import SimpleNamespace
+sys.argv = ['manage.py', 'test']
+import django
+django.setup()
+from wstore.asset_manager.resource_plugins.decorators import _load_plugin_model
+namespace = sys.stdin.readline().strip()
+importlib.import_module(namespace)
+assert importlib.util.find_spec(namespace + '.test-1-0') is None
+print('ready', flush=True)
+module = sys.stdin.readline().strip()
+print(type(_load_plugin_model(SimpleNamespace(module=module))).__name__, flush=True)
+"""
+        worker = subprocess.Popen(
+            [sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env={**os.environ, "PYTHONPATH": os.pathsep.join([self.directory.name] + sys.path)},
+        )
+        try:
+            worker.stdin.write(namespace + "\n")
+            worker.stdin.flush()
+            self.assertTrue(select.select([worker.stdout], [], [], 10)[0], "Worker did not initialize")
+            self.assertEqual("ready", worker.stdout.readline().strip())
+            with patch.object(sys, "path", [self.directory.name] + sys.path):
+                self.loader.install_plugin(package)
+            output, errors = worker.communicate(namespace + ".test-1-0.implementation.Installed\n", timeout=10)
+            self.assertEqual(0, worker.returncode, errors)
+            self.assertEqual("Installed", output.strip())
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate()
+
+    def usage_document(self, source, value="category-1"):
+        field = "specCharacteristic" if self.plugin_type == "service" else "resourceSpecCharacteristic"
+        value_field = "characteristicValueSpecification" if self.plugin_type == "service" else "resourceSpecCharacteristicValue"
+        entry = {"name": " " + self.plugin_type.title() + " Type ", "value": value}
+        if source == "specification":
+            entry = {"name": entry["name"], value_field: [{"value": value}]}
+        else:
+            field = self.plugin_type + "Characteristic"
+        return {"id": source + "-1", field: [entry]}
+
+    def assert_uninstall_preserved(self):
+        self.catalog.delete_category.assert_not_called()
+        self.delete.assert_not_called()
+        self.loader._get_plugin_module.assert_not_called()
+
+    @parameterized.expand([("string", "category-1"), ("legacy_reference", {"id": "category-1"})])
+    def test_specification_reference_blocks_uninstall(self, _, value):
+        self.usage_get.return_value.json.return_value = [self.usage_document("specification", value)]
+        path = os.path.join(self.directory.name, "test-1-0")
+        os.mkdir(path)
+        self.model.pull_accounting = True
+        with self.assertRaises(PermissionDenied):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+        self.assertTrue(os.path.isdir(path))
+
+    @parameterized.expand([("active",), ("suspended",), ("terminated",)])
+    def test_inventory_reference_blocks_uninstall_without_specification(self, state):
+        document = self.usage_document("inventory")
+        document["state" if self.plugin_type == "service" else "resourceStatus"] = state
+        empty, used = Mock(), Mock()
+        empty.json.return_value = []
+        used.json.return_value = [document]
+        self.usage_get.side_effect = [empty, used]
+        with self.assertRaises(PermissionDenied):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+        self.assertEqual(2, self.usage_get.call_count)
+        self.assertTrue(self.usage_get.call_args.args[0].endswith("/" + self.plugin_type))
+
+    @parameterized.expand([("specification",), ("inventory",)])
+    def test_reference_on_later_short_page_blocks_uninstall(self, source):
+        ordinary = self.usage_document(source, "other-category")
+        used = self.usage_document(source)
+        used["id"] = "referenced-instance"
+        def response(documents):
+            result = Mock()
+            result.json.return_value = documents
+            return result
+        pages = [response([ordinary]), response([used])]
+        if source == "inventory":
+            pages.insert(0, response([]))
+        self.usage_get.side_effect = pages
+        with self.assertRaises(PermissionDenied):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+        self.assertEqual({"offset": 1, "limit": 100}, self.usage_get.call_args.kwargs["params"])
+
+    def test_unreferenced_plugin_checks_both_domains_before_deletion(self):
+        self.loader.uninstall_plugin("test")
+        calls = self.usage_get.call_args_list
+        self.assertEqual(2, len(calls))
+        self.assertTrue(calls[0].args[0].endswith("/" + self.plugin_type + "Specification"))
+        self.assertTrue(calls[1].args[0].endswith("/" + self.plugin_type))
+        self.assertEqual([call.delete_category("category-1")], self.catalog.method_calls)
+        self.delete.assert_called_once()
+
+    def test_reference_for_other_type_is_not_mistaken_for_usage(self):
+        document = self.usage_document("specification")
+        field = "specCharacteristic" if self.plugin_type == "service" else "resourceSpecCharacteristic"
+        document[field][0]["name"] = "Resource Type" if self.plugin_type == "service" else "Service Type"
+        page, empty = Mock(), Mock()
+        page.json.return_value = [document]
+        empty.json.return_value = []
+        self.usage_get.side_effect = [page, empty, empty]
+        self.loader.uninstall_plugin("test")
+        self.delete.assert_called_once()
+
+    @parameterized.expand([
+        ("object", {"error": "upstream failed"}),
+        ("invalid_document", [None]),
+        ("missing_id", [{}]),
+        ("invalid_characteristics", [{"id": "spec-1", "specCharacteristic": {}, "resourceSpecCharacteristic": {}}]),
+    ])
+    def test_unverifiable_usage_blocks_removal(self, _, documents):
+        self.usage_get.return_value.json.return_value = documents
+        with self.assertRaises(PluginUsageError):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+
+    def test_invalid_usage_json_blocks_removal(self):
+        self.usage_get.return_value.json.side_effect = ValueError("invalid JSON")
+        with self.assertRaises(PluginUsageError):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+
+    def test_ignored_pagination_is_not_treated_as_no_usage(self):
+        self.usage_get.return_value.json.return_value = [self.usage_document("specification", "other-category")]
+        with self.assertRaises(PluginUsageError):
+            self.loader.uninstall_plugin("test")
+        self.assertEqual(2, self.usage_get.call_count)
+        self.assert_uninstall_preserved()
+
+    @parameterized.expand([("missing", None), ("wrong_type", 42), ("empty", "")])
+    def test_invalid_plugin_type_reference_blocks_removal(self, _, value):
+        self.usage_get.return_value.json.return_value = [self.usage_document("specification", value)]
+        with self.assertRaises(PluginUsageError):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
+
+    def test_usage_http_failure_keeps_plugin_installed(self):
+        self.usage_get.side_effect = HTTPError("usage API unavailable")
+        with self.assertRaises(HTTPError):
+            self.loader.uninstall_plugin("test")
+        self.assert_uninstall_preserved()
 
 
 class ResourcePackageManagementTests(PackageManagementTests):
@@ -1985,3 +2448,241 @@ class TerminationDispatchTests(SimpleTestCase):
             ServicePlugin if kind == "service" else ResourcePluginHandler
         )(object())
         self.dispatch()
+
+
+class PluginInstallationApiTests(SimpleTestCase):
+    url = "/charging/api/assetManagement/assetTypes/installJob"
+
+    def setUp(self):
+        from django.test import RequestFactory
+        from wstore.asset_manager.resource_plugins import views
+        self.views = views
+        self.factory = RequestFactory()
+        self.view = views.PluginInstallCollection(permitted_methods=("POST",))
+        self.model = ResourcePlugin(
+            plugin_id="example", name="Example", type="service", version="1.0",
+            category_id="category-1", author="Test", requires_file=False,
+        )
+        for name in ("PluginLoader", "ResourcePlugin"):
+            patcher = patch.object(views, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.PluginLoader.return_value.install_plugin.return_value = "example"
+        self.ResourcePlugin.objects.get.return_value = self.model
+        self.paths = []
+        def install(path):
+            self.assertTrue(os.path.isfile(path))
+            with open(path, "rb") as package:
+                self.assertEqual(b"package-bytes", package.read())
+            self.paths.append(path)
+            return "example"
+        self.PluginLoader.return_value.install_plugin.side_effect = install
+
+    def request(self, data=None, anonymous=False, staff=True):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        if data is None:
+            data = {"file": SimpleUploadedFile("plugin.zip", b"package-bytes", "application/zip")}
+        request = self.factory.post(self.url, data)
+        request.user = Mock(is_anonymous=anonymous, is_staff=staff, pk="admin-1")
+        return request
+
+    @parameterized.expand([
+        ("service", False), ("service", True), ("resource", False), ("resource", True),
+    ])
+    def test_success_uses_one_installer_call_then_returns_metadata_and_cleans_upload(self, kind, requires_file):
+        self.model.type = kind
+        self.model.requires_file = requires_file
+        response = self.view(self.request())
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(self.views.get_plugin_info(self.model), json.loads(response.content))
+        self.assertEqual(json.loads(response.content)["href"], response["Location"])
+        self.PluginLoader.return_value.install_plugin.assert_called_once_with(self.paths[0])
+        self.ResourcePlugin.objects.get.assert_called_once_with(plugin_id="example")
+        self.assertFalse(os.path.exists(self.paths[0]))
+        self.assertFalse(os.path.exists(os.path.dirname(self.paths[0])))
+
+    @parameterized.expand([("anonymous", True, False, 401), ("customer", False, False, 403)])
+    def test_authorization_precedes_upload_parsing(self, _, anonymous, staff, expected):
+        request = self.request(anonymous=anonymous, staff=staff)
+        request._load_post_and_files = Mock(side_effect=AssertionError("Upload parsed before authorization"))
+        self.assertEqual(expected, self.view(request).status_code)
+        request._load_post_and_files.assert_not_called()
+        self.PluginLoader.assert_not_called()
+
+    def test_unsupported_content_type_does_not_invoke_installer(self):
+        request = self.factory.post(self.url, "{}", content_type="application/json")
+        request.user = Mock(is_anonymous=False, is_staff=True, pk="admin-1")
+        self.assertEqual(415, self.view(request).status_code)
+        self.PluginLoader.assert_not_called()
+
+    def test_only_post_is_routable(self):
+        from django.urls import resolve
+        for path in (self.url, self.url + "/"):
+            view = resolve(path).func
+            self.assertIsInstance(view, self.views.PluginInstallCollection)
+            self.assertEqual(405, view(self.factory.get(path)).status_code)
+
+    def test_missing_empty_multiple_and_wrong_file_fields_are_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        for data in (
+            {},
+            {"file": SimpleUploadedFile("empty.zip", b"")},
+            {"file": [SimpleUploadedFile("a.zip", b"a"), SimpleUploadedFile("b.zip", b"b")]},
+            {"other": SimpleUploadedFile("plugin.zip", b"x")},
+        ):
+            with self.subTest(fields=list(data)):
+                self.assertEqual(400, self.view(self.request(data)).status_code)
+        self.PluginLoader.assert_not_called()
+
+    def test_existing_request_size_rejection_returns_413_without_calling_installer(self):
+        from django.core.exceptions import RequestDataTooBig
+
+        request = self.request()
+        request._load_post_and_files = Mock(side_effect=RequestDataTooBig("Request too large"))
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.assertEqual(413, self.view(request).status_code)
+        self.PluginLoader.assert_not_called()
+
+    @parameterized.expand([
+        ("conflict", PluginConflictError, 409),
+        ("limit", PluginSizeError, 413),
+        ("invalid", PluginError, 422),
+        ("catalog", PluginCatalogError, 502),
+        ("unavailable", PluginUnavailableError, 503),
+        ("unexpected", RuntimeError, 500),
+    ])
+    def test_install_errors_map_to_status_and_remove_temporary_files(self, _, error, expected):
+        def fail(path):
+            self.paths.append(path)
+            raise error("sensitive /server/path must not appear in response")
+        self.PluginLoader.return_value.install_plugin.side_effect = fail
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            response = self.view(self.request())
+        self.assertEqual(expected, response.status_code)
+        self.assertNotIn(b"/server/path", response.content)
+        self.assertFalse(os.path.exists(os.path.dirname(self.paths[0])))
+        self.ResourcePlugin.objects.get.assert_not_called()
+
+    def test_malformed_multipart_returns_bad_request(self):
+        request = self.factory.generic("POST", self.url, b"invalid", content_type="multipart/form-data")
+        request.user = Mock(is_anonymous=False, is_staff=True, pk="admin-1")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.assertEqual(400, self.view(request).status_code)
+        self.PluginLoader.assert_not_called()
+
+    def test_upload_read_failure_cleans_partial_file_without_calling_installer(self):
+        request = self.request()
+        def chunks():
+            yield b"partial"
+            raise OSError("read failed")
+        request.FILES["file"].chunks = chunks
+        directories = []
+        def temporary_directory(*args, **kwargs):
+            directory = TemporaryDirectory(*args, **kwargs)
+            directories.append(directory.name)
+            return directory
+        with patch.object(self.views, "TemporaryDirectory", side_effect=temporary_directory):
+            with self.assertLogs("wstore.default_logger", level="ERROR"):
+                self.assertEqual(500, self.view(request).status_code)
+        self.assertFalse(os.path.exists(directories[0]))
+        self.PluginLoader.assert_not_called()
+
+    def test_metadata_failure_does_not_reinstall_completed_package(self):
+        self.ResourcePlugin.objects.get.side_effect = RuntimeError("database unavailable")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.assertEqual(500, self.view(self.request()).status_code)
+        self.PluginLoader.return_value.install_plugin.assert_called_once()
+        self.assertFalse(os.path.exists(os.path.dirname(self.paths[0])))
+
+
+class PluginUninstallApiTests(SimpleTestCase):
+    url = "/charging/api/assetManagement/assetTypes/example"
+
+    def setUp(self):
+        from django.test import RequestFactory
+        from wstore.asset_manager.resource_plugins import views
+
+        self.views = views
+        self.factory = RequestFactory()
+        self.view = views.PluginEntry(permitted_methods=("GET", "DELETE"))
+        patcher = patch.object(views, "PluginLoader")
+        self.loader_class = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.loader = self.loader_class.return_value
+
+    def request(self, anonymous=False, staff=True):
+        request = self.factory.delete(self.url)
+        request.user = Mock(is_anonymous=anonymous, is_staff=staff, pk="admin-1")
+        return request
+
+    def test_admin_deletes_through_shared_loader_without_request_body(self):
+        request = self.request()
+        request._load_post_and_files = Mock(side_effect=AssertionError("No upload should be parsed"))
+        response = self.view(request, plugin_id="example")
+        self.assertEqual(204, response.status_code)
+        self.assertEqual(b"", response.content)
+        self.loader_class.assert_called_once_with()
+        self.loader.uninstall_plugin.assert_called_once_with("example")
+        self.assertEqual([call.uninstall_plugin("example")], self.loader.method_calls)
+        request._load_post_and_files.assert_not_called()
+
+    @parameterized.expand([("anonymous", True, False, 401), ("non_admin", False, False, 403)])
+    def test_authorization_precedes_loader_access(self, _, anonymous, staff, expected):
+        response = self.view(self.request(anonymous=anonymous, staff=staff), plugin_id="example")
+        self.assertEqual(expected, response.status_code)
+        self.loader_class.assert_not_called()
+
+    def test_delete_route_supports_optional_trailing_slash_and_rejects_post(self):
+        from django.urls import resolve
+
+        for path in (self.url, self.url + "/"):
+            match = resolve(path)
+            self.assertIsInstance(match.func, self.views.PluginEntry)
+            self.assertEqual("example", match.kwargs["plugin_id"])
+            self.assertEqual(204, match.func(self.request(), **match.kwargs).status_code)
+            self.assertEqual(405, match.func(self.factory.post(path), **match.kwargs).status_code)
+        install = resolve("/charging/api/assetManagement/assetTypes/installJob")
+        self.assertEqual(405, install.func(self.request()).status_code)
+
+    @parameterized.expand([
+        ("missing", ObjectDoesNotExist, 404),
+        ("in_use", PermissionDenied, 409),
+        ("busy", PluginConflictError, 409),
+        ("configuration", PluginError, 422),
+        ("catalog", PluginCatalogError, 502),
+        ("service_catalog", ServiceCatalogError, 502),
+        ("usage_verification", PluginUsageError, 502),
+        ("resource_catalog", ResourceCatalogError, 502),
+        ("http", HTTPError, 502),
+        ("unavailable", PluginUnavailableError, 503),
+        ("unexpected", RuntimeError, 500),
+    ])
+    def test_removal_errors_map_to_status_without_leaking_details(self, _, error, expected):
+        self.loader.uninstall_plugin.side_effect = error("sensitive /server/path")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            response = self.view(self.request(), plugin_id="example")
+        self.assertEqual(expected, response.status_code)
+        body = json.loads(response.content)
+        self.assertEqual("error", body["result"])
+        self.assertNotIn("/server/path", body["error"])
+        self.loader.uninstall_plugin.assert_called_once_with("example")
+
+    def test_network_failures_return_service_unavailable(self):
+        from requests.exceptions import ConnectionError, Timeout
+
+        for error in (ConnectionError, Timeout):
+            with self.subTest(error=error.__name__):
+                self.loader.uninstall_plugin.side_effect = error("offline")
+                with self.assertLogs("wstore.default_logger", level="ERROR"):
+                    self.assertEqual(503, self.view(self.request(), plugin_id="example").status_code)
+
+    def test_existing_get_metadata_remains_available_to_authenticated_non_admins(self):
+        model = ResourcePlugin(plugin_id="example", name="Example", type="service", requires_file=False)
+        request = self.factory.get(self.url)
+        request.user = Mock(is_anonymous=False, is_staff=False)
+        with patch.object(self.views, "ResourcePlugin") as registry:
+            registry.objects.get.return_value = model
+            response = self.view(request, plugin_id="example")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(self.views.get_plugin_info(model), json.loads(response.content))
+        self.loader_class.assert_not_called()

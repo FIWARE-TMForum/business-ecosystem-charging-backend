@@ -59,15 +59,6 @@ class ResourceCatalog:
             json=self.category_data(name, version),
         )
 
-    def category_in_use(self, category_id):
-        # Existence is enough: no need to download every matching candidate.
-        candidates = self._request(
-            "GET", "/resourceCandidate", params={"category.id": category_id, "limit": 1}
-        ).json()
-        if not isinstance(candidates, list):
-            raise ResourceCatalogError("Resource catalog returned an invalid candidate collection")
-        return bool(candidates)
-
     def delete_category(self, category_id):
         self._request("DELETE", "/resourceCategory/" + quote(str(category_id), safe=""))
 

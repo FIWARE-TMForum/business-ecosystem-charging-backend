@@ -21,14 +21,32 @@
 
 
 import json
+import os
+from logging import getLogger
+from tempfile import TemporaryDirectory
 from urllib.parse import urljoin
 
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist, PermissionDenied, RequestDataTooBig
 from django.http import HttpResponse
-
+from django.http.multipartparser import MultiPartParserError
+from requests.exceptions import ConnectionError, HTTPError, Timeout
+from wstore.asset_manager.resource_plugins.plugin_error import (
+    PluginCatalogError,
+    PluginConflictError,
+    PluginError,
+    PluginSizeError,
+    PluginUnavailableError,
+    PluginUsageError,
+)
+from wstore.asset_manager.resource_plugins.plugin_loader import PluginLoader
 from wstore.models import ResourcePlugin
 from wstore.store_commons.resource import Resource
-from wstore.store_commons.utils.http import authentication_required, build_response
+from wstore.store_commons.resource_catalog import ResourceCatalogError
+from wstore.store_commons.service_catalog import ServiceCatalogError
+from wstore.store_commons.utils.http import authentication_required, build_response, get_content_type
+
+logger = getLogger("wstore.default_logger")
 
 
 def get_plugin_info(plugin):
@@ -77,6 +95,63 @@ class PluginCollection(Resource):
         return HttpResponse(json.dumps(result), status=200, content_type=mime_type)
 
 
+class PluginInstallCollection(Resource):
+    @authentication_required
+    def create(self, request):
+        if not request.user.is_staff:
+            return build_response(request, 403, "Only administrators can install plugins")
+        if get_content_type(request)[0] != "multipart/form-data":
+            return build_response(request, 415, "Expected a multipart/form-data plugin upload")
+
+        actor = request.user.pk
+        logger.info("Plugin installation requested by administrator %s", actor)
+        try:
+            files = request.FILES
+            if set(files) != {"file"} or len(files.getlist("file")) != 1:
+                return build_response(request, 400, "Provide exactly one plugin package in the file field")
+            upload = files["file"]
+            if not upload.size:
+                return build_response(request, 400, "The plugin package is empty")
+
+            with TemporaryDirectory(prefix="charging-plugin-") as temporary:
+                path = os.path.join(temporary, "package.zip")
+                size = 0
+                with open(path, "xb") as target:
+                    for chunk in upload.chunks():
+                        size += len(chunk)
+                        target.write(chunk)
+                if not size:
+                    return build_response(request, 400, "The plugin package is empty")
+                plugin_id = PluginLoader().install_plugin(path)
+
+            # Installation has completed. A metadata read failure must not reinstall it.
+            logger.info("Administrator %s installed plugin %s", actor, plugin_id)
+            metadata = get_plugin_info(ResourcePlugin.objects.get(plugin_id=plugin_id))
+            response = HttpResponse(json.dumps(metadata), status=200, content_type="application/json; charset=utf-8")
+            response["Location"] = metadata["href"]
+            return response
+        except Exception as exc:
+            if isinstance(exc, (RequestDataTooBig, PluginSizeError)):
+                status, message = 413, "Plugin package exceeds the configured size limits"
+            elif isinstance(exc, MultiPartParserError):
+                status, message = 400, "Invalid multipart upload"
+            elif isinstance(exc, PluginConflictError):
+                status, message = (
+                    409,
+                    "Plugin version conflicts with an existing installation or package management is busy",
+                )
+            elif isinstance(exc, (PluginUnavailableError, ConnectionError, Timeout)):
+                status, message = 503, "Plugin installation dependency is unavailable"
+            elif isinstance(exc, (PluginCatalogError, HTTPError)):
+                status, message = 502, "Plugin catalog operation failed"
+            elif isinstance(exc, PluginError):
+                status, message = 422, "Plugin package validation or initialization failed"
+            else:
+                status, message = 500, "Plugin installation could not be completed; check the installed plugin state"
+            logger.exception("Plugin installation request by administrator %s failed (%s)", actor, status)
+            return build_response(request, status, message)
+
+
 class PluginEntry(Resource):
     @authentication_required
     def read(self, request, plugin_id):
@@ -88,3 +163,35 @@ class PluginEntry(Resource):
         plugin_info = get_plugin_info(plugin)
         mime_type = "application/JSON; charset=UTF-8"
         return HttpResponse(json.dumps(plugin_info), status=200, content_type=mime_type)
+
+    @authentication_required
+    def delete(self, request, plugin_id):
+        if not request.user.is_staff:
+            return build_response(request, 403, "Only administrators can uninstall plugins")
+
+        actor = request.user.pk
+        logger.info("Administrator %s requested removal of plugin %s", actor, plugin_id)
+        try:
+            PluginLoader().uninstall_plugin(plugin_id)
+        except Exception as exc:
+            if isinstance(exc, ObjectDoesNotExist):
+                status, message = 404, "Plugin is not installed"
+            elif isinstance(exc, PermissionDenied):
+                status, message = 409, "Plugin is in use and cannot be uninstalled"
+            elif isinstance(exc, PluginConflictError):
+                status, message = 409, "Another plugin management operation is in progress"
+            elif isinstance(exc, (PluginUnavailableError, ConnectionError, Timeout)):
+                status, message = 503, "Plugin removal dependency is unavailable"
+            elif isinstance(
+                exc, (PluginCatalogError, PluginUsageError, ServiceCatalogError, ResourceCatalogError, HTTPError)
+            ):
+                status, message = 502, "Plugin usage verification or catalog operation failed"
+            elif isinstance(exc, PluginError):
+                status, message = 422, "Plugin removal could not be validated; check the plugin configuration"
+            else:
+                status, message = 500, "Plugin removal could not be completed; check the installed plugin state"
+            logger.exception("Plugin removal request by administrator %s for %s failed (%s)", actor, plugin_id, status)
+            return build_response(request, status, message)
+
+        logger.info("Administrator %s uninstalled plugin %s", actor, plugin_id)
+        return HttpResponse(status=204)

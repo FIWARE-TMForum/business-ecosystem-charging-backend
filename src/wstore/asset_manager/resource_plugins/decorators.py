@@ -20,6 +20,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from functools import wraps
+from importlib import invalidate_caches
 
 from django.conf import settings
 from logging import getLogger
@@ -109,6 +110,7 @@ def _load_category_plugin(category_id, plugin_type):
 
 
 def _load_plugin_model(plugin_model):
+    invalidate_caches()
     module = plugin_model.module
     module_class_name = module.split(".")[-1]
     module_package = module.partition("." + module_class_name)[0]
