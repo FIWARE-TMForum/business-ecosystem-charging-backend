@@ -776,6 +776,12 @@ class InventoryClientTestCase(TestCase):
             "value": "testing_value"
             }
     def setUp(self):
+        termination_patch = patch("wstore.asset_manager.resource_plugins.decorators.on_product_termination")
+        self.termination = termination_patch.start()
+        self.addCleanup(termination_patch.stop)
+        order_patch = patch("wstore.ordering.models.Order.get_by_product_id")
+        self.get_order = order_patch.start()
+        self.addCleanup(order_patch.stop)
         # Mock requests
         inventory_client.requests = MagicMock()
         self.response = MagicMock()
@@ -944,6 +950,41 @@ class InventoryClientTestCase(TestCase):
         self.assertEqual(len(calls), 5)
         self.assertEqual(calls[3], call("http://localhost:9090/resourceInventory/resource/res-1", json={"resourceStatus": "reserved"}, verify=True))
         self.assertEqual(calls[4], call("http://localhost:7070/serviceInventory/service/svc-1", json={"state": "reserved"}, verify=True))
+
+    def test_pending_saved_before_plugin_cleanup_and_inventory_updates(self):
+        events = []
+        pending = inventory_client.PendingTermination.return_value
+        pending.save.side_effect = lambda: events.append("pending")
+        self.termination.side_effect = lambda *args: events.append("plugins")
+        inventory_client.requests.patch.side_effect = lambda *args, **kwargs: (
+            events.append("inventory") or MagicMock()
+        )
+        pending.delete.side_effect = lambda: events.append("done")
+        inventory_client.InventoryClient().terminate_product("1")
+        self.assertEqual(["pending", "plugins", "inventory", "done"], events)
+        self.get_order.assert_called_once_with("1")
+        order = self.get_order.return_value
+        order.get_product_contract.assert_called_once_with("1")
+        self.termination.assert_called_once_with(order, order.get_product_contract.return_value)
+
+    def test_plugin_failure_retains_pending_without_inventory_updates(self):
+        self.termination.side_effect = RuntimeError("cleanup failed")
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                inventory_client.InventoryClient().terminate_product("1")
+        inventory_client.PendingTermination.return_value.save.assert_called_once()
+        inventory_client.PendingTermination.return_value.delete.assert_not_called()
+        inventory_client.requests.patch.assert_not_called()
+
+    def test_context_failure_retains_pending_without_inventory_updates(self):
+        self.get_order.side_effect = RuntimeError("order unavailable")
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
+            with self.assertRaisesRegex(RuntimeError, "order unavailable"):
+                inventory_client.InventoryClient().terminate_product("1")
+        inventory_client.PendingTermination.return_value.save.assert_called_once()
+        inventory_client.PendingTermination.return_value.delete.assert_not_called()
+        self.termination.assert_not_called()
+        inventory_client.requests.patch.assert_not_called()
 
     def test_get_product(self):
         client = inventory_client.InventoryClient()

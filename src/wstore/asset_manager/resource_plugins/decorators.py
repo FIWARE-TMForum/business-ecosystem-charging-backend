@@ -297,6 +297,21 @@ def on_product_activation(product, order, contract=None):
     _notify_inventory_plugins(product, order, contract, "activation", raise_on_error=True)
 
 
+def on_product_termination(order, contract):
+    """Run plugin cleanup for the purchase termination operation."""
+    try:
+        product = InventoryClient().get_product(contract.product_id)
+        if not isinstance(product, dict) or product.get("id") != contract.product_id:
+            raise PluginError("Invalid inventory product for termination")
+        raw_order = OrderingClient().get_order(order.order_id)
+        if not isinstance(raw_order, dict) or raw_order.get("id") != order.order_id:
+            raise PluginError("Invalid order for product termination")
+        _notify_inventory_plugins(product, raw_order, contract, "termination", raise_on_error=True)
+    except Exception:
+        logger.exception("Termination failed for order %s, product %s", order.order_id, contract.product_id)
+        raise
+
+
 def process_product_notification(order, contract, type_):
     # Usage dispatch remains deferred.
     pass

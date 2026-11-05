@@ -233,6 +233,13 @@ class InventoryClient:
         pending.delete()
 
     def _do_terminate(self, product_id, resource_ids, service_ids):
+        # Import here because plugin dispatch also uses InventoryClient.
+        from wstore.asset_manager.resource_plugins.decorators import on_product_termination
+        from wstore.ordering.models import Order
+
+        order = Order.get_by_product_id(product_id)
+        on_product_termination(order, order.get_product_contract(product_id))
+
         # Keep track of the resources/services already patched so they can be
         # rolled back if a later patch fails
         patched_resources = []
