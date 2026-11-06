@@ -195,19 +195,15 @@ class LocalEngineV1:
         )
 
     def _send_notification(self, concept, transactions):
+        # Purchase notifications belong to order receipt and product activation,
+        # which are handled by the ordering workflow, not this legacy engine.
+        if concept not in ("recurring", "usage"):
+            return
         # TODO: Improve the rollback in case of unexpected exception
         try:
-            # Send notifications if required
             logger.info("Sending notification")
             handler = NotificationsHandler()
-            if concept == "initial":
-                # Send customer and provider notifications
-                handler.send_acquired_notification(self._order)
-                for cont in self._order.get_contracts():
-                    handler.send_provider_notification(self._order, cont)
-
-            elif concept == "recurring" or concept == "usage":
-                handler.send_renovation_notification(self._order, transactions)
+            handler.send_renovation_notification(self._order, transactions)
         except:
             pass
 

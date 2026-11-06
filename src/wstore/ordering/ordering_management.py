@@ -26,6 +26,7 @@ from logging import getLogger
 import requests
 from django.conf import settings
 
+from wstore.admin.users.notification_handler import NotificationsHandler
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.asset_manager.resource_plugins.decorators import (
     on_product_activation,
@@ -161,8 +162,10 @@ class OrderingManager:
 
     def _filter_add_items(self, items):
         process_items = []
+        offering_names = []
         for item in items:
             new_contract, offering_info, mode = self._filter_item(item)
+            offering_names.append(offering_info.get("name", ""))
             if new_contract is not None:
                 process_items.append({
                     'item': item,
@@ -171,7 +174,7 @@ class OrderingManager:
                     'mode': mode
                 })
 
-        return process_items
+        return process_items, offering_names
 
     def _process_add_items(self, item_info, order, description, terms_accepted):
         order_id = order["id"]
@@ -339,11 +342,12 @@ class OrderingManager:
                 raise OrderingError("Missing billing account in product order")
 
             # Filter out the items that are not going to be processed
-            process_items = self._filter_add_items(items["add"])
+            process_items, offering_names = self._filter_add_items(items["add"])
             logger.info("Items are being processed")
 
             if len(process_items) == 0:
-                # No contracts to process, all the items as manual
+                # No contracts to process, all the items as manual.
+                NotificationsHandler.send_provider_notification(order, offering_names)
                 return None
 
             # Update status of items to be processed
@@ -352,6 +356,8 @@ class OrderingManager:
             logger.info("Status of orders and items set to inProgress")
 
             redirection_url = self._process_add_items(process_items, order, description, terms_accepted)
+            NotificationsHandler.send_provider_notification(order, offering_names)
+
         if len(items["modify"]):
             self.ordering_client.update_items_state(order, "inProgress", root_state="inProgress", items=items["modify"])
         if len(items["delete"]):
@@ -447,6 +453,7 @@ class OrderingManager:
             extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
 
         processed_items = []
+        activated_products = []
         item_states = {
             "unchecked": 0,
             "acknowledged": 0,
@@ -496,9 +503,12 @@ class OrderingManager:
             logger.info("customer bill updated")
             if self._get_mode(offering_info) == "automatic":
                 on_product_activation(new_product, order, contract)
-            self.activate_product(order["id"], new_product)
+
+            self._activate_order_product(order, new_product)
             order_model.mark_contract_as_processed(contract.item_id)
             processed_items.append(orderItem)
+
+            activated_products.append((new_product, offering_info))
 
         self.ordering_client.update_items_state(order, "completed", items=processed_items)
         item_states["completed"] += len(processed_items)
@@ -511,6 +521,9 @@ class OrderingManager:
             self.ordering_client.update_state(order, "inProgress")
         elif item_states["acknowledged"] > 0:
             self.ordering_client.update_state(order, "acknowledged")
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
 
         logger.info("Items completed")
 
@@ -555,7 +568,9 @@ class OrderingManager:
             "failed": 0
         }
         logger.debug("Processing an individual order item")
+
         processed_items = []
+        activated_products = []
         for orderItem in raw_order["productOrderItem"]:
             if contract.item_id == orderItem["id"]:
                 new_product = self.complete_inventory_product(raw_order, orderItem, offering_info, extra_char=extra_char, contract=contract)
@@ -569,9 +584,12 @@ class OrderingManager:
                 logger.info("customer bill updated")
                 if self._get_mode(offering_info) == "automatic":
                     on_product_activation(new_product, raw_order, contract)
-                self.activate_product(raw_order["id"], new_product)
+                self._activate_order_product(raw_order, new_product)
+
                 order_model.mark_contract_as_processed(contract.item_id)
                 processed_items.append(orderItem)
+
+                activated_products.append((new_product, offering_info))
             else:
                 item_states[orderItem.get("state", "unchecked")] += 1
 
@@ -586,7 +604,11 @@ class OrderingManager:
             root_state = "acknowledged"
         else:
             raise OrderingError("error setting root state")
+
         self.ordering_client.update_items_state(raw_order, "completed", items=processed_items, root_state=root_state)
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
 
         logger.info("Item completed")
 
@@ -629,6 +651,7 @@ class OrderingManager:
             for sale_id in order_model.sales_ids:
                 extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
 
+        activated_products = []
         for orderItem in raw_order["productOrderItem"]:
             contract = None
             if order_model is not None:
@@ -650,11 +673,22 @@ class OrderingManager:
                 if "id" in item_cb:
                     billing_client.set_customer_bill("settled", item_cb["id"])
 
-                self.activate_product(raw_order["id"], new_product)
+                self._activate_order_product(raw_order, new_product)
             else:
                 # Activate product for manual payment
-                inventory_client = InventoryClient()
-                inventory_client.activate_product(new_product["id"])
+                self._activate_order_product(raw_order, new_product, manual=True)
+            activated_products.append((new_product, offering_info))
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
+
+    def _activate_order_product(self, order, product, manual=False):
+        if manual:
+            InventoryClient().activate_product(product["id"])
+        else:
+            result = self.activate_product(order["id"], product)
+            if isinstance(result, tuple) and result[0] >= 400:
+                raise OrderingError(result[1])
 
 
     def activate_product(self, order_id, product):

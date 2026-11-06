@@ -28,9 +28,11 @@ from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from urllib.parse import urljoin
+from html import escape
 from logging import getLogger
+from urllib.parse import quote, urljoin
 
+import requests
 from bson.objectid import ObjectId
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -38,6 +40,7 @@ from django.core.exceptions import ImproperlyConfigured
 from wstore.admin.users.email_config import get_email_config
 from wstore.models import User
 from wstore.ordering.models import Offering
+from wstore.store_commons.utils.url import get_service_url
 
 logger = getLogger("wstore.default_logger")
 
@@ -65,7 +68,9 @@ class NotificationsHandler:
             server.login(self._mailuser, self._password)
 
     def _send_email(self, recipient, msg):
-        logger.debug(f"Sending email with {self._server}, {self._port}, {self._mailuser}, {self._fromaddr}, {self._password}")
+        logger.debug(
+            f"Sending email with {self._server}, {self._port}, {self._mailuser}, {self._fromaddr}, {self._password}"
+        )
 
         server = smtplib.SMTP(self._server, self._port)
         server.starttls()
@@ -150,26 +155,28 @@ class NotificationsHandler:
             for charge in contract.charges
         ]
 
-    def send_acquired_notification(self, order):
-        org = order.owner_organization
-        recipients = [User.objects.get(pk=pk).email for pk in org.managers]
-        domain = settings.SITE
+    @classmethod
+    def send_acquired_notification(cls, product, offering_info):
+        """Send a ready email using the full offering loaded during completion."""
+        try:
+            buyers = cls._parties(product.get("relatedParty", []), settings.CUSTOMER_ROLE)
+            if not buyers:
+                logger.warning("No buyer party for product %s", product["id"])
+                return
 
-        order_url = urljoin(domain, "/#/inventory/order")
-        product_url = urljoin(domain, "/#/inventory/product")
+            message = (
+                "<p>Good news! <strong>{}</strong> is now active and ready to use.</p>"
+                "<p>You can view your product and its details in your inventory.</p><p>{}</p>"
+            ).format(
+                cls._offering_label(offering_info),
+                cls._link("/#/inventory/product/" + quote(str(product["id"]), safe=""), "View your product"),
+            )
 
-        text = "We have received the payment of your order with reference " + str(order.pk) + "\n"
-        text += "containing the following product offerings: \n\n"
-        for cont in order.get_contracts():
-            offering = Offering.objects.get(pk=ObjectId(cont.offering))
-            text += offering.name + " with id " + offering.off_id + "\n\n"
+            for party in buyers.values():
+                cls().send_custom_email(cls._party_email(party), "Your product is ready", message)
 
-        text += "You can review your orders at: \n" + order_url + "\n"
-        text += "and your acquired products at: \n" + product_url + "\n"
-
-        bills = self.extract_bills_paths(order)
-
-        self._send_multipart_email(text, recipients, "Product order accepted", bills)
+        except Exception:
+            logger.exception("Could not prepare customer notification for product %s", product.get("id"))
 
     def send_product_upgraded_notification(self, order, contract, product_name):
         org = order.owner_organization
@@ -183,20 +190,42 @@ class NotificationsHandler:
 
         self._send_text_email(text, recipients, "Product upgraded")
 
-    def send_provider_notification(self, order, contract):
-        # Get destination email
-        offering = Offering.objects.get(pk=ObjectId(contract.offering))
-        org = offering.owner_organization
-        recipients = [User.objects.get(pk=pk).email for pk in org.managers]
-        domain = settings.SITE
+    @classmethod
+    def send_provider_notification(cls, order, offering_names):
+        """Send one email for the order; all items belong to the same provider."""
+        try:
+            items = order.get("productOrderItem", [])
+            if not items:
+                return
 
-        url = urljoin(domain, "/#/inventory/order")
+            parties = {party["role"].lower(): party for party in order.get("relatedParty", [])}
+            provider = parties.get(settings.PROVIDER_ROLE.lower())
 
-        text = "Your product offering with name " + offering.name + " and id " + offering.off_id + "\n"
-        text += "has been acquired by the user " + order.owner_organization.name + "\n"
-        text += "Please review you pending orders at: \n\n" + url
+            if provider is None:
+                logger.warning("No provider party for order %s", order.get("id"))
+                return
 
-        self._send_text_email(text, recipients, "Product offering acquired")
+            customer = parties[settings.CUSTOMER_ROLE.lower()]
+            customer_name = customer.get("name") or customer["id"]
+
+            rows = []
+            for index in range(len(items)):
+                offering_name = offering_names[index]
+                rows.append(
+                    "<li><strong>{}</strong> — ordered by {}</li>".format(
+                        escape(str(offering_name or "Your product")),
+                        escape(str(customer_name)),
+                    )
+                )
+
+            message = (
+                "<p>You have received a new order for:</p><ul>{}</ul>"
+                "<p>Open your orders to review the request and take the next steps.</p><p>{}</p>"
+            ).format("".join(rows), cls._link("/#/inventory/order", "Manage orders"))
+
+            cls().send_custom_email(cls._party_email(provider), "You have a new order", message)
+        except Exception:
+            logger.exception("Could not send provider notification for order %s", order.get("id"))
 
     def send_payment_required_notification(self, order, contract):
         org = order.owner_organization
@@ -271,3 +300,34 @@ The error was: {}""".format(
     def send_custom_email(self, recipient, subject, text):
         recipients = [recipient]
         self._send_html_email(text, recipients, subject)
+
+    @staticmethod
+    def _parties(parties, role):
+        return {
+            str(party["id"]): party
+            for party in parties
+            if party.get("id") and party.get("role", "").lower() == role.lower()
+        }
+
+    @staticmethod
+    def _link(path, label):
+        return '<a href="{}">{}</a>'.format(escape(urljoin(settings.SITE, path), quote=True), label)
+
+    @staticmethod
+    def _offering_label(offering_info):
+        return escape(str(offering_info.get("name") or "Your product"))
+
+    @staticmethod
+    def _party_email(party):
+        party_type = "individual" if party.get("@referredType", "").lower() == "individual" else "organization"
+
+        url = get_service_url("party", "/{}/{}".format(party_type, quote(str(party["id"]), safe="")))
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+
+        for medium in response.json().get("contactMedium", []):
+            email = medium.get("characteristic", {}).get("emailAddress")
+            if medium.get("mediumType", "").lower() == "email" and email and email.strip():
+                return email.strip()
+
+        raise ValueError("Party {} has no email contact medium".format(party["id"]))
