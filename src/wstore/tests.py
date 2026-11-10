@@ -86,6 +86,7 @@ class ServeMediaTestCase(TestCase):
             "relatedParty": [{"id": self._customer_id, "role": views.settings.CUSTOMER_ROLE}],
         }
         self.client.iter_services.return_value = [self.service]
+        self.client.iter_resources.return_value = []
         self.client.iter_products.return_value = [self.product]
 
     def _request(self, path="assets/test_user", name="widget.wgt"):
@@ -445,6 +446,104 @@ class ServeMediaTestCase(TestCase):
                     self.assertEqual(503, self._request().status_code)
                     method.side_effect = None
         self.serve.assert_not_called()
+
+    def _resource_purchase(self):
+        self._acquired()
+        self.client.iter_services.return_value = []
+        self.resource = {
+            "id": "resource-1",
+            "resourceCharacteristic": [
+                {"name": "Resource Type", "value": "resource-file-category"},
+                {"name": "File", "value": self._file_id},
+            ],
+        }
+        self.client.iter_resources.return_value = [self.resource]
+        self.product.pop("realizingService", None)
+        self.product["realizingResource"] = [{"id": "resource-1"}]
+
+    def test_resource_purchase_authorizes_download(self):
+        self._resource_purchase()
+        self._request()
+        self.client.iter_resources.assert_called_once_with(query={"resourceCharacteristic.value": self._file_id})
+        self.client.iter_products.assert_called_once_with(query={
+            "realizingResource.id": "resource-1", "relatedParty.id": self._customer_id, "status": "active",
+        })
+        self.ResourcePlugin.objects.filter.assert_called_once_with(
+            category_id="resource-file-category", type="resource", requires_file=True,
+        )
+        self.serve.assert_called_once()
+
+    @parameterized.expand([
+        ("wrong_file",), ("split_characteristic",), ("missing_type",), ("non_file_plugin",),
+        ("inactive_product",), ("wrong_resource",), ("service_link_only",),
+        ("wrong_buyer",), ("split_buyer_role",),
+    ])
+    def test_resource_download_rejects_invalid_purchase(self, case):
+        self._resource_purchase()
+        if case in ("wrong_file", "split_characteristic"):
+            self.resource["resourceCharacteristic"][1]["value"] = "another-file"
+            if case == "split_characteristic":
+                self.resource["resourceCharacteristic"].append({"name": "endpoint", "value": self._file_id})
+        elif case == "missing_type":
+            self.resource["resourceCharacteristic"].pop(0)
+        elif case == "non_file_plugin":
+            self.ResourcePlugin.objects.filter.return_value.exists.return_value = False
+        elif case == "inactive_product":
+            self.product["status"] = "terminated"
+        elif case == "wrong_resource":
+            self.product["realizingResource"] = [{"id": "other-resource"}]
+        elif case == "service_link_only":
+            self.product["realizingService"] = self.product.pop("realizingResource")
+        elif case == "wrong_buyer":
+            self.product["relatedParty"][0]["id"] = "another-buyer"
+        elif case == "split_buyer_role":
+            self.product["relatedParty"] = [
+                {"id": self._customer_id, "role": "Seller"},
+                {"id": "another-buyer", "role": views.settings.CUSTOMER_ROLE},
+            ]
+        self.assertEqual(403, self._request().status_code)
+        self.serve.assert_not_called()
+
+    def test_resource_purchase_in_bundle_and_case_insensitive_characteristics(self):
+        self._resource_purchase()
+        self.product["isBundle"] = True
+        self.product["realizingResource"].insert(0, {"id": "another-resource"})
+        self.resource["resourceCharacteristic"][0]["name"] = " resource TYPE "
+        self.resource["resourceCharacteristic"][1]["name"] = "file"
+        self._request()
+        self.serve.assert_called_once()
+
+    def test_resource_inventory_failure_does_not_serve_file(self):
+        self._resource_purchase()
+        self.client.iter_resources.side_effect = HTTPError("offline")
+        self.assertEqual(503, self._request().status_code)
+        self.serve.assert_not_called()
+
+    @patch("wstore.ordering.inventory_client.requests.get")
+    def test_resource_download_uses_real_client_and_value_fallback(self, get):
+        self._resource_purchase()
+        self.inventory_patch.stop()
+        services = MagicMock()
+        services.json.return_value = []
+        rejected = MagicMock(status_code=500)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        resources = MagicMock()
+        resources.json.return_value = [self.resource]
+        products = MagicMock()
+        products.json.return_value = [self.product]
+        get.side_effect = [services, rejected, resources, products]
+
+        self._request()
+
+        self.assertEqual(4, get.call_count)
+        params = [c.kwargs["params"] for c in get.call_args_list]
+        self.assertEqual({"resourceCharacteristic.value": self._file_id, "offset": 0, "limit": 100}, params[1])
+        self.assertEqual({"resourceCharacteristic.tmfValue": self._file_id, "offset": 0, "limit": 100}, params[2])
+        self.assertEqual({
+            "realizingResource.id": "resource-1", "relatedParty.id": self._customer_id,
+            "status": "active", "offset": 0, "limit": 100,
+        }, params[3])
+        self.serve.assert_called_once()
 
     @patch("wstore.ordering.inventory_client.requests.get")
     def test_real_inventory_client_queries_and_post_filters_api_results(self, get):

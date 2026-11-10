@@ -64,8 +64,8 @@ class ServeMedia(API_Resource):
 
         return asset
 
-    def _is_file_service(self, service, file_id):
-        characteristics = service.get("serviceCharacteristic", [])
+    def _is_file_item(self, item, file_id, kind):
+        characteristics = item.get(kind + "Characteristic", [])
 
         if not isinstance(characteristics, list):
             return False
@@ -85,13 +85,13 @@ class ServeMedia(API_Resource):
         category_ids = [
             characteristic.get("value")
             for characteristic in characteristics
-            if characteristic["name"].strip().lower() == "service type"
+            if characteristic["name"].strip().lower() == kind + " type"
         ]
 
         if len(category_ids) != 1 or not isinstance(category_ids[0], str) or not category_ids[0].strip():
             return False
 
-        return ResourcePlugin.objects.filter(category_id=category_ids[0], type="service", requires_file=True).exists()
+        return ResourcePlugin.objects.filter(category_id=category_ids[0], type=kind, requires_file=True).exists()
 
     def _has_file_purchase(self, organization, asset):
         party_id = organization.actor_id
@@ -102,18 +102,28 @@ class ServeMedia(API_Resource):
         client = InventoryClient()
         file_id = str(asset.pk)
 
-        for service in client.iter_services(query={"serviceCharacteristic.value": file_id}):
-            if not isinstance(service, dict) or not self._is_file_service(service, file_id):
+        for kind in ("service", "resource"):
+            if self._has_inventory_file_purchase(client, party_id, file_id, kind):
+                return True
+
+        return False
+
+    def _has_inventory_file_purchase(self, client, party_id, file_id, kind):
+        items = getattr(client, "iter_" + kind + "s")(query={kind + "Characteristic.value": file_id})
+        reference_field = "realizing" + kind.capitalize()
+
+        for item in items:
+            if not isinstance(item, dict) or not self._is_file_item(item, file_id, kind):
                 continue
 
-            service_id = service.get("id")
+            item_id = item.get("id")
 
-            if not isinstance(service_id, str) or not service_id:
+            if not isinstance(item_id, str) or not item_id:
                 continue
 
             products = client.iter_products(
                 query={
-                    "realizingService.id": service_id,
+                    reference_field + ".id": item_id,
                     "relatedParty.id": party_id,
                     "status": "active",
                 }
@@ -124,8 +134,8 @@ class ServeMedia(API_Resource):
                     continue
 
                 if not any(
-                    isinstance(reference, dict) and reference.get("id") == service_id
-                    for reference in product.get("realizingService", [])
+                    isinstance(reference, dict) and reference.get("id") == item_id
+                    for reference in product.get(reference_field, [])
                 ):
                     continue
 
