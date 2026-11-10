@@ -10,10 +10,13 @@
 # published by the Free Software Foundation, either version 3 of the
 # License, or (at your option) any later version.
 
+from io import StringIO
+
+from django.core.management import call_command, get_commands
 from django.test import TestCase
 from mock import ANY, MagicMock, call, patch
 
-from wstore.ordering.management.commands import retry_pending_terminations
+from wstore.management.commands import retry_pending_terminations
 
 
 def _build_pending(product_id, resources, services):
@@ -56,6 +59,20 @@ class RetryPendingTerminationsTestCase(TestCase):
         self.get_order.assert_not_called()
         self.on_product_termination.assert_not_called()
 
+    def test_registered_command_retries_pending_terminations(self):
+        pending = _build_pending("product-1", ["res-1"], ["svc-1"])
+        retry_pending_terminations.PendingTermination.objects.all.return_value = [pending]
+        output = StringIO()
+
+        self.assertEqual("wstore", get_commands()["retry_pending_terminations"])
+        call_command("retry_pending_terminations", stdout=output)
+
+        retry_pending_terminations.InventoryClient.return_value._do_terminate.assert_called_once_with(
+            "product-1", ["res-1"], ["svc-1"]
+        )
+        pending.delete.assert_called_once()
+        self.assertIn("Termination succeeded for product product-1", output.getvalue())
+
     def test_single_pending_termination_success(self):
         pending = _build_pending("product-1", ["res-1"], ["svc-1"])
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending]
@@ -89,7 +106,7 @@ class RetryPendingTerminationsTestCase(TestCase):
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending1, pending2]
         client = self.use_real_inventory_termination()
         self.on_product_termination.side_effect = [RuntimeError("cleanup failed"), None]
-        with self.assertLogs("wstore.ordering.management.commands.retry_pending_terminations", level="ERROR"):
+        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
             retry_pending_terminations.Command().handle()
         pending1.delete.assert_not_called()
         pending2.delete.assert_called_once()
@@ -106,7 +123,7 @@ class RetryPendingTerminationsTestCase(TestCase):
         sequence.attach_mock(pending.delete, "done")
         self.on_product_termination.side_effect = [RuntimeError("cleanup failed"), None]
         command = retry_pending_terminations.Command()
-        with self.assertLogs("wstore.ordering.management.commands.retry_pending_terminations", level="ERROR"):
+        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
             command.handle()
         order = self.get_order.return_value
         cleanup = call.cleanup(order, order.get_product_contract.return_value)
@@ -121,7 +138,7 @@ class RetryPendingTerminationsTestCase(TestCase):
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending]
         client = self.use_real_inventory_termination()
         self.get_order.side_effect = RuntimeError("order unavailable")
-        with self.assertLogs("wstore.ordering.management.commands.retry_pending_terminations", level="ERROR"):
+        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
             retry_pending_terminations.Command().handle()
         self.on_product_termination.assert_not_called()
         client.patch_product.assert_not_called()
