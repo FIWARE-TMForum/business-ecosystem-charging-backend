@@ -22,6 +22,7 @@
 
 import logging
 import requests
+from requests.exceptions import HTTPError
 from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -132,16 +133,29 @@ class InventoryClient:
 
         return r.json()
 
-    def _iter_inventory(self, api, path, query):
+    def _iter_inventory(self, api, path, query, fallback_fields=None):
         offset = 0
         page_size = 100
+        query = dict(query or {})
+        fallback_fields = fallback_fields or {}
 
         while True:
-            params = {**(query or {}), "offset": offset, "limit": page_size}
+            params = {**query, "offset": offset, "limit": page_size}
             response = requests.get(
                 get_service_url(api, path), params=params, verify=settings.VERIFY_REQUESTS, timeout=30
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except HTTPError:
+                if (
+                    any(key in query for key in fallback_fields)
+                    and response.status_code in (400, 500)
+                ):
+                    query = {fallback_fields.get(key, key): value for key, value in query.items()}
+                    fallback_fields = {}
+                    logger.warning("%s rejected query fields; retrying with fallback fields", api)
+                    continue
+                raise
             entries = response.json()
 
             if not isinstance(entries, list):
@@ -155,7 +169,17 @@ class InventoryClient:
             offset += len(entries)
 
     def iter_services(self, query=None):
-        return self._iter_inventory("service_inventory", "/service", query)
+        # FIWARE TMForum 1.10.2 requires its internal field name for filtering.
+        return self._iter_inventory(
+            "service_inventory", "/service", query,
+            fallback_fields={"serviceCharacteristic.value": "serviceCharacteristic.tmfValue"},
+        )
+
+    def iter_resources(self, query=None):
+        return self._iter_inventory(
+            "resource_inventory", "/resource", query,
+            fallback_fields={"resourceCharacteristic.value": "resourceCharacteristic.tmfValue"},
+        )
 
     def iter_products(self, query=None):
         return self._iter_inventory("inventory", "/product", query)

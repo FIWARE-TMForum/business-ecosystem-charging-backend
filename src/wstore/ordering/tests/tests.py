@@ -1225,6 +1225,7 @@ class InventoryClientTestCase(TestCase):
     @parameterized.expand(
         [
             ("services", "iter_services", "http://localhost:7070/serviceInventory/service"),
+            ("resources", "iter_resources", "http://localhost:9090/resourceInventory/resource"),
             ("products", "iter_products", "http://localhost:8080/product"),
         ]
     )
@@ -1265,6 +1266,97 @@ class InventoryClientTestCase(TestCase):
 
         self.assertEqual({"id": "0"}, next(entries))
         self.assertEqual(1, inventory_client.requests.get.call_count)
+
+    @parameterized.expand([
+        (kind, characteristic, status)
+        for kind, characteristic in (("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic"))
+        for status in (400, 500)
+    ])
+    def test_inventory_value_filter_falls_back_and_paginates(self, kind, characteristic, status):
+        from requests.exceptions import HTTPError
+
+        rejected = MagicMock(status_code=status)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        page = MagicMock()
+        page.json.return_value = [{"id": str(i)} for i in range(100)]
+        last_page = MagicMock()
+        last_page.json.return_value = [{"id": "last"}]
+        inventory_client.requests.get.side_effect = [rejected, page, last_page]
+        query = {characteristic + ".value": "file-id", characteristic + ".name": "File"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual(101, len(entries))
+        self.assertEqual("last", entries[-1]["id"])
+        params = [c.kwargs["params"] for c in inventory_client.requests.get.call_args_list]
+        self.assertEqual({**query, "offset": 0, "limit": 100}, params[0])
+        for actual, offset in zip(params[1:], (0, 100)):
+            self.assertEqual(
+                {characteristic + ".tmfValue": "file-id", characteristic + ".name": "File",
+                 "offset": offset, "limit": 100}, actual
+            )
+        self.assertEqual("file-id", query[characteristic + ".value"])
+        self.assertNotIn(characteristic + ".tmfValue", query)
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_success_does_not_use_fallback(self, kind, characteristic):
+        self.response.json.return_value = [{"id": "match"}]
+        query = {characteristic + ".value": "file-id"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual([{"id": "match"}], entries)
+        inventory_client.requests.get.assert_called_once()
+        self.assertEqual({**query, "offset": 0, "limit": 100},
+                         inventory_client.requests.get.call_args.kwargs["params"])
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_retries_the_failed_page_at_the_same_offset(self, kind, characteristic):
+        from requests.exceptions import HTTPError
+
+        page = MagicMock()
+        page.json.return_value = [{"id": str(i)} for i in range(100)]
+        rejected = MagicMock(status_code=500)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        last_page = MagicMock()
+        last_page.json.return_value = [{"id": "last"}]
+        inventory_client.requests.get.side_effect = [page, rejected, last_page]
+        query = {characteristic + ".value": "file-id"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual([str(i) for i in range(100)] + ["last"], [entry["id"] for entry in entries])
+        params = [c.kwargs["params"] for c in inventory_client.requests.get.call_args_list]
+        self.assertEqual([0, 100, 100], [p["offset"] for p in params])
+        self.assertEqual({characteristic + ".tmfValue": "file-id", "offset": 100, "limit": 100}, params[-1])
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_does_not_retry_a_failed_fallback(self, kind, characteristic):
+        from requests.exceptions import HTTPError
+
+        self.response.status_code = 500
+        self.response.raise_for_status.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(
+                query={characteristic + ".value": "file-id"}
+            ))
+        self.assertEqual(2, inventory_client.requests.get.call_count)
+
+    @parameterized.expand([
+        (kind, characteristic, status)
+        for kind, characteristic in (("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic"))
+        for status in (401, 403, 404, 429, 503)
+    ])
+    def test_inventory_value_filter_does_not_retry_other_http_errors(self, kind, characteristic, status):
+        from requests.exceptions import HTTPError
+
+        self.response.status_code = status
+        self.response.raise_for_status.side_effect = HTTPError("request failed")
+        with self.assertRaises(HTTPError):
+            list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(
+                query={characteristic + ".value": "file-id"}
+            ))
+        inventory_client.requests.get.assert_called_once()
 
 
     def test_inventory_search_rejects_an_invalid_collection(self):
