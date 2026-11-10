@@ -795,9 +795,9 @@ class InventoryClientTestCase(TestCase):
 
         inventory_client.settings.LOCAL_SITE = "http://localhost:8004/"
 
-        now = datetime(2016, 1, 22, 4, 10, 25, 176751, tzinfo=timezone.utc)
         inventory_client.datetime = MagicMock()
-        inventory_client.datetime.now.return_value = now
+        inventory_client.datetime.now.return_value = datetime(2016, 1, 22, 4, 10, 25, 176751, tzinfo=timezone.utc)
+        inventory_client.datetime.utcnow.return_value = datetime(2016, 1, 22, 4, 10, 25, 176751)
 
         inventory_client.PendingTermination = MagicMock()
         inventory_client.settings.RESOURCE_CATALOG = "http://testing-resource-catalog:8080"
@@ -970,6 +970,26 @@ class InventoryClientTestCase(TestCase):
         order = self.get_order.return_value
         order.get_product_contract.assert_called_once_with("1")
         self.termination.assert_called_once_with(order, order.get_product_contract.return_value)
+
+    @override_settings(USE_TZ=False)
+    def test_pending_termination_persists_naive_utc_before_cleanup(self):
+        from wstore.ordering.models import PendingTermination
+
+        client = inventory_client.InventoryClient()
+        self.response.json.return_value = {}
+
+        def check_pending(product_id, resources, services):
+            pending = PendingTermination.objects.get(product_id=product_id)
+            self.assertIsNone(pending.created_at.tzinfo)
+            self.assertLess(abs((datetime.utcnow() - pending.created_at).total_seconds()), 10)
+
+        with patch.object(inventory_client, "PendingTermination", PendingTermination), \
+                patch.object(inventory_client, "datetime", datetime), \
+                patch.object(client, "_do_terminate", side_effect=check_pending) as terminate:
+            client.terminate_product("test-naive-utc")
+
+        terminate.assert_called_once_with("test-naive-utc", [], [])
+        self.assertFalse(PendingTermination.objects.filter(product_id="test-naive-utc").exists())
 
     def test_plugin_failure_retains_pending_without_inventory_updates(self):
         self.termination.side_effect = RuntimeError("cleanup failed")

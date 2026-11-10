@@ -244,7 +244,7 @@ class InventoryClient:
             product_id=product_id,
             realizing_resources=resource_ids,
             realizing_services=service_ids,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.utcnow(),
         )
         pending.save()
 
