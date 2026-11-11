@@ -160,7 +160,7 @@ class OrderingManager:
             return field in pricing and len(pricing[field]) > 0
 
         offering_pricing = None
-        for off_price in offering_info["productOfferingPrice"]:
+        for off_price in offering_info.get("productOfferingPrice", []):
             if off_price["id"] == product_price["productOfferingPrice"]["id"]:
                 # Download the product offering price model
 
@@ -232,11 +232,11 @@ class OrderingManager:
             product_price = item["itemTotalPrice"][0]["productOfferingPrice"]
 
         # Check if the product price has not been included but must
-        if product_price is None and len(offering_info["productOfferingPrice"]):
+        if product_price is None and len(offering_info.get("productOfferingPrice", [])):
             raise OrderingError(f"The price model has not been included for productOrderItem {item['id']}")
 
         if product_price is not None:
-            o_prices = [op for op in offering_info["productOfferingPrice"] if op["id"] == product_price["id"]]
+            o_prices = [op for op in offering_info.get("productOfferingPrice", []) if op["id"] == product_price["id"]]
             if len(o_prices) == 0:
                 raise OrderingError(f"The product price included in productOrderItem {item['id']} does not match with any of the prices included in the related offering")
 
@@ -278,7 +278,7 @@ class OrderingManager:
             product_price = item["itemTotalPrice"][0]["productOfferingPrice"]
 
         # Check if the product price has not been included but must
-        if product_price is None and len(offering_info["productOfferingPrice"]) and not offering.is_custom:
+        if product_price is None and len(offering_info.get("productOfferingPrice", [])) and not offering.is_custom:
             raise OrderingError(f"The price model has not been included for productOrderItem {item['id']}")
 
         # Build pricing if included

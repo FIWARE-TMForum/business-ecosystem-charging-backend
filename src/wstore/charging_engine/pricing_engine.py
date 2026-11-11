@@ -345,7 +345,7 @@ class PriceEngine:
 
             # If the price is a bundle download the components
             if pricing["isBundle"]:
-                to_process = [self.download_pricing(pop["id"]) for pop in pricing["bundledPopRelationship"]]
+                to_process = [self.download_pricing(pop["id"]) for pop in pricing.get("bundledPopRelationship", [])]
             else:
                 to_process = [pricing]
 

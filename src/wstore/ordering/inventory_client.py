@@ -334,7 +334,7 @@ class InventoryClient:
         if "isBundle" in price and price["isBundle"]:
             result.extend([
                 self.get_product_price(self.get_price_component(bundle["id"]))
-            for bundle in price["bundledPopRelationship"]])
+            for bundle in price.get("bundledPopRelationship", [])])
 
         return result
 

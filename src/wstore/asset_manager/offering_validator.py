@@ -252,7 +252,7 @@ class OfferingValidator(CatalogValidator):
 
                     # The price plan has the price components linked
                     [self._validate_price_component(self._get_price(price_comp["id"]), product_spec, anti_collision, has_profile)
-                        for price_comp in price_model["bundledPopRelationship"]]
+                        for price_comp in price_model.get("bundledPopRelationship", [])]
                     if len(anti_collision) != 0:
                         self._check_range_collision(anti_collision)
 

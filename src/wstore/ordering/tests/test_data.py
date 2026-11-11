@@ -55,6 +55,10 @@ OFFERING_NO_TERMS["productOfferingTerm"] = [{
 OFFERING_NO_PRICING = deepcopy(OFFERING)
 OFFERING_NO_PRICING["productOfferingPrice"] = []
 
+# The TM Forum leaves the field out of an offering that has no prices, instead of answering an empty list
+OFFERING_WITHOUT_PRICING_FIELD = deepcopy(OFFERING)
+del OFFERING_WITHOUT_PRICING_FIELD["productOfferingPrice"]
+
 
 PRODUCT = {
     "id": "5",

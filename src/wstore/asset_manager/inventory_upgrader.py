@@ -159,7 +159,7 @@ class InventoryUpgrader(Thread):
                 product_id = str(product["id"])
 
                 new_characteristics = []
-                for char in product["productCharacteristic"]:
+                for char in product.get("productCharacteristic", []):
                     is_dig, ids_str = is_digital_char(char)
                     if not is_dig:
                         new_characteristics.append(char)
