@@ -94,6 +94,8 @@ It can be seen that the system can be configured with the environment variables 
 
 When no email configuration exists in the database, the first email configuration read (including GET `/charging/api/orderManagement/notify/config`) saves the defaults from `BAE_CB_EMAIL`, `BAE_CB_EMAIL_USER`, `BAE_CB_EMAIL_PASS`, `BAE_CB_EMAIL_SMTP_SERVER`, and `BAE_CB_EMAIL_SMTP_PORT`. Subsequent reads and email sending use the database configuration, which administrators can update through the API. Each `contactUsDestinations` address has its own environment variable: `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_GENERAL`, `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL`, `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING`, and `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_LEGAL`. Each destination uses its specific nonempty value, then `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL` as a fallback, or an empty string if neither is provided. Existing database values are preserved when the environment changes.
 
+The email configuration API accepts partial updates through POST `/charging/api/orderManagement/notify/config`. Omitted fields retain their saved values. An omitted or empty `emailPassword` retains the stored password; a nonempty password replaces it. Creating a configuration requires nonempty SMTP server, port, sender email, username, and password. Contact-us destinations are optional: omitted destinations are preserved on updates and default to empty on creation; an explicit empty string clears a destination. GET includes `hasPassword` and never returns the password.
+
 Once you have created the file, run the following command:
 
 ```

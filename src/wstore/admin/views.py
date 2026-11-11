@@ -51,13 +51,17 @@ def _get_contact_us_destinations(email_config):
 
 
 def _parse_contact_us_destinations(data):
-    contact_us_destinations = data["contactUsDestinations"]
-    return {
-        "general": contact_us_destinations["general"],
-        "technical": contact_us_destinations["technical"],
-        "onboarding": contact_us_destinations["onboarding"],
-        "legal": contact_us_destinations["legal"],
-    }
+    contact_us_destinations = data.get("contactUsDestinations", {})
+    if not isinstance(contact_us_destinations, dict):
+        raise ValueError("contactUsDestinations must be an object")
+
+    if any(key not in SUPPORTED_CONTACT_US_TYPES for key in contact_us_destinations):
+        raise ValueError("Unsupported contact-us destination")
+
+    if any(not isinstance(value, str) or len(value) > 100 for value in contact_us_destinations.values()):
+        raise ValueError("Contact-us destinations must be strings of at most 100 characters")
+
+    return contact_us_destinations
 
 
 class ChargePeriodCollection(Resource):
@@ -98,10 +102,32 @@ class NotificationConfigCollection(Resource):
             "smtpPort": str(email_config.smtp_port),
             "email": email_config.email,
             "emailUser": email_config.email_user,
+            "hasPassword": bool(email_config.email_password),
             "contactUsDestinations": _get_contact_us_destinations(email_config),
         }
 
         return JsonResponse(200, config_data)
+
+    def _create_email_config(self, updates):
+        mandatory = ('smtp_server', 'smtp_port', 'email', 'email_user')
+        if any(field not in updates for field in mandatory):
+            raise ValueError(
+                "smtpServer, smtpPort, email and emailUser are required when creating a configuration"
+            )
+
+        if not 'email_password' in updates:
+            raise ValueError("emailPassword is required when creating a configuration")
+
+        email_config = EmailConfig(**updates)
+        email_config.save()
+
+    def _update_email_config(self, updates, email_config):
+        if not 'email_password' in updates and not email_config.email_password:
+            raise ValueError("emailPassword is required when no password is configured")
+
+        for attribute, value in updates.items():
+            setattr(email_config, attribute, value)
+        email_config.save()
 
     @supported_request_mime_types(("application/json",))
     @authentication_required
@@ -111,46 +137,60 @@ class NotificationConfigCollection(Resource):
 
         try:
             data = json.loads(request.body)
-            smtp_server = data["smtpServer"]
-            smtp_port = data["smtpPort"]
-            email = data["email"]
-            email_user = data["emailUser"]
-            email_password = data["emailPassword"]
+
+            if not isinstance(data, dict):
+                raise ValueError("The provided data must be a JSON object")
+
             contact_us_destinations = _parse_contact_us_destinations(data)
-        except:
-            logger.error(f"Invalid email config")
-            return build_response(request, 400, "The provided data is not a valid JSON object")
 
-        # Check if the config already exists
-        existing_configs = EmailConfig.objects.all()
+            string_error = lambda x: not isinstance(x, str) or not x.strip() or len(x) > 100
+            string_names = {
+                "smtpServer": "smtp_server",
+                "email": "email",
+                "emailUser": "email_user"
+            }
+            updates = {}
+            for field, attribute in string_names.items():
+                if field not in data:
+                    continue
 
-        if existing_configs.count() > 0:
-            # Update the existing config
-            email_config = existing_configs.first()
-            email_config.smtp_server = smtp_server
-            email_config.smtp_port = smtp_port
-            email_config.email = email
-            email_config.email_user = email_user
-            email_config.email_password = email_password
-            email_config.contact_us_general = contact_us_destinations["general"]
-            email_config.contact_us_technical = contact_us_destinations["technical"]
-            email_config.contact_us_onboarding = contact_us_destinations["onboarding"]
-            email_config.contact_us_legal = contact_us_destinations["legal"]
-            email_config.save()
-        else:
-            # Create a new config
-            email_config = EmailConfig(
-                smtp_server=smtp_server,
-                smtp_port=smtp_port,
-                email=email,
-                email_user=email_user,
-                email_password=email_password,
-                contact_us_general=contact_us_destinations["general"],
-                contact_us_technical=contact_us_destinations["technical"],
-                contact_us_onboarding=contact_us_destinations["onboarding"],
-                contact_us_legal=contact_us_destinations["legal"],
-            )
-            email_config.save()
+                value = data[field]
+                if string_error(value):
+                    raise ValueError(f"{field} must be a nonempty string of at most 100 characters")
+
+                updates[attribute] = value
+
+            if "smtpPort" in data:
+                smtp_port = data.get("smtpPort", "")
+
+                if isinstance(smtp_port, bool) or not isinstance(smtp_port, (str, int)) :
+                    raise ValueError("smtpPort must be a number between 1 and 65535")
+
+                port = int(smtp_port)
+
+                if port < 1 or port > 65535:
+                    raise ValueError("smtpPort must be a number between 1 and 65535")
+
+                updates["smtp_port"] = port
+
+            password = data.get("emailPassword", "")
+            if not isinstance(password, str) or len(password) > 100:
+                raise ValueError("emailPassword must be a string of at most 100 characters")
+
+            if password:
+                updates["email_password"] = password
+
+            for support_type, address in contact_us_destinations.items():
+                updates["contact_us_" + support_type] = address
+
+            email_config = EmailConfig.objects.first()
+            if email_config is None:
+                self._create_email_config(updates)
+            else:
+                self._update_email_config(updates, email_config)
+
+        except (TypeError, ValueError):
+            return build_response(request, 400, "Invalid email configuration")
 
         return build_response(request, 201, "Notification configuration created/updated successfully")
 
