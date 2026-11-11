@@ -93,6 +93,7 @@ class DomeEngine(Engine):
         resp.raise_for_status()
         instant = resp.json()
         acbrs = instant[0]["acbrs"]
-        self.normalize_charges(acbrs, product["productPrice"])
+        # A free item has no price, so the product model has none either
+        self.normalize_charges(acbrs, product.get("productPrice", []))
 
         return acbrs, instant[0]["customerBill"], product
