@@ -524,12 +524,13 @@ class OrderingManagementTestCase(TestCase):
 
 
     @parameterized.expand([
-        ("free_add", FREE_ORDER, _free_add_checker),
+        ("free_add", FREE_ORDER, _free_add_checker, OFFERING_NO_PRICING),
+        ("free_add_without_prices_field", FREE_ORDER, _free_add_checker, OFFERING_WITHOUT_PRICING_FIELD),
         #("no_product_add", NOPRODUCT_ORDER, _free_add_checker)
     ])
-    def test_process_free_order(self, name, order, validator):
+    def test_process_free_order(self, name, order, validator, offering):
         self._response.json.side_effect = [
-            OFFERING_NO_PRICING
+            offering
         ]
 
         # Mock ordering client
