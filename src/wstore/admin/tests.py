@@ -19,9 +19,12 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+import smtplib
+import ssl
 
 from mock import MagicMock, patch
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase, override_settings
 
 from wstore.admin import views
@@ -520,3 +523,72 @@ class AdminViewTestCase(TestCase):
 
         config.save.assert_not_called()
         views.build_response.assert_called_once_with(request, 400, "Invalid email configuration")
+
+    def test_smtp_connection_test_uses_saved_config_without_request_body(self):
+        request = self._mock_request({}, is_staff=True)
+        request.body = b""
+        request.META = {}
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_called_once_with()
+        self._email_instance.test_connection.assert_called_once_with()
+        self._email_instance.send_custom_email.assert_not_called()
+        views.EmailConfig.assert_not_called()
+        views.build_response.assert_called_once_with(request, 200, "SMTP connection and authentication succeeded")
+
+    def test_smtp_connection_test_does_not_use_configuration_overrides(self):
+        request = self._mock_request({"smtpServer": "unsaved.example.org", "emailPassword": "unsaved"}, is_staff=True)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_called_once_with()
+        self._email_instance.test_connection.assert_called_once_with()
+        views.EmailConfig.assert_not_called()
+
+    def test_smtp_connection_test_requires_administrator(self):
+        request = self._mock_request({}, is_staff=False)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_not_called()
+        views.build_response.assert_called_once_with(request, 403, "Only administrators can access this resource")
+
+    def test_smtp_connection_test_requires_authentication(self):
+        request = self._mock_request({}, is_staff=True)
+        request.user.is_anonymous = True
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_not_called()
+        self.assertEqual(401, views.build_response.call_args[0][1])
+
+    def test_smtp_connection_test_returns_controlled_errors(self):
+        failures = [
+            (ImproperlyConfigured("secret"), 400, "Email configuration is missing or invalid"),
+            (ValueError("secret"), 400, "Email configuration is missing or invalid"),
+            (TimeoutError("secret"), 504, "SMTP connection timed out"),
+            (smtplib.SMTPAuthenticationError(535, b"secret"), 502, "SMTP authentication failed"),
+            (smtplib.SMTPNotSupportedError("secret"), 502,
+             "SMTP server does not support required TLS or authentication"),
+            (ssl.SSLError("secret"), 502, "SMTP TLS negotiation failed"),
+            (smtplib.SMTPConnectError(421, b"secret"), 502, "Could not connect to the SMTP server"),
+            (ConnectionRefusedError("secret"), 502, "Could not connect to the SMTP server"),
+        ]
+        for error, status, message in failures:
+            with self.subTest(error=type(error).__name__):
+                self._email_instance.test_connection.side_effect = error
+                views.build_response.reset_mock()
+                request = self._mock_request({}, is_staff=True)
+
+                views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+                views.build_response.assert_called_once_with(request, status, message)
+
+    def test_smtp_connection_test_handles_missing_saved_config(self):
+        views.NotificationsHandler.side_effect = ImproperlyConfigured("Missing email configuration")
+        request = self._mock_request({}, is_staff=True)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.build_response.assert_called_once_with(request, 400, "Email configuration is missing or invalid")

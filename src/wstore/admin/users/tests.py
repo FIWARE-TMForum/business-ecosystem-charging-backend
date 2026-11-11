@@ -20,6 +20,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from importlib import reload
+import smtplib
 
 from bson import ObjectId
 from django.core.exceptions import ImproperlyConfigured
@@ -192,6 +193,31 @@ class NotificationsTestCase(TestCase):
         server = notification_handler.smtplib.SMTP.return_value
         server.login.assert_called_once_with("wstore", "passwd")
         self.assertEqual("wstore@email.com", server.sendmail.call_args[0][0])
+
+    @patch.object(notification_handler.ssl, "create_default_context")
+    def test_connection_checks_tls_and_authentication_without_sending(self, tls_context):
+        handler = notification_handler.NotificationsHandler()
+
+        handler.test_connection()
+
+        notification_handler.smtplib.SMTP.assert_called_once_with("smtp.gmail.com", 587, timeout=10)
+        connection = notification_handler.smtplib.SMTP.return_value
+        server = connection.__enter__.return_value
+        server.starttls.assert_called_once_with(context=tls_context.return_value)
+        server.login.assert_called_once_with("wstore", "passwd")
+        server.sendmail.assert_not_called()
+        connection.__exit__.assert_called_once_with(None, None, None)
+
+    def test_connection_closes_after_authentication_failure(self):
+        connection = notification_handler.smtplib.SMTP.return_value
+        server = connection.__enter__.return_value
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Invalid credentials")
+
+        with self.assertRaises(smtplib.SMTPAuthenticationError):
+            notification_handler.NotificationsHandler().test_connection()
+
+        connection.__exit__.assert_called_once()
+        server.sendmail.assert_not_called()
 
     def _validate_user_call(self):
         self.assertEquals(

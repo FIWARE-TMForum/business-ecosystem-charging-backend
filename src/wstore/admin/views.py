@@ -21,9 +21,12 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+import smtplib
+import ssl
 import requests
 
 from logging import getLogger
+from django.core.exceptions import ImproperlyConfigured
 
 from wstore.store_commons.database import get_database_connection
 from wstore.store_commons.resource import Resource
@@ -193,6 +196,30 @@ class NotificationConfigCollection(Resource):
             return build_response(request, 400, "Invalid email configuration")
 
         return build_response(request, 201, "Notification configuration created/updated successfully")
+
+
+class NotificationConfigConnectionTest(Resource):
+    @authentication_required
+    def create(self, request):
+        if not request.user.is_staff:
+            return build_response(request, 403, "Only administrators can access this resource")
+
+        try:
+            NotificationsHandler().test_connection()
+        except (ImproperlyConfigured, TypeError, ValueError):
+            return build_response(request, 400, "Email configuration is missing or invalid")
+        except TimeoutError:
+            return build_response(request, 504, "SMTP connection timed out")
+        except smtplib.SMTPAuthenticationError:
+            return build_response(request, 502, "SMTP authentication failed")
+        except smtplib.SMTPNotSupportedError:
+            return build_response(request, 502, "SMTP server does not support required TLS or authentication")
+        except ssl.SSLError:
+            return build_response(request, 502, "SMTP TLS negotiation failed")
+        except (smtplib.SMTPException, OSError):
+            return build_response(request, 502, "Could not connect to the SMTP server")
+
+        return build_response(request, 200, "SMTP connection and authentication succeeded")
 
 
 class NotificationCollection(Resource):

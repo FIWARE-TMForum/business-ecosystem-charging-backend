@@ -23,6 +23,7 @@
 
 import os
 import smtplib
+import ssl
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -56,6 +57,12 @@ class NotificationsHandler:
         self._fromaddr = config.email
         self._server = config.smtp_server
         self._port = config.smtp_port
+
+    def test_connection(self):
+        """Check saved SMTP settings without sending a message."""
+        with smtplib.SMTP(self._server, self._port, timeout=10) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(self._mailuser, self._password)
 
     def _send_email(self, recipient, msg):
         logger.debug(f"Sending email with {self._server}, {self._port}, {self._mailuser}, {self._fromaddr}, {self._password}")

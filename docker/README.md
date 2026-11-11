@@ -96,6 +96,8 @@ When no email configuration exists in the database, the first email configuratio
 
 The email configuration API accepts partial updates through POST `/charging/api/orderManagement/notify/config`. Omitted fields retain their saved values. An omitted or empty `emailPassword` retains the stored password; a nonempty password replaces it. Creating a configuration requires nonempty SMTP server, port, sender email, username, and password. Contact-us destinations are optional: omitted destinations are preserved on updates and default to empty on creation; an explicit empty string clears a destination. GET includes `hasPassword` and never returns the password.
 
+Administrators can test the saved SMTP configuration with POST `/charging/api/orderManagement/notify/config/test` (no request body required). Request body values are ignored. The endpoint loads the saved settings (initializing environment defaults on first use if necessary), connects with a 10-second socket timeout, negotiates STARTTLS with certificate verification, authenticates, and closes the connection without sending an email. It returns 200 on success, 400 for missing or invalid configuration, 502 for connection/TLS/authentication failures, or 504 on timeout. Unsaved form changes do not affect the test.
+
 Once you have created the file, run the following command:
 
 ```
