@@ -20,11 +20,12 @@
 
 import json
 
-from mock import MagicMock
+from mock import MagicMock, patch
 from django.conf import settings
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from wstore.admin import views
+from wstore.admin.users import email_config
 
 
 class AdminViewTestCase(TestCase):
@@ -35,6 +36,10 @@ class AdminViewTestCase(TestCase):
         views.build_response = MagicMock()
         views.JsonResponse = MagicMock()
         views.EmailConfig = MagicMock()
+        self._config_patcher = patch.object(views, "get_email_config")
+        self._get_email_config = self._config_patcher.start()
+        self.addCleanup(self._config_patcher.stop)
+        self._get_email_config.side_effect = lambda: views.EmailConfig.objects.first()
         self._old_notification_recipient_email = settings.NOTIFICATION_RECIPIENT_EMAIL
         settings.NOTIFICATION_RECIPIENT_EMAIL = None
 
@@ -274,10 +279,7 @@ class AdminViewTestCase(TestCase):
         email_config.contact_us_onboarding = "onboarding@example.org"
         email_config.contact_us_legal = "legal@example.org"
 
-        existing_configs = MagicMock()
-        existing_configs.count.return_value = 1
-        existing_configs.first.return_value = email_config
-        views.EmailConfig.objects.all.return_value = existing_configs
+        views.EmailConfig.objects.first.return_value = email_config
 
         request = self._mock_request({}, method="GET", is_staff=True)
         request.path = "/charging/api/orderManagement/notify/config"
@@ -344,3 +346,43 @@ class AdminViewTestCase(TestCase):
         api.create(request)
 
         views.build_response.assert_called_once_with(request, 400, "The provided data is not a valid JSON object")
+
+    @override_settings(
+        WSTOREMAILUSER="env-user", WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org", SMTPSERVER="smtp.env.example.org", SMTPPORT="2525",
+        NOTIFICATION_RECIPIENT_EMAIL="support@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_GENERAL="general@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL="technical@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING="",
+        NOTIFICATION_RECIPIENT_EMAIL_LEGAL="legal@example.org",
+    )
+    @patch.object(email_config, "EmailConfig")
+    def test_notification_config_get_persists_and_returns_environment_defaults(self, model):
+        model.objects.first.return_value = None
+        defaults = {
+            "email_user": "env-user", "email_password": "env-password",
+            "email": "env@example.org", "smtp_server": "smtp.env.example.org", "smtp_port": 2525,
+            "contact_us_general": "general@example.org",
+            "contact_us_technical": "technical@example.org",
+            "contact_us_onboarding": "support@example.org",
+            "contact_us_legal": "legal@example.org",
+        }
+        config = MagicMock(**defaults)
+        model.objects.get_or_create.return_value = (config, True)
+        self._get_email_config.side_effect = email_config.get_email_config
+
+        request = self._mock_request({}, method="GET", is_staff=True)
+        views.NotificationConfigCollection(permitted_methods=("GET",)).read(request)
+
+        model.objects.get_or_create.assert_called_once_with(defaults=defaults)
+        views.JsonResponse.assert_called_once_with(200, {
+            "smtpServer": "smtp.env.example.org", "smtpPort": "2525",
+            "email": "env@example.org", "emailUser": "env-user",
+            "contactUsDestinations": self._contact_us_destinations(onboarding="support@example.org"),
+        })
+
+    def test_notification_config_get_does_not_initialize_for_non_admin(self):
+        request = self._mock_request({}, method="GET", is_staff=False)
+        views.NotificationConfigCollection(permitted_methods=("GET",)).read(request)
+        self._get_email_config.assert_not_called()
+        views.build_response.assert_called_once_with(request, 403, "Only administrators can access this resource")

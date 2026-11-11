@@ -32,6 +32,7 @@ from wstore.store_commons.utils.units import ChargePeriod, CurrencyCode
 from wstore.store_commons.utils.url import get_service_url
 
 from wstore.admin.users.notification_handler import NotificationsHandler
+from wstore.admin.users.email_config import get_email_config
 from wstore.models import EmailConfig
 
 
@@ -88,12 +89,9 @@ class NotificationConfigCollection(Resource):
         if not request.user.is_staff:
             return build_response(request, 403, "Only administrators can access this resource")
 
-        existing_configs = EmailConfig.objects.all()
-
-        if existing_configs.count() == 0:
+        email_config = get_email_config()
+        if email_config is None:
             return build_response(request, 404, "No notification configuration found")
-
-        email_config = existing_configs.first()
 
         config_data = {
             "smtpServer": email_config.smtp_server,
@@ -250,7 +248,7 @@ class ConfiguredNotificationCollection(NotificationCollection):
         except ValueError:
             return build_response(request, 400, "The provided data is not a valid JSON object")
 
-        email_config = EmailConfig.objects.first()
+        email_config = get_email_config()
         if email_config is None:
             logger.error("Contact-us notification configuration is not set")
             return build_response(request, 500, "Contact-us notification configuration is not set")

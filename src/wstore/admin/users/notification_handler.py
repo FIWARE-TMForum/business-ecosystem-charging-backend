@@ -34,7 +34,8 @@ from bson.objectid import ObjectId
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from wstore.models import User, EmailConfig
+from wstore.admin.users.email_config import get_email_config
+from wstore.models import User
 from wstore.ordering.models import Offering
 
 logger = getLogger("wstore.default_logger")
@@ -46,7 +47,7 @@ class NotificationsHandler:
         self._set_config()
 
     def _set_config(self):
-        config = EmailConfig.objects.first()
+        config = get_email_config()
         if config is None:
             raise ImproperlyConfigured("Missing email configuration")
 
