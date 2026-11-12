@@ -319,20 +319,6 @@ def process_product_notification(order, contract, type_):
     pass
 
 
-def on_product_suspended(order, contract):
-    """Notify plugins at the existing suspension call sites without changing their flow."""
-    try:
-        product = InventoryClient().get_product(contract.product_id)
-        if not isinstance(product, dict) or product.get("id") != contract.product_id:
-            raise PluginError("Invalid inventory product for suspension")
-        raw_order = OrderingClient().get_order(order.order_id)
-        if not isinstance(raw_order, dict) or raw_order.get("id") != order.order_id:
-            raise PluginError("Invalid order for product suspension")
-        _notify_inventory_plugins(product, raw_order, contract, "suspension")
-    except Exception:
-        logger.exception("Suspension notification failed for order %s, product %s", order.order_id, contract.product_id)
-
-
 def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
 

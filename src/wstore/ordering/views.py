@@ -252,8 +252,6 @@ def process_product_payment(self, request, task, order, contract):
         # The error might be raised because renewing a suspended product not expired
         if str(e) == "OrderingError: There is not recurring payments to renovate" and contract.suspended:
             try:
-                # TODO (Step 7): notify plugins through on_service_resumption here.
-                # This restores existing access; it is not initial service activation.
                 # Change product state to active
                 contract.suspended = False
                 order.save()

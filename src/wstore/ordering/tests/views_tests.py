@@ -398,7 +398,7 @@ class RenovationCollectionTestCase(TestCase):
             )
 
 
-class DeleteOrderSuspensionIntegrationTests(SimpleTestCase):
+class DeleteOrderTerminationIntegrationTests(SimpleTestCase):
     def setUp(self):
         from types import SimpleNamespace
         from unittest.mock import Mock, patch
@@ -413,16 +413,13 @@ class DeleteOrderSuspensionIntegrationTests(SimpleTestCase):
             setattr(self, name, patcher.start())
             self.addCleanup(patcher.stop)
 
-    def test_delete_order_terminates_without_notifying_suspension(self):
-        from unittest.mock import Mock, call, patch
-        from wstore.ordering import ordering_management
+    def test_delete_order_uses_inventory_termination(self):
+        from unittest.mock import Mock, call
 
         sequence = Mock()
         sequence.attach_mock(self.order.claim_contract_for_termination, "claim")
         sequence.attach_mock(self.InventoryClient.return_value.terminate_product, "inventory")
-        with patch.object(ordering_management, "on_product_suspended", create=True) as suspension:
-            self.manager._process_delete_items([{"product": {"id": "p1"}}])
-        suspension.assert_not_called()
+        self.manager._process_delete_items([{"product": {"id": "p1"}}])
         self.assertEqual([
             call.claim("p1"), call.inventory("p1")
         ], sequence.mock_calls)

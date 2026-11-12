@@ -226,14 +226,6 @@ class ServicePlugin(Plugin):
         """Provision the inventory service; raise on failure to prevent product activation."""
         pass
 
-    def on_service_suspension(self, provider, buyer, service, product, order, contract=None):
-        """Temporarily withdraw access to an inventory service."""
-        pass
-
-    def on_service_resumption(self, provider, service_spec, service, product, order, contract=None):
-        """Restore access to a suspended service without initial provisioning."""
-        pass
-
     def on_service_termination(self, provider, buyer, service, product, order, contract=None):
         """Release the inventory service; raise on failure. Must tolerate retries."""
         pass
@@ -245,7 +237,7 @@ class ServicePlugin(Plugin):
         pass
 
     def on_service_renewal(self, provider, service_spec, service, product, order, contract=None):
-        """Extend service entitlement after renewal, separately from resumption."""
+        """Extend service entitlement after successful renewal."""
         pass
 
     def get_pending_accounting(self, service, contract, order):
@@ -318,14 +310,6 @@ class ResourcePlugin(Plugin):
         """Provision the inventory resource; raise on failure to prevent product activation."""
         pass
 
-    def on_resource_suspension(self, provider, buyer, resource, product, order, contract=None):
-        """Temporarily withdraw access to an inventory resource."""
-        pass
-
-    def on_resource_resumption(self, provider, resource_spec, resource, product, order, contract=None):
-        """Restore access to a suspended resource without initial provisioning."""
-        pass
-
     def on_resource_termination(self, provider, buyer, resource, product, order, contract=None):
         """Release the inventory resource; raise on failure. Must tolerate retries."""
         pass
@@ -337,7 +321,7 @@ class ResourcePlugin(Plugin):
         pass
 
     def on_resource_renewal(self, provider, resource_spec, resource, product, order, contract=None):
-        """Extend resource entitlement after renewal, separately from resumption."""
+        """Extend resource entitlement after successful renewal."""
         pass
 
     def get_pending_accounting(self, resource, contract, order):
