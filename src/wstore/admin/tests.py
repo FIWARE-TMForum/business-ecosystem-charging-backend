@@ -19,12 +19,16 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+import smtplib
+import ssl
 
-from mock import MagicMock
+from mock import MagicMock, patch
 from django.conf import settings
-from django.test import TestCase
+from django.core.exceptions import ImproperlyConfigured
+from django.test import TestCase, override_settings
 
 from wstore.admin import views
+from wstore.admin.users import email_config
 
 
 class AdminViewTestCase(TestCase):
@@ -35,6 +39,10 @@ class AdminViewTestCase(TestCase):
         views.build_response = MagicMock()
         views.JsonResponse = MagicMock()
         views.EmailConfig = MagicMock()
+        self._config_patcher = patch.object(views, "get_email_config")
+        self._get_email_config = self._config_patcher.start()
+        self.addCleanup(self._config_patcher.stop)
+        self._get_email_config.side_effect = lambda: views.EmailConfig.objects.first()
         self._old_notification_recipient_email = settings.NOTIFICATION_RECIPIENT_EMAIL
         settings.NOTIFICATION_RECIPIENT_EMAIL = None
 
@@ -274,10 +282,7 @@ class AdminViewTestCase(TestCase):
         email_config.contact_us_onboarding = "onboarding@example.org"
         email_config.contact_us_legal = "legal@example.org"
 
-        existing_configs = MagicMock()
-        existing_configs.count.return_value = 1
-        existing_configs.first.return_value = email_config
-        views.EmailConfig.objects.all.return_value = existing_configs
+        views.EmailConfig.objects.first.return_value = email_config
 
         request = self._mock_request({}, method="GET", is_staff=True)
         request.path = "/charging/api/orderManagement/notify/config"
@@ -290,15 +295,13 @@ class AdminViewTestCase(TestCase):
             "smtpPort": "587",
             "email": "source@example.org",
             "emailUser": "smtp-user",
+            "hasPassword": True,
             "contactUsDestinations": self._contact_us_destinations(),
         })
 
     def test_notification_config_create_persists_contact_us_destinations(self):
         email_config = MagicMock()
-        existing_configs = MagicMock()
-        existing_configs.count.return_value = 1
-        existing_configs.first.return_value = email_config
-        views.EmailConfig.objects.all.return_value = existing_configs
+        views.EmailConfig.objects.first.return_value = email_config
 
         request = self._mock_request({
             "smtpServer": "smtp.example.org",
@@ -314,7 +317,7 @@ class AdminViewTestCase(TestCase):
         api.create(request)
 
         self.assertEqual("smtp.example.org", email_config.smtp_server)
-        self.assertEqual("587", email_config.smtp_port)
+        self.assertEqual(587, email_config.smtp_port)
         self.assertEqual("source@example.org", email_config.email)
         self.assertEqual("smtp-user", email_config.email_user)
         self.assertEqual("secret", email_config.email_password)
@@ -326,21 +329,266 @@ class AdminViewTestCase(TestCase):
         views.build_response.assert_called_once_with(request, 201, "Notification configuration created/updated successfully")
 
     def test_notification_config_create_rejects_invalid_contact_us_destinations(self):
-        views.EmailConfig.objects.all.return_value.count.return_value = 0
+        views.EmailConfig.objects.first.return_value = None
         request = self._mock_request({
             "smtpServer": "smtp.example.org",
             "smtpPort": "587",
             "email": "source@example.org",
             "emailUser": "smtp-user",
             "emailPassword": "secret",
-            "contactUsDestinations": {
-                "general": "general@example.org",
-                "technical": "technical@example.org",
-            },
+            "contactUsDestinations": {"general": None},
         }, is_staff=True)
         request.path = "/charging/api/orderManagement/notify/config"
 
         api = views.NotificationConfigCollection(permitted_methods=("POST",))
         api.create(request)
 
-        views.build_response.assert_called_once_with(request, 400, "The provided data is not a valid JSON object")
+        views.build_response.assert_called_once_with(request, 400, "Invalid email configuration")
+
+    @override_settings(
+        WSTOREMAILUSER="env-user", WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org", SMTPSERVER="smtp.env.example.org", SMTPPORT="2525",
+        NOTIFICATION_RECIPIENT_EMAIL="support@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_GENERAL="general@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL="technical@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING="",
+        NOTIFICATION_RECIPIENT_EMAIL_LEGAL="legal@example.org",
+    )
+    @patch.object(email_config, "EmailConfig")
+    def test_notification_config_get_persists_and_returns_environment_defaults(self, model):
+        model.objects.first.return_value = None
+        defaults = {
+            "email_user": "env-user", "email_password": "env-password",
+            "email": "env@example.org", "smtp_server": "smtp.env.example.org", "smtp_port": 2525,
+            "contact_us_general": "general@example.org",
+            "contact_us_technical": "technical@example.org",
+            "contact_us_onboarding": "support@example.org",
+            "contact_us_legal": "legal@example.org",
+        }
+        config = MagicMock(**defaults)
+        model.objects.get_or_create.return_value = (config, True)
+        self._get_email_config.side_effect = email_config.get_email_config
+
+        request = self._mock_request({}, method="GET", is_staff=True)
+        views.NotificationConfigCollection(permitted_methods=("GET",)).read(request)
+
+        model.objects.get_or_create.assert_called_once_with(defaults=defaults)
+        views.JsonResponse.assert_called_once_with(200, {
+            "smtpServer": "smtp.env.example.org", "smtpPort": "2525",
+            "email": "env@example.org", "emailUser": "env-user",
+            "hasPassword": True,
+            "contactUsDestinations": self._contact_us_destinations(onboarding="support@example.org"),
+        })
+
+    def test_notification_config_get_does_not_initialize_for_non_admin(self):
+        request = self._mock_request({}, method="GET", is_staff=False)
+        views.NotificationConfigCollection(permitted_methods=("GET",)).read(request)
+        self._get_email_config.assert_not_called()
+        views.build_response.assert_called_once_with(request, 403, "Only administrators can access this resource")
+
+    def test_notification_config_partial_update_preserves_password_and_other_fields(self):
+        for password_data in ({}, {"emailPassword": ""}):
+            with self.subTest(password_data=password_data):
+                config = MagicMock(
+                    smtp_server="smtp.example.org", smtp_port=587,
+                    email="source@example.org", email_user="smtp-user", email_password="secret",
+                    contact_us_general="general@example.org", contact_us_technical="technical@example.org",
+                )
+                views.EmailConfig.objects.first.return_value = config
+                request = self._mock_request(dict(password_data, email="new@example.org"), is_staff=True)
+                views.build_response.reset_mock()
+
+                views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+                self.assertEqual("new@example.org", config.email)
+                self.assertEqual("secret", config.email_password)
+                self.assertEqual("smtp.example.org", config.smtp_server)
+                self.assertEqual(587, config.smtp_port)
+                self.assertEqual("smtp-user", config.email_user)
+                self.assertEqual("general@example.org", config.contact_us_general)
+                self.assertEqual("technical@example.org", config.contact_us_technical)
+                config.save.assert_called_once_with()
+                views.build_response.assert_called_once_with(
+                    request, 201, "Notification configuration created/updated successfully"
+                )
+
+    def test_notification_config_partial_contact_update_clears_only_explicit_empty_destination(self):
+        config = MagicMock(
+            email_password="secret", contact_us_general="general@example.org",
+            contact_us_technical="technical@example.org", contact_us_onboarding="onboarding@example.org",
+            contact_us_legal="legal@example.org",
+        )
+        views.EmailConfig.objects.first.return_value = config
+        request = self._mock_request(
+            {"contactUsDestinations": {"general": "", "technical": "new@example.org"}}, is_staff=True
+        )
+
+        views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+        self.assertEqual("", config.contact_us_general)
+        self.assertEqual("new@example.org", config.contact_us_technical)
+        self.assertEqual("onboarding@example.org", config.contact_us_onboarding)
+        self.assertEqual("legal@example.org", config.contact_us_legal)
+        self.assertEqual("secret", config.email_password)
+        config.save.assert_called_once_with()
+
+    def test_notification_config_replaces_password_when_provided(self):
+        config = MagicMock(email_password="old-password")
+        views.EmailConfig.objects.first.return_value = config
+        request = self._mock_request({"emailPassword": "new-password"}, is_staff=True)
+
+        views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+        self.assertEqual("new-password", config.email_password)
+        config.save.assert_called_once_with()
+
+    def test_notification_config_creation_accepts_optional_contact_destinations(self):
+        for contact_data in ({}, {"contactUsDestinations": {}}, {"contactUsDestinations": {"general": ""}}):
+            with self.subTest(contact_data=contact_data):
+                views.EmailConfig.reset_mock()
+                views.EmailConfig.objects.first.return_value = None
+                data = dict(contact_data, smtpServer="smtp.example.org", smtpPort="587", email="source@example.org",
+                            emailUser="smtp-user", emailPassword="secret")
+                request = self._mock_request(data, is_staff=True)
+
+                views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+                expected = dict(smtp_server="smtp.example.org", smtp_port=587, email="source@example.org",
+                                email_user="smtp-user", email_password="secret")
+                if contact_data.get("contactUsDestinations"):
+                    expected["contact_us_general"] = ""
+                views.EmailConfig.assert_called_once_with(**expected)
+                views.EmailConfig.return_value.save.assert_called_once_with()
+
+    def test_notification_config_creation_requires_password_and_smtp_fields(self):
+        complete = dict(smtpServer="smtp.example.org", smtpPort=587, email="source@example.org",
+                        emailUser="smtp-user", emailPassword="secret")
+        for field in complete:
+            for value in (None, ""):
+                with self.subTest(field=field, value=value):
+                    views.EmailConfig.reset_mock()
+                    views.build_response.reset_mock()
+                    views.EmailConfig.objects.first.return_value = None
+                    data = complete.copy()
+                    if value is None:
+                        del data[field]
+                    else:
+                        data[field] = value
+                    request = self._mock_request(data, is_staff=True)
+
+                    views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+                    views.EmailConfig.assert_not_called()
+                    views.build_response.assert_called_once_with(request, 400, "Invalid email configuration")
+
+    def test_notification_config_invalid_updates_do_not_save_or_modify_existing_values(self):
+        invalid_bodies = [
+            [], None, {"emailPassword": None}, {"emailPassword": 123}, {"smtpServer": ""},
+            {"smtpPort": 0}, {"smtpPort": 65536}, {"smtpPort": True}, {"smtpPort": 1.5},
+            {"smtpPort": "invalid"}, {"contactUsDestinations": None}, {"contactUsDestinations": []},
+            {"contactUsDestinations": {"general": None}}, {"contactUsDestinations": {"unknown": ""}},
+            {"email": "new@example.org", "emailPassword": None},
+        ]
+        for body in invalid_bodies:
+            with self.subTest(body=body):
+                config = MagicMock(email="original@example.org", email_password="secret")
+                views.EmailConfig.objects.first.return_value = config
+                views.build_response.reset_mock()
+                request = self._mock_request(body, is_staff=True)
+
+                views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+                self.assertEqual("original@example.org", config.email)
+                self.assertEqual("secret", config.email_password)
+                config.save.assert_not_called()
+                views.build_response.assert_called_once_with(request, 400, "Invalid email configuration")
+
+    def test_notification_config_get_reports_missing_password_without_exposing_it(self):
+        config = MagicMock(email_password="")
+        views.EmailConfig.objects.first.return_value = config
+        request = self._mock_request({}, method="GET", is_staff=True)
+
+        views.NotificationConfigCollection(permitted_methods=("GET",)).read(request)
+
+        data = views.JsonResponse.call_args[0][1]
+        self.assertIs(False, data["hasPassword"])
+        self.assertNotIn("emailPassword", data)
+
+    def test_notification_config_update_requires_password_when_none_is_stored(self):
+        config = MagicMock(email_password="")
+        views.EmailConfig.objects.first.return_value = config
+        request = self._mock_request({"email": "new@example.org"}, is_staff=True)
+
+        views.NotificationConfigCollection(permitted_methods=("POST",)).create(request)
+
+        config.save.assert_not_called()
+        views.build_response.assert_called_once_with(request, 400, "Invalid email configuration")
+
+    def test_smtp_connection_test_uses_saved_config_without_request_body(self):
+        request = self._mock_request({}, is_staff=True)
+        request.body = b""
+        request.META = {}
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_called_once_with()
+        self._email_instance.test_connection.assert_called_once_with()
+        self._email_instance.send_custom_email.assert_not_called()
+        views.EmailConfig.assert_not_called()
+        views.build_response.assert_called_once_with(request, 200, "SMTP connection and authentication succeeded")
+
+    def test_smtp_connection_test_does_not_use_configuration_overrides(self):
+        request = self._mock_request({"smtpServer": "unsaved.example.org", "emailPassword": "unsaved"}, is_staff=True)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_called_once_with()
+        self._email_instance.test_connection.assert_called_once_with()
+        views.EmailConfig.assert_not_called()
+
+    def test_smtp_connection_test_requires_administrator(self):
+        request = self._mock_request({}, is_staff=False)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_not_called()
+        views.build_response.assert_called_once_with(request, 403, "Only administrators can access this resource")
+
+    def test_smtp_connection_test_requires_authentication(self):
+        request = self._mock_request({}, is_staff=True)
+        request.user.is_anonymous = True
+
+        response = views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.NotificationsHandler.assert_not_called()
+        self.assertEqual(401, response.status_code)
+
+    def test_smtp_connection_test_returns_controlled_errors(self):
+        failures = [
+            (ImproperlyConfigured("secret"), 400, "Email configuration is missing or invalid"),
+            (ValueError("secret"), 400, "Email configuration is missing or invalid"),
+            (TimeoutError("secret"), 504, "SMTP connection timed out"),
+            (smtplib.SMTPAuthenticationError(535, b"secret"), 502, "SMTP authentication failed"),
+            (smtplib.SMTPNotSupportedError("secret"), 502,
+             "SMTP server does not support required TLS or authentication"),
+            (ssl.SSLError("secret"), 502, "SMTP TLS negotiation failed"),
+            (smtplib.SMTPConnectError(421, b"secret"), 502, "Could not connect to the SMTP server"),
+            (ConnectionRefusedError("secret"), 502, "Could not connect to the SMTP server"),
+        ]
+        for error, status, message in failures:
+            with self.subTest(error=type(error).__name__):
+                self._email_instance.test_connection.side_effect = error
+                views.build_response.reset_mock()
+                request = self._mock_request({}, is_staff=True)
+
+                views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+                views.build_response.assert_called_once_with(request, status, message)
+
+    def test_smtp_connection_test_handles_missing_saved_config(self):
+        views.NotificationsHandler.side_effect = ImproperlyConfigured("Missing email configuration")
+        request = self._mock_request({}, is_staff=True)
+
+        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+
+        views.build_response.assert_called_once_with(request, 400, "Email configuration is missing or invalid")

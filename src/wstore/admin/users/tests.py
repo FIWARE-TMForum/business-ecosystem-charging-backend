@@ -20,14 +20,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from importlib import reload
+import smtplib
 
 from bson import ObjectId
 from django.core.exceptions import ImproperlyConfigured
-from django.test import TestCase
-from mock import MagicMock, call, mock_open
+from django.test import TestCase, override_settings
+from mock import MagicMock, call, mock_open, patch
 from parameterized import parameterized
 
-from wstore.admin.users import notification_handler
+from wstore.admin.users import email_config, notification_handler
 
 __test__ = False
 
@@ -44,14 +45,8 @@ class NotificationsTestCase(TestCase):
         self._config.email_user = "wstore"
         self._config.email_password = "passwd"
 
-        notification_handler.EmailConfig = MagicMock()
-        notification_handler.EmailConfig.objects.first = MagicMock(return_value=self._config)
+        notification_handler.get_email_config = MagicMock(return_value=self._config)
 
-        # notification_handler.settings.WSTOREMAIL = "wstore@email.com"
-        # notification_handler.settings.WSTOREMAILPASS = "passwd"
-        # notification_handler.settings.WSTOREMAILUSER = "wstore"
-        # notification_handler.settings.SMTPSERVER = "smtp.gmail.com"
-        # notification_handler.settings.SMTPPORT = 587
         notification_handler.settings.SITE = "http://localhost:8000"
 
         notification_handler.settings.BASEDIR = "/home/test/wstore"
@@ -125,22 +120,18 @@ class NotificationsTestCase(TestCase):
 
     def _empty_email(self):
         self._config.email = ""
-        #notification_handler.settings.WSTOREMAIL = ""
 
     def _empty_pass(self):
         self._config.email_password = ""
-        # notification_handler.settings.WSTOREMAILPASS = ""
 
     def _empty_user(self):
         self._config.email_user = ""
-        # notification_handler.settings.WSTOREMAILUSER = ""
 
     def _empty_server(self):
         self._config.smtp_server = ""
-        # notification_handler.settings.SMTPSERVER = ""
 
     def test_improperly_configured(self):
-        notification_handler.EmailConfig.objects.first.return_value = None
+        notification_handler.get_email_config.return_value = None
 
         error = None
         try:
@@ -150,6 +141,83 @@ class NotificationsTestCase(TestCase):
 
         self.assertTrue(error is not None)
         self.assertEquals("Missing email configuration", str(error))
+
+    @override_settings(
+        WSTOREMAILUSER="env-user",
+        WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org",
+        SMTPSERVER="smtp.env.example.org",
+        SMTPPORT="2525",
+        NOTIFICATION_RECIPIENT_EMAIL="support@example.org",
+        NOTIFICATION_RECIPIENT_EMAIL_GENERAL="",
+        NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL="",
+        NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING="",
+        NOTIFICATION_RECIPIENT_EMAIL_LEGAL="",
+    )
+    @patch.object(email_config, "EmailConfig")
+    def test_email_persists_environment_defaults_without_admin_config(self, model):
+        model.objects.first.return_value = None
+        defaults = {
+            "email_user": "env-user", "email_password": "env-password",
+            "email": "env@example.org", "smtp_server": "smtp.env.example.org", "smtp_port": 2525,
+            "contact_us_general": "support@example.org",
+            "contact_us_technical": "support@example.org",
+            "contact_us_onboarding": "support@example.org",
+            "contact_us_legal": "support@example.org",
+        }
+        persisted_config = MagicMock(**defaults)
+        model.objects.get_or_create.return_value = (persisted_config, True)
+        notification_handler.get_email_config.side_effect = email_config.get_email_config
+
+        handler = notification_handler.NotificationsHandler()
+        model.objects.get_or_create.assert_called_once_with(defaults=defaults)
+        handler.send_custom_email("recipient@example.org", "Subject", "Message")
+
+        notification_handler.smtplib.SMTP.assert_called_once_with("smtp.env.example.org", 2525)
+        server = notification_handler.smtplib.SMTP.return_value
+        server.login.assert_called_once_with("env-user", "env-password")
+        self.assertEqual("env@example.org", server.sendmail.call_args[0][0])
+
+    @override_settings(
+        WSTOREMAILUSER="env-user",
+        WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org",
+        SMTPSERVER="smtp.env.example.org",
+        SMTPPORT="2525",
+    )
+    def test_admin_config_overrides_environment_defaults(self):
+        handler = notification_handler.NotificationsHandler()
+        handler.send_custom_email("recipient@example.org", "Subject", "Message")
+
+        notification_handler.smtplib.SMTP.assert_called_once_with("smtp.gmail.com", 587)
+        server = notification_handler.smtplib.SMTP.return_value
+        server.login.assert_called_once_with("wstore", "passwd")
+        self.assertEqual("wstore@email.com", server.sendmail.call_args[0][0])
+
+    @patch.object(notification_handler.ssl, "create_default_context")
+    def test_connection_checks_tls_and_authentication_without_sending(self, tls_context):
+        handler = notification_handler.NotificationsHandler()
+
+        handler.test_connection()
+
+        notification_handler.smtplib.SMTP.assert_called_once_with("smtp.gmail.com", 587, timeout=10)
+        connection = notification_handler.smtplib.SMTP.return_value
+        server = connection.__enter__.return_value
+        server.starttls.assert_called_once_with(context=tls_context.return_value)
+        server.login.assert_called_once_with("wstore", "passwd")
+        server.sendmail.assert_not_called()
+        connection.__exit__.assert_called_once_with(None, None, None)
+
+    def test_connection_closes_after_authentication_failure(self):
+        connection = notification_handler.smtplib.SMTP.return_value
+        server = connection.__enter__.return_value
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Invalid credentials")
+
+        with self.assertRaises(smtplib.SMTPAuthenticationError):
+            notification_handler.NotificationsHandler().test_connection()
+
+        connection.__exit__.assert_called_once()
+        server.sendmail.assert_not_called()
 
     def _validate_user_call(self):
         self.assertEquals(
@@ -357,3 +425,65 @@ class NotificationsTestCase(TestCase):
         )
 
         notification_handler.MIMEText.assert_called_once_with(html, "html")
+
+
+class EmailConfigDefaultsTestCase(TestCase):
+    @parameterized.expand([("general",), ("technical",), ("onboarding",), ("legal",)])
+    @override_settings(
+        WSTOREMAILUSER="env-user", WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org", SMTPSERVER="smtp.env.example.org", SMTPPORT="2525",
+    )
+    @patch.object(email_config, "EmailConfig")
+    def test_destination_specific_recipient_overrides_general_fallback(self, support_type, model):
+        model.objects.first.return_value = None
+        model.objects.get_or_create.return_value = (MagicMock(), True)
+        overrides = {
+            "NOTIFICATION_RECIPIENT_EMAIL_" + category.upper(): ""
+            for category in ("general", "technical", "onboarding", "legal")
+        }
+        overrides["NOTIFICATION_RECIPIENT_EMAIL"] = "fallback@example.org"
+        overrides["NOTIFICATION_RECIPIENT_EMAIL_" + support_type.upper()] = "specific@example.org"
+
+        with override_settings(**overrides):
+            email_config.get_email_config()
+
+        defaults = model.objects.get_or_create.call_args[1]["defaults"]
+        for category in ("general", "technical", "onboarding", "legal"):
+            expected = "specific@example.org" if category == support_type else "fallback@example.org"
+            self.assertEqual(expected, defaults["contact_us_" + category])
+
+    @parameterized.expand([(None,), ("",), ("support@example.org",)])
+    @override_settings(
+        WSTOREMAILUSER="env-user", WSTOREMAILPASS="env-password",
+        WSTOREMAIL="env@example.org", SMTPSERVER="smtp.env.example.org", SMTPPORT="2525",
+    )
+    @patch.object(email_config, "EmailConfig")
+    def test_recipient_defaults(self, recipient, model):
+        model.objects.first.return_value = None
+        model.objects.get_or_create.return_value = (MagicMock(), True)
+
+        with override_settings(
+            NOTIFICATION_RECIPIENT_EMAIL=recipient,
+            NOTIFICATION_RECIPIENT_EMAIL_GENERAL="",
+            NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL="",
+            NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING="",
+            NOTIFICATION_RECIPIENT_EMAIL_LEGAL="",
+        ):
+            email_config.get_email_config()
+
+        defaults = model.objects.get_or_create.call_args[1]["defaults"]
+        for support_type in ("general", "technical", "onboarding", "legal"):
+            self.assertEqual(recipient or "", defaults["contact_us_" + support_type])
+
+    @patch.object(email_config, "EmailConfig")
+    def test_existing_config_is_not_overwritten(self, model):
+        config = model.objects.first.return_value
+        self.assertIs(config, email_config.get_email_config())
+        model.objects.get_or_create.assert_not_called()
+
+    @override_settings(WSTOREMAIL="")
+    @patch.object(email_config, "EmailConfig")
+    def test_incomplete_defaults_are_not_persisted(self, model):
+        model.objects.first.return_value = None
+        self.assertIsNone(email_config.get_email_config())
+        model.objects.get_or_create.assert_not_called()

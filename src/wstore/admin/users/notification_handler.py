@@ -23,6 +23,7 @@
 
 import os
 import smtplib
+import ssl
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
@@ -34,7 +35,8 @@ from bson.objectid import ObjectId
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
-from wstore.models import User, EmailConfig
+from wstore.admin.users.email_config import get_email_config
+from wstore.models import User
 from wstore.ordering.models import Offering
 
 logger = getLogger("wstore.default_logger")
@@ -46,7 +48,7 @@ class NotificationsHandler:
         self._set_config()
 
     def _set_config(self):
-        config = EmailConfig.objects.first()
+        config = get_email_config()
         if config is None:
             raise ImproperlyConfigured("Missing email configuration")
 
@@ -55,6 +57,12 @@ class NotificationsHandler:
         self._fromaddr = config.email
         self._server = config.smtp_server
         self._port = config.smtp_port
+
+    def test_connection(self):
+        """Check saved SMTP settings without sending a message."""
+        with smtplib.SMTP(self._server, self._port, timeout=10) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(self._mailuser, self._password)
 
     def _send_email(self, recipient, msg):
         logger.debug(f"Sending email with {self._server}, {self._port}, {self._mailuser}, {self._fromaddr}, {self._password}")

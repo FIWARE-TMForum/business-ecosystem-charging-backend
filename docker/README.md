@@ -63,6 +63,10 @@ services:
           # - BAE_CB_EMAIL_SMTP_SERVER=smtp.server.com
           # - BAE_CB_EMAIL_SMTP_PORT=587
           # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL=alerts@example.com
+          # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_GENERAL=general@example.com
+          # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL=technical@example.com
+          # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING=onboarding@example.com
+          # - BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_LEGAL=legal@example.com
 
           - BAE_CB_VERIFY_REQUESTS=True  # Whether or not the BAE validates SSL certificates on requests to external components 
 
@@ -87,6 +91,12 @@ As you can see, the biz-ecosystem-charging-backend image defines 4 volumes. In p
 * */business-ecosystem-charging-backend/src/wstore/asset_manager/resource_plugins/plugins*: This directory includes the code of the plugins already installed
 
 It can be seen that the system can be configured with the environment variables defined by the software. In this case, providing the settings file is not mandatory, taking into account that the environment variables values override the file ones.
+
+When no email configuration exists in the database, the first email configuration read (including GET `/charging/api/orderManagement/notify/config`) saves the defaults from `BAE_CB_EMAIL`, `BAE_CB_EMAIL_USER`, `BAE_CB_EMAIL_PASS`, `BAE_CB_EMAIL_SMTP_SERVER`, and `BAE_CB_EMAIL_SMTP_PORT`. Subsequent reads and email sending use the database configuration, which administrators can update through the API. Each `contactUsDestinations` address has its own environment variable: `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_GENERAL`, `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_TECHNICAL`, `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_ONBOARDING`, and `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL_LEGAL`. Each destination uses its specific nonempty value, then `BAE_CB_NOTIFICATION_RECIPIENT_EMAIL` as a fallback, or an empty string if neither is provided. Existing database values are preserved when the environment changes.
+
+The email configuration API accepts partial updates through POST `/charging/api/orderManagement/notify/config`. Omitted fields retain their saved values. An omitted or empty `emailPassword` retains the stored password; a nonempty password replaces it. Creating a configuration requires nonempty SMTP server, port, sender email, username, and password. Contact-us destinations are optional: omitted destinations are preserved on updates and default to empty on creation; an explicit empty string clears a destination. GET includes `hasPassword` and never returns the password.
+
+Administrators can test the saved SMTP configuration with POST `/charging/api/orderManagement/notify/config/test` (no request body required). Request body values are ignored. The endpoint loads the saved settings (initializing environment defaults on first use if necessary), connects with a 10-second socket timeout, negotiates STARTTLS with certificate verification, authenticates, and closes the connection without sending an email. It returns 200 on success, 400 for missing or invalid configuration, 502 for connection/TLS/authentication failures, or 504 on timeout. Unsaved form changes do not affect the test.
 
 Once you have created the file, run the following command:
 
