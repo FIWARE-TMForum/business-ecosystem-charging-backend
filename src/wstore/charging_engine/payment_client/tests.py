@@ -20,7 +20,7 @@
 
 
 import mock
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from mock import MagicMock
 from parameterized import parameterized
 from urllib.parse import parse_qs, urlparse
@@ -94,14 +94,13 @@ class RedsysTestCase(TestCase):
             "price": "6.29",
             "billId": "bill-1",
         }]
-        offering = MagicMock()
-        offering.name = "Test offering"
+        offering = {"id": "offering-1", "name": "Test offering"}
 
         with mock.patch.object(redsys_client.settings, "SITE", "http://localhost:4200/"), \
                 mock.patch.object(redsys_client, "_new_order_number", return_value="260727123456"), \
                 mock.patch.object(
-                    redsys_client.Offering.objects,
-                    "get",
+                    redsys_client.ProductCatalog,
+                    "get_offering",
                     return_value=offering,
                 ):
             checkout_url = client.start_redirection_payment(transactions)
@@ -441,7 +440,10 @@ class StripeTestCalse(TestCase):
     def setUp(self):
         stripe_client.stripe = MagicMock()
         stripe_client.stripe.error.CardError = _StripeCardError
-        stripe_client.Offering = MagicMock(**{"objects.get.return_value": MagicMock()})
+        catalog_patch = mock.patch.object(stripe_client, "ProductCatalog")
+        self.catalog = catalog_patch.start().return_value
+        self.addCleanup(catalog_patch.stop)
+        self.catalog.get_offering.return_value = {"name": "Test offering", "description": "Test description"}
         stripe_client.PaymentRecord = MagicMock()
 
     @parameterized.expand(
@@ -841,3 +843,98 @@ class StripeTestCalse(TestCase):
             ),
             (None, "pending"),
         )
+
+
+class CatalogOfferingCheckoutTests(SimpleTestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+
+        self.order = SimpleNamespace(
+            order_id="order-1",
+            hash_key=b"test-secret-key",
+            contracts=[
+                SimpleNamespace(item_id="item-1", offering="offer-1"),
+                SimpleNamespace(item_id="item-2", offering="offer-2"),
+            ],
+        )
+        self.transactions = [
+            {"item": "item-2", "price": "6.29", "currency": "EUR", "billId": "bill-2"},
+            {"item": "item-1", "price": "3.50", "currency": "EUR", "billId": "bill-1"},
+        ]
+        self.offers = {
+            "offer-1": {"id": "offer-1", "name": "First catalog offer", "description": "Current description"},
+            "offer-2": {"id": "offer-2", "name": "Second catalog offer"},
+        }
+
+    def catalog_response(self, url, **kwargs):
+        response = MagicMock()
+        response.json.return_value = self.offers[url.rsplit("/", 1)[1]]
+
+        return response
+
+    def assert_catalog_requests(self, get):
+        from django.conf import settings
+        from wstore.store_commons.utils.url import get_service_url
+
+        self.assertEqual(
+            [
+                mock.call(
+                    get_service_url("catalog", "/productOffering/offer-1"), verify=settings.VERIFY_REQUESTS, timeout=30
+                ),
+                mock.call(
+                    get_service_url("catalog", "/productOffering/offer-2"), verify=settings.VERIFY_REQUESTS, timeout=30
+                ),
+            ],
+            get.call_args_list,
+        )
+
+    @mock.patch("wstore.store_commons.product_catalog.requests.get")
+    def test_stripe_uses_catalog_names_and_optional_descriptions(self, get):
+        get.side_effect = self.catalog_response
+
+        with mock.patch.object(stripe_client, "stripe") as stripe:
+            stripe.checkout.Session.create.return_value.url = "https://checkout.example/session"
+
+            checkout_url = stripe_client.StripeClient(self.order).start_redirection_payment(self.transactions)
+
+        self.assertEqual("https://checkout.example/session", checkout_url)
+        self.assert_catalog_requests(get)
+        line_items = stripe.checkout.Session.create.call_args.kwargs["line_items"]
+        self.assertEqual(
+            {"name": "Second catalog offer", "description": "No description"},
+            line_items[0]["price_data"]["product_data"],
+        )
+        self.assertEqual(
+            {"name": "First catalog offer", "description": "Current description"},
+            line_items[1]["price_data"]["product_data"],
+        )
+        self.assertEqual([629, 350], [item["price_data"]["unit_amount"] for item in line_items])
+
+    @mock.patch("wstore.store_commons.product_catalog.requests.get")
+    def test_redsys_uses_catalog_names_in_transaction_order(self, get):
+        get.side_effect = self.catalog_response
+
+        checkout_url = redsys_client.RedsysClient(self.order).start_redirection_payment(self.transactions)
+
+        self.assert_catalog_requests(get)
+        query = parse_qs(urlparse(checkout_url).query)
+        params = redsys_client._decode_params(query["Ds_MerchantParameters"][0])
+        self.assertEqual("Second catalog offer, First catalog offer", params["DS_MERCHANT_PRODUCTDESCRIPTION"])
+        self.assertEqual("979", params["DS_MERCHANT_AMOUNT"])
+
+    @mock.patch("wstore.store_commons.product_catalog.requests.get")
+    def test_catalog_failure_prevents_checkout_for_both_clients(self, get):
+        from requests.exceptions import HTTPError
+
+        get.return_value.raise_for_status.side_effect = HTTPError("catalog unavailable")
+
+        for client_class in (stripe_client.StripeClient, redsys_client.RedsysClient):
+            with self.subTest(client=client_class.NAME), mock.patch.object(stripe_client, "stripe") as stripe:
+                client = client_class(self.order)
+
+                with self.assertRaises(payment_client.PaymentClientError) as error:
+                    client.start_redirection_payment(self.transactions)
+
+                self.assertEqual(client.NAME, error.exception.client)
+                self.assertIsNone(client.get_checkout_url())
+                stripe.checkout.Session.create.assert_not_called()

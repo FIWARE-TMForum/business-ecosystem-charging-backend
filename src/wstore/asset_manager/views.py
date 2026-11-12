@@ -21,25 +21,34 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+from logging import getLogger
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.http import HttpResponse
 
 from wstore.asset_manager.asset_manager import AssetManager
-from wstore.asset_manager.errors import ProductError
+from wstore.asset_manager.errors import ProductError, ServiceError, ResourceError
 from wstore.asset_manager.offering_validator import OfferingValidator
 from wstore.asset_manager.product_validator import ProductValidator
+from wstore.asset_manager.resource_validator import ResourceValidator
+from wstore.store_commons.resource_catalog import ResourceCatalogError
+from wstore.asset_manager.service_validator import ServiceValidator
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.models import UserProfile
 from wstore.store_commons.errors import ConflictError
 from wstore.store_commons.resource import Resource
+from wstore.store_commons.product_catalog import ProductCatalogError
+from wstore.store_commons.service_catalog import ServiceCatalogError
 from wstore.store_commons.utils.http import (
     authentication_required,
     build_response,
     get_content_type,
     supported_request_mime_types,
 )
+
+
+logger = getLogger("wstore.default_logger")
 
 
 class AssetCollection(Resource):
@@ -236,28 +245,32 @@ def _validate_catalog_element(request, element, validator):
     # Parse content
     try:
         data = json.loads(request.body)
-    except:
+    except (ValueError, TypeError, UnicodeDecodeError):
         return build_response(request, 400, "The content is not a valid JSON document")
+
+    if not isinstance(data, dict):
+        return build_response(request, 400, "The content must be a JSON object")
 
     if "action" not in data:
         return build_response(request, 400, "Missing required field: action")
 
     if element not in data:
-        return build_response(request, 400, "Missing required field: product")
+        return build_response(request, 400, "Missing required field: " + element)
 
     try:
         validator.validate(data["action"], user.userprofile.current_organization, data[element])
     except ValueError as e:
         return build_response(request, 400, str(e))
-    except ProductError as e:
+    except (ProductError, ServiceError, ResourceError) as e:
         return build_response(request, 400, str(e))
     except ConflictError as e:
         return build_response(request, 409, str(e))
-    except PluginError as e:
+    except (PluginError, ProductCatalogError, ServiceCatalogError, ResourceCatalogError) as e:
         return build_response(request, 422, str(e))
     except PermissionDenied as e:
         return build_response(request, 403, str(e))
-    except:
+    except Exception:
+        logger.exception("%s validation callback failed for action %r", element, data["action"])
         return build_response(request, 500, "An unexpected error has occurred")
 
     return build_response(request, 200, "OK")
@@ -268,7 +281,7 @@ class ValidateCollection(Resource):
     @authentication_required
     def create(self, request):
         """
-        Validates the digital assets contained in a TMForum product Specification
+        Validates proposed TMForum products or notifies successful catalog writes
         :param request:
         :return:
         """
@@ -281,9 +294,25 @@ class ValidateOfferingCollection(Resource):
     @authentication_required
     def create(self, request):
         """
-        Validates the TMForum product offering selling a product specification
+        Validates TMForum offerings or notifies successful catalog writes
         :param request:
         :return:
         """
         offering_validator = OfferingValidator()
         return _validate_catalog_element(request, "offering", offering_validator)
+
+
+class ValidateServiceCollection(Resource):
+    @supported_request_mime_types(("application/json",))
+    @authentication_required
+    def create(self, request):
+        """Validate proposed service specifications or notify successful catalog writes."""
+        return _validate_catalog_element(request, "service", ServiceValidator())
+
+
+class ValidateResourceCollection(Resource):
+    @supported_request_mime_types(("application/json",))
+    @authentication_required
+    def create(self, request):
+        """Validate proposed resource specifications or notify successful catalog writes."""
+        return _validate_catalog_element(request, "resource", ResourceValidator())

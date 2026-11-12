@@ -22,6 +22,7 @@
 
 import logging
 import requests
+from requests.exceptions import HTTPError
 from copy import deepcopy
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -86,6 +87,20 @@ class InventoryClient:
 
         return r.json()
 
+    def _get_inventory_instance(self, kind, instance_id):
+        url = get_service_url(kind + "_inventory", "/" + kind + "/" + str(instance_id))
+        response = requests.get(url, verify=settings.VERIFY_REQUESTS, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
+    def get_service(self, service_id):
+        """Retrieve a purchased service from service inventory."""
+        return self._get_inventory_instance("service", service_id)
+
+    def get_resource(self, resource_id):
+        """Retrieve a purchased resource from resource inventory."""
+        return self._get_inventory_instance("resource", resource_id)
+
     def get_product_for_patch(self, product_id):
         """
         Retrieves a product and removes read-only fields that should not be included in PATCH requests
@@ -117,6 +132,57 @@ class InventoryClient:
         r.raise_for_status()
 
         return r.json()
+
+    def _iter_inventory(self, api, path, query, fallback_fields=None):
+        offset = 0
+        page_size = 100
+        query = dict(query or {})
+        fallback_fields = fallback_fields or {}
+
+        while True:
+            params = {**query, "offset": offset, "limit": page_size}
+            response = requests.get(
+                get_service_url(api, path), params=params, verify=settings.VERIFY_REQUESTS, timeout=30
+            )
+            try:
+                response.raise_for_status()
+            except HTTPError:
+                if (
+                    any(key in query for key in fallback_fields)
+                    and response.status_code in (400, 500)
+                ):
+                    query = {fallback_fields.get(key, key): value for key, value in query.items()}
+                    fallback_fields = {}
+                    logger.warning("%s rejected query fields; retrying with fallback fields", api)
+                    continue
+                raise
+            entries = response.json()
+
+            if not isinstance(entries, list):
+                raise InventoryError("The inventory returned an invalid collection")
+
+            yield from entries
+
+            if len(entries) < page_size:
+                return
+
+            offset += len(entries)
+
+    def iter_services(self, query=None):
+        # FIWARE TMForum 1.10.2 requires its internal field name for filtering.
+        return self._iter_inventory(
+            "service_inventory", "/service", query,
+            fallback_fields={"serviceCharacteristic.value": "serviceCharacteristic.tmfValue"},
+        )
+
+    def iter_resources(self, query=None):
+        return self._iter_inventory(
+            "resource_inventory", "/resource", query,
+            fallback_fields={"resourceCharacteristic.value": "resourceCharacteristic.tmfValue"},
+        )
+
+    def iter_products(self, query=None):
+        return self._iter_inventory("inventory", "/product", query)
 
     def patch_product(self, product_id, patch_body):
         """
@@ -178,7 +244,7 @@ class InventoryClient:
             product_id=product_id,
             realizing_resources=resource_ids,
             realizing_services=service_ids,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.utcnow(),
         )
         pending.save()
 
@@ -191,6 +257,16 @@ class InventoryClient:
         pending.delete()
 
     def _do_terminate(self, product_id, resource_ids, service_ids):
+        # Import here because plugin dispatch also uses InventoryClient.
+        from wstore.asset_manager.resource_plugins.decorators import on_product_termination
+        from wstore.ordering.models import Order
+
+        try:
+            order = Order.get_by_product_id(product_id)
+            on_product_termination(order, order.get_product_contract(product_id))
+        except Exception:
+            logger.exception("Plugin termination notification failed for product %s", product_id)
+
         # Keep track of the resources/services already patched so they can be
         # rolled back if a later patch fails
         patched_resources = []
@@ -242,8 +318,10 @@ class InventoryClient:
 
     def build_inventory_char(self, spec_char, value_field):
         value = None
-        for val in spec_char[value_field]:
-            if val["isDefault"]:
+        values = spec_char[value_field]
+
+        for val in values:
+            if len(values) == 1 or val.get("isDefault", False):
                 if "valueFrom" in val:
                     value = str(val["valueFrom"]) + " - " + str(val["valueTo"])
                 else:
@@ -266,6 +344,10 @@ class InventoryClient:
         parties = [normalize_party_ref(party) for party in rel_parties]
 
         resource = {
+            "resourceSpecification": {
+                "id": str(resource_id),
+                "href": resource_spec.get("href") or str(resource_id),
+            },
             "resourceCharacteristic": [self.build_inventory_char(char, "resourceSpecCharacteristicValue") for char in resource_spec["resourceSpecCharacteristic"]],
             "relatedParty": parties,
             "resourceStatus": "reserved",
@@ -274,6 +356,7 @@ class InventoryClient:
 
         if "name" in resource_spec:
             resource["name"] = resource_spec["name"]
+            resource["resourceSpecification"]["name"] = resource_spec["name"]
 
         if "description" in resource_spec:
             resource["description"] = resource_spec["description"]
@@ -293,6 +376,10 @@ class InventoryClient:
         parties = [normalize_party_ref(party) for party in rel_parties]
 
         service = {
+            "serviceSpecification": {
+                "id": str(service_id),
+                "href": service_spec.get("href") or str(service_id),
+            },
             "serviceCharacteristic": [self.build_inventory_char(char, "characteristicValueSpecification") for char in service_spec["specCharacteristic"]],
             "relatedParty": parties,
             "state": "reserved",
@@ -300,6 +387,7 @@ class InventoryClient:
         }
         if "name" in service_spec:
             service["name"] = service_spec["name"]
+            service["serviceSpecification"]["name"] = service_spec["name"]
 
         if "description" in service_spec:
             service["description"] = service_spec["description"]

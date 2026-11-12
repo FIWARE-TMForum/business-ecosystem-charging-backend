@@ -31,38 +31,10 @@ logger = getLogger("wstore.default_logger")
 
 
 class Plugin:
+    """Shared plugin configuration and accounting utilities."""
+
     def __init__(self, plugin_model):
         self._model = plugin_model
-
-    def on_pre_product_spec_validation(self, provider, asset_t, media_type, url):
-        pass
-
-    def on_post_product_spec_validation(self, provider, asset):
-        pass
-
-    def on_pre_product_spec_attachment(self, asset, asset_t, product_spec):
-        pass
-
-    def on_post_product_spec_attachment(self, asset, asset_t, product_spec):
-        pass
-
-    def on_pre_product_spec_upgrade(self, asset, asset_t, product_spec):
-        pass
-
-    def on_post_product_spec_upgrade(self, asset, asset_t, product_spec):
-        pass
-
-    def on_pre_product_offering_validation(self, asset, product_offering):
-        pass
-
-    def on_post_product_offering_validation(self, asset, product_offering):
-        pass
-
-    def on_product_acquisition(self, asset, contract, order):
-        pass
-
-    def on_product_suspension(self, asset, contract, order):
-        pass
 
     def get_usage_specs(self):
         return []
@@ -83,7 +55,9 @@ class Plugin:
             "usageSpecCharacteristic": [
                 self._get_usage_characteristic("orderId", "Order identifier", "string"),
                 self._get_usage_characteristic("productId", "Product identifier", "string"),
-                self._get_usage_characteristic("correlationNumber", "Accounting correlation number", "number"),
+                self._get_usage_characteristic(
+                    "correlationNumber", "Accounting correlation number", "number"
+                ),
                 self._get_usage_characteristic("unit", "Accounting unit", "string"),
                 self._get_usage_characteristic("value", "Accounting value", "number"),
             ]
@@ -96,7 +70,9 @@ class Plugin:
         for spec in usage_specs:
             if "name" not in spec or "description" not in spec:
                 logger.error("`name` or `description` not in spec")
-                raise PluginError("Invalid product specification configuration, must include name and description")
+                raise PluginError(
+                    "Invalid product specification configuration, must include name and description"
+                )
 
             logger.debug(f"Creating usage specifications for {spec['name']}")
 
@@ -129,16 +105,13 @@ class Plugin:
                 if e.response.status_code != 404:
                     raise e
 
-    def get_pending_accounting(self, asset, contract, order):
-        return []
-
-    def on_usage_refresh(self, asset, contract, order):
+    def _refresh_usage(self, instance, contract, order):
         logger.debug(f"Running usage refresh hook for {self._model}")
 
         if not self._model.pull_accounting:
             return
 
-        pending_accounting, last_usage = self.get_pending_accounting(asset, contract, order)
+        pending_accounting, last_usage = self.get_pending_accounting(instance, contract, order)
         usage_template = {
             "type": "event",
             "status": "Received",
@@ -172,7 +145,9 @@ class Plugin:
 
             usage["usageCharacteristic"].append({"name": "unit", "value": usage_record["unit"]})
 
-            usage["usageCharacteristic"].append({"name": "correlationNumber", "value": contract.correlation_number})
+            usage["usageCharacteristic"].append(
+                {"name": "correlationNumber", "value": contract.correlation_number}
+            )
 
             usage["usageCharacteristic"].append({"name": "value", "value": usage_record["value"]})
 
@@ -186,3 +161,171 @@ class Plugin:
         if last_usage is not None:
             contract.last_usage = last_usage
             order.save()
+
+
+class ServicePlugin(Plugin):
+    """Service specification and inventory lifecycle interface."""
+
+    def on_pre_service_spec_creation(self, provider, service_spec):
+        """Validate a proposed service specification before the TMForum write."""
+        pass
+
+    def on_post_service_spec_creation(self, provider, service_spec):
+        """Handle the created TMForum specification; failures do not undo creation."""
+        pass
+
+    def on_pre_service_spec_update(self, provider, service_spec):
+        """Validate an ordinary specification update before the TMForum write."""
+        pass
+
+    def on_post_service_spec_update(self, provider, service_spec):
+        """Handle the updated TMForum specification; failures do not undo the update."""
+        pass
+
+    def on_pre_service_spec_upgrade(self, provider, service_spec):
+        """Validate an update to the existing service specification."""
+        pass
+
+    def on_post_service_spec_upgrade(self, provider, service_spec):
+        """Notify successful catalog update of the upgraded service specification."""
+        pass
+
+    def on_pre_product_spec_creation(self, provider, service_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_creation(self, provider, service_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_spec_update(self, provider, service_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_update(self, provider, service_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_creation(self, provider, service_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_creation(self, provider, service_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_update(self, provider, service_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_update(self, provider, service_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_service_activation(self, provider, buyer, service, product, order, contract=None):
+        """Provision the inventory service; raise on failure to prevent product activation."""
+        pass
+
+    def on_service_termination(self, provider, buyer, service, product, order, contract=None):
+        """Notify service termination; notification failure does not block termination."""
+        pass
+
+    def on_service_modification(
+        self, provider, service_spec, service, product, order, changes, contract=None
+    ):
+        """Apply proposed changes to an existing service, keeping its specification."""
+        pass
+
+    def on_service_renewal(self, provider, buyer, service, product, order, contract=None, *, customer_bill_id):
+        """Notify settled renewal; notification failure does not block processing."""
+        pass
+
+    def get_pending_accounting(self, service, contract, order):
+        return []
+
+    def on_usage_refresh(self, service, contract, order):
+        self._refresh_usage(service, contract, order)
+
+
+class ResourcePlugin(Plugin):
+    """Resource specification and inventory lifecycle interface."""
+
+    def on_pre_resource_spec_creation(self, provider, resource_spec):
+        """Validate a proposed resource specification before the TMForum write."""
+        pass
+
+    def on_post_resource_spec_creation(self, provider, resource_spec):
+        """Handle the created TMForum specification; failures do not undo creation."""
+        pass
+
+    def on_pre_resource_spec_update(self, provider, resource_spec):
+        """Validate an ordinary specification update before the TMForum write."""
+        pass
+
+    def on_post_resource_spec_update(self, provider, resource_spec):
+        """Handle the updated TMForum specification; failures do not undo the update."""
+        pass
+
+    def on_pre_resource_spec_upgrade(self, provider, resource_spec):
+        """Validate an update to the existing resource specification."""
+        pass
+
+    def on_post_resource_spec_upgrade(self, provider, resource_spec):
+        """Notify successful catalog update of the upgraded resource specification."""
+        pass
+
+    def on_pre_product_spec_creation(self, provider, resource_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_creation(self, provider, resource_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_spec_update(self, provider, resource_spec, product_spec):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_spec_update(self, provider, resource_spec, product_spec):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_creation(self, provider, resource_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_creation(self, provider, resource_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_pre_product_offering_update(self, provider, resource_spec, product_spec, product_offering):
+        """Validate before the TMForum write."""
+        pass
+
+    def on_post_product_offering_update(self, provider, resource_spec, product_spec, product_offering):
+        """Handle the persisted TMForum document; failures do not undo the write."""
+        pass
+
+    def on_resource_activation(self, provider, buyer, resource, product, order, contract=None):
+        """Provision the inventory resource; raise on failure to prevent product activation."""
+        pass
+
+    def on_resource_termination(self, provider, buyer, resource, product, order, contract=None):
+        """Notify resource termination; notification failure does not block termination."""
+        pass
+
+    def on_resource_modification(
+        self, provider, resource_spec, resource, product, order, changes, contract=None
+    ):
+        """Apply proposed changes to an existing resource, keeping its specification."""
+        pass
+
+    def on_resource_renewal(self, provider, buyer, resource, product, order, contract=None, *, customer_bill_id):
+        """Notify settled renewal; notification failure does not block processing."""
+        pass
+
+    def get_pending_accounting(self, resource, contract, order):
+        return []
+
+    def on_usage_refresh(self, resource, contract, order):
+        self._refresh_usage(resource, contract, order)

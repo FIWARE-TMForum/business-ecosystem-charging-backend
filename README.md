@@ -47,6 +47,40 @@ For further documentation, you can check the API Reference available at:
 * [Apiary](http://docs.fiwaretmfbizecosystem.apiary.io)
 * [GitHub Pages](https://fiware-tmforum.github.io/Business-API-Ecosystem/)
 
+# Recurring payment recovery
+
+For local recurring payments, `BAE_CB_PAYMENT_RECOVERY_GRACE_HOURS` sets the
+recovery window from the first confirmed payment failure (default: `72` hours).
+Use a positive value shorter than every applicable billing cycle; for example,
+configure fewer than 24 hours for daily subscriptions. The termination path does
+not fetch rates or validate billing cycles before acting. The first failure time is
+stored on the PaymentRecord as `first_failed_at` and retained across retries and
+scheduler runs. Bill dates do not determine recovery deadlines. Existing payment
+records without a failure timestamp start their window when a failure is first
+observed; historical failure dates are not inferred from bill or attempt creation.
+
+Products remain active during recovery. After expiry, an unsuccessful completed
+attempt causes whole-product termination through the existing termination flow
+and inventory-failure recovery. A bill without a payment record follows the existing
+first-payment flow regardless of its age; expiry applies only to a confirmed
+failed payment attempt. Pending attempts continue through the existing status
+checks; success settles the bill without changing billing periods. An indefinitely
+pending attempt can therefore extend access beyond the window and into another
+billing cycle; it requires operational investigation.
+
+After termination, unpaid bills move to the billing API's `onHold` state to stop
+automatic collection. Bill amounts and applied rates remain unchanged. The
+administrator can interpret unpaid charges using the types and coverage recorded
+in the ACBRs; this software does not adjust or collect debt after termination.
+The existing first-payment request flow is unchanged.
+
+Settled recurring bills notify service/resource renewal plugins through the
+existing CustomerBill webhook worker. Initial purchase completion keeps its own
+path. Renewal and termination notification failures are logged and do not block
+processing or trigger automatic callback retries. Renewal hooks receive
+`customer_bill_id` to identify duplicate notifications. Update plugin
+implementations to the buyer/inventory-based renewal signature before deployment.
+
 # Testing
 
 To execute the unit tests, just run:

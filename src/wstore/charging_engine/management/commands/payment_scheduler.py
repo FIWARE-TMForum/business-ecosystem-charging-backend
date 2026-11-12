@@ -18,14 +18,16 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import datetime
 from logging import getLogger
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.charging_engine.payment_client.payment_client import PaymentClient
 from wstore.ordering.inventory_client import InventoryClient
-from wstore.ordering.models import PaymentRecord
+from wstore.ordering.models import PaymentRecord, PendingTermination
 
 logger = getLogger("wstore.default_logger")
 
@@ -41,6 +43,32 @@ class Command(BaseCommand):
         super().__init__(*args, **kwargs)
         self._billing_client = BillingClient()
         self._inventory_client = InventoryClient()
+
+    def _close_expired_recovery(self, cb, record):
+        """Run only after an existing payment attempt is confirmed failed."""
+        grace = datetime.timedelta(hours=settings.PAYMENT_RECOVERY_GRACE_HOURS)
+        first_failed_at = record.first_failed_at
+
+        if datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) < first_failed_at + grace:
+            return False
+
+        product_id = self._billing_client.get_product_id_by_cb(cb['id'])
+        if not product_id:
+            return False
+
+        product = self._inventory_client.get_product(product_id)
+
+        terminated = product.get('status') == 'terminated'
+        if not terminated:
+            if PendingTermination.objects.filter(product_id=product_id).exists():
+                logger.info("CB %s awaits existing termination recovery for product %s", cb['id'], product_id)
+            else:
+                # Existing termination invokes plugin cleanup and retains failed work for recovery.
+                self._inventory_client.terminate_product(product_id)
+
+        self._billing_client.close_unpaid_customer_bill(cb)
+        logger.info("Closed payment recovery for CB %s, product %s", cb['id'], product_id)
+        return True
 
     def _get_payment_info_from_cb(self, cb_id):
         product_id = self._billing_client.get_product_id_by_cb(cb_id)
@@ -82,6 +110,8 @@ class Command(BaseCommand):
             self._billing_client.set_customer_bill('settled', cb_id)
             logger.info(f"CB {cb_id} settled after payment attempt")
         else:
+            if status == 'failed':
+                record.mark_failed(datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
             logger.info(f"CB {cb_id} payment attempt status: {status}, will retry later")
 
         return record, status
@@ -108,9 +138,13 @@ class Command(BaseCommand):
             self._billing_client.set_customer_bill('settled', cb_id)
             logger.info(f"CB {cb_id} settled")
         elif status == 'failed':
+            record.mark_failed(datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+            if self._close_expired_recovery(cb, record):
+                return
+
             payment_type, pre_auth_id = self._get_payment_info_from_cb(cb_id)
 
-            # it should never show these logs, because it means som strong incosistency
+            # it should never show these logs, because it means some strong inconsistency
             if payment_type is None or pre_auth_id is None:
                 logger.warning(f"Cannot determine payment information for CB {cb_id}, skipping retry")
                 return
@@ -129,17 +163,22 @@ class Command(BaseCommand):
 
         limit = 100
         offset = 0
+        bills = []
         while True:
             cbs = self._billing_client.get_customer_bills_by_state('new', limit=limit, offset=offset)
             if not cbs:
                 break
-            for cb in cbs:
-                try:
-                    self._process_cb(cb)
-                except Exception as e:
-                    logger.error(f"Error processing CB with id: {cb.get('id')}: {e}")
+
+            bills.extend(cbs)
             if len(cbs) < limit:
                 break
             offset += limit
+
+        # Processing changes bill states, so collect pages before mutating the result set.
+        for cb in bills:
+            try:
+                self._process_cb(cb)
+            except Exception as e:
+                logger.error(f"Error processing CB with id: {cb.get('id')}: {e}")
 
         logger.info("Payment scheduler finished")

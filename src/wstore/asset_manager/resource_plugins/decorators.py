@@ -20,30 +20,97 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from functools import wraps
+from importlib import invalidate_caches
+
+from django.conf import settings
 from logging import getLogger
 
-from bson.objectid import ObjectId
-
-from wstore.asset_manager.errors import ProductError
-from wstore.asset_manager.models import Resource
-from wstore.models import ResourcePlugin
-from wstore.ordering.models import Offering
+from wstore.asset_manager.errors import ProductError, ServiceError, ResourceError
+from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
+from wstore.models import Organization, ResourcePlugin
+from wstore.ordering.inventory_client import InventoryClient
+from wstore.ordering.ordering_client import OrderingClient
+from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
 logger = getLogger("wstore.default_logger")
 
 
-def _get_plugin_model(name):
-    try:
-        plugin_model = ResourcePlugin.objects.get(name=name)
-    except:
-        # Validate resource type
-        raise ProductError("The given product specification contains a not supported asset type: " + name)
+def _get_plugin_model(category_id, plugin_type="service"):
+    plugins = list(ResourcePlugin.objects.filter(category_id=category_id, type=plugin_type))
 
-    return plugin_model
+    if len(plugins) > 1:
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error("The " + plugin_type + " category resolves to more than one installed plugin")
+
+    return plugins[0] if plugins else None
 
 
-def load_plugin_module(asset_t):
-    plugin_model = _get_plugin_model(asset_t)
+def _get_type_characteristic(entries, plugin_type, description):
+    if not isinstance(entries, list):
+        return None
+
+    matches = [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and entry["name"].strip().lower() == plugin_type + " type"
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error(description + " must contain exactly one " + plugin_type.title() + " Type characteristic")
+    return matches[0]
+
+
+def _load_specification_plugin(specification, plugin_type, characteristics_field, values_field):
+    entry = _get_type_characteristic(
+        specification.get(characteristics_field), plugin_type, "The " + plugin_type + " specification"
+    )
+    if entry is None:
+        return None
+
+    values = entry.get(values_field)
+    if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error("The " + plugin_type.title() + " Type characteristic must contain exactly one value")
+    return _load_category_plugin(values[0].get("value"), plugin_type)
+
+
+def load_plugin_module(service_spec):
+    return _load_specification_plugin(
+        service_spec, "service", "specCharacteristic", "characteristicValueSpecification"
+    )
+
+
+def load_resource_plugin_module(resource_spec):
+    return _load_specification_plugin(
+        resource_spec, "resource", "resourceSpecCharacteristic", "resourceSpecCharacteristicValue"
+    )
+
+
+def load_inventory_plugin_module(instance, plugin_type):
+    """Resolve activation from inventory characteristics without a catalog read."""
+    entry = _get_type_characteristic(
+        instance.get(plugin_type + "Characteristic"), plugin_type, "The inventory " + plugin_type
+    )
+    return _load_category_plugin(entry.get("value"), plugin_type) if entry is not None else None
+
+
+def _load_category_plugin(category_id, plugin_type):
+    if not isinstance(category_id, str) or not category_id.strip():
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        raise error(
+            plugin_type.title() + " Type must contain a non-empty " + plugin_type + " category id string"
+        )
+
+    model = _get_plugin_model(category_id=category_id, plugin_type=plugin_type)
+    return _load_plugin_model(model) if model is not None else None
+
+
+def _load_plugin_model(plugin_model):
+    invalidate_caches()
     module = plugin_model.module
     module_class_name = module.split(".")[-1]
     module_package = module.partition("." + module_class_name)[0]
@@ -53,152 +120,258 @@ def load_plugin_module(asset_t):
         module_class_name,
     )
 
-    logger.debug(f"Loaded plugin module for {asset_t}")
+    logger.debug("Loaded plugin module %s", module)
     return module_class(plugin_model)
 
 
-def on_product_spec_validation(func):
+def _get_plugins(associations):
+    plugins = []
+
+    for plugin_type, specification, product_spec in associations:
+        loader = load_resource_plugin_module if plugin_type == "resource" else load_plugin_module
+        plugin = loader(specification)
+
+        if plugin is not None:
+            plugins.append((plugin, specification, product_spec))
+
+    return plugins
+
+
+def _check_post_catalog_document(document, description):
+    if not isinstance(document, dict):
+        raise ProductError("The " + description + " must be an object")
+    if not isinstance(document.get("id"), str) or not document["id"].strip():
+        raise ProductError("A persisted " + description + " id is required")
+
+
+def _on_product_spec_write(provider, product_spec, phase, operation):
+    if phase == "post":
+        _check_post_catalog_document(product_spec, "product specification")
+    associations = CatalogResolver().product_specifications(product_spec)
+
+    for plugin, specification, product in _get_plugins(associations):
+        getattr(plugin, "on_" + phase + "_product_spec_" + operation)(provider, specification, product)
+
+
+def on_pre_product_spec_creation(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "pre", "creation")
+
+
+def on_post_product_spec_creation(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "post", "creation")
+
+
+def on_pre_product_spec_update(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "pre", "update")
+
+
+def on_post_product_spec_update(provider, product_spec):
+    return _on_product_spec_write(provider, product_spec, "post", "update")
+
+
+def _on_post_specification_write(provider, specification, plugin_type, loader, operation):
+    """Dispatch a post-write callback without repeating pre-write validation."""
+    plugin = loader(specification)
+    if plugin is not None:
+        getattr(plugin, "on_post_" + plugin_type + "_spec_" + operation)(provider, specification)
+
+
+def on_post_service_spec_creation(provider, service_spec):
+    return _on_post_specification_write(provider, service_spec, "service", load_plugin_module, "creation")
+
+
+def on_post_resource_spec_creation(provider, resource_spec):
+    return _on_post_specification_write(provider, resource_spec, "resource", load_resource_plugin_module, "creation")
+
+
+def _on_pre_product_offering_write(func, operation):
     @wraps(func)
-    def wrapper(self, provider, asset_t, media_type, url, asset_id):
-        plugin_module = load_plugin_module(asset_t)
+    def wrapper(self, provider, catalog_element):
+        product_offering = catalog_element
+        associations = CatalogResolver().offering_specifications(product_offering)
+        result = func(self, provider, product_offering)
 
-        # On pre validation
-        plugin_module.on_pre_product_spec_validation(provider, asset_t, media_type, url)
+        for plugin, specification, product_spec in _get_plugins(associations):
+            getattr(plugin, "on_pre_product_offering_" + operation)(
+                provider, specification, product_spec, product_offering
+            )
 
-        # Call method
-        asset = func(self, provider, asset_t, media_type, url, asset_id)
-
-        # On post validation
-        plugin_module.on_post_product_spec_validation(provider, asset)
-
-        return asset
+        return result
 
     return wrapper
 
 
-def on_product_spec_attachment(func):
-    @wraps(func)
-    def wrapper(self, asset, asset_t, product_spec):
-        if not len(asset.bundled_assets):
-            # Load plugin module
-            plugin_module = load_plugin_module(asset_t)
-
-            # Call on pre create event handler
-            plugin_module.on_pre_product_spec_attachment(asset, asset_t, product_spec)
-
-        # Call method
-        func(self, asset, asset_t, product_spec)
-
-        if not len(asset.bundled_assets):
-            # Call on post create event handler
-            plugin_module.on_post_product_spec_attachment(asset, asset_t, product_spec)
-
-    return wrapper
+def on_pre_product_offering_creation(func):
+    return _on_pre_product_offering_write(func, "creation")
 
 
-def on_product_spec_upgrade(func):
-    @wraps(func)
-    def wrapper(self, asset, asset_t, product_spec):
-        if not len(asset.bundled_assets):
-            # Load plugin module
-            plugin_module = load_plugin_module(asset_t)
-
-            # Call on pre create event handler
-            plugin_module.on_pre_product_spec_upgrade(asset, asset_t, product_spec)
-
-        # Call method
-        func(self, asset, asset_t, product_spec)
-
-        if not len(asset.bundled_assets):
-            # Call on post create event handler
-            plugin_module.on_post_product_spec_upgrade(asset, asset_t, product_spec)
-
-    return wrapper
+def on_pre_product_offering_update(func):
+    return _on_pre_product_offering_write(func, "update")
 
 
-def _expand_bundled_assets(offering_assets):
-    assets = []
-    for off_asset in offering_assets:
-        if len(off_asset.bundled_assets) > 0:
-            for bundled_asset_pk in off_asset.bundled_assets:
-                assets.append(Resource.objects.get(pk=bundled_asset_pk))
-        else:
-            assets.append(off_asset)
+def _on_post_product_offering_write(provider, product_offering, operation):
+    _check_post_catalog_document(product_offering, "product offering")
+    associations = CatalogResolver().offering_specifications(product_offering)
 
-    return assets
+    for plugin, specification, product_spec in _get_plugins(associations):
+        getattr(plugin, "on_post_product_offering_" + operation)(
+            provider, specification, product_spec, product_offering
+        )
 
 
-def on_product_offering_validation(func):
-    @wraps(func)
-    def wrapper(self, provider, product_offering, bundled_offerings):
-        offering_assets = []
-        if len(bundled_offerings) > 0:
-            # Get bundled offerings assets
-            offering_assets = [offering.asset for offering in bundled_offerings if offering.is_digital]
-        else:
-            # Get offering asset
-            asset = Resource.objects.filter(product_id=product_offering["productSpecification"]["id"])
-            offering_assets.extend(asset)
-
-        # Get the effective assets
-        assets = _expand_bundled_assets(offering_assets)
-
-        for asset in assets:
-            plugin_module = load_plugin_module(asset.resource_type)
-            plugin_module.on_pre_product_offering_validation(asset, product_offering)
-
-        is_open = func(self, provider, product_offering, bundled_offerings)
-
-        for asset in assets:
-            plugin_module.on_post_product_offering_validation(asset, product_offering)
-
-        return is_open
-
-    return wrapper
+def on_post_product_offering_creation(provider, product_offering):
+    return _on_post_product_offering_write(provider, product_offering, "creation")
 
 
-def _execute_asset_event(asset, order, contract, type_):
-    # Load plugin module
-    plugin_module = load_plugin_module(asset.resource_type)
+def on_post_product_offering_update(provider, product_offering):
+    return _on_post_product_offering_write(provider, product_offering, "update")
 
-    events = {
-        "activate": plugin_module.on_product_acquisition,
-        "suspend": plugin_module.on_product_suspension,
-        "usage": plugin_module.on_usage_refresh,
+
+def _get_product_organization(product, role):
+    party_ids = {
+        party["id"]
+        for party in product.get("relatedParty", [])
+        if isinstance(party, dict)
+        and isinstance(party.get("role"), str)
+        and party["role"].lower() == role.lower()
+        and isinstance(party.get("id"), str)
+        and party["id"].strip()
     }
-    # Execute event
-    events[type_](asset, contract, order)
+
+    if len(party_ids) != 1:
+        raise ServiceError("The inventory product must identify one organization for role " + role)
+
+    return Organization.objects.get(actor_id=party_ids.pop())
+
+
+def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False, **context):
+    """Dispatch to realizing instances, propagating failures when the operation requires it."""
+    inventory = InventoryClient()
+    organizations = None
+
+    for plugin_type, field in (("service", "realizingService"), ("resource", "realizingResource")):
+        error = ResourceError if plugin_type == "resource" else ServiceError
+        references = product.get(field, [])
+        if not isinstance(references, list):
+            logger.error("Cannot notify %s for product %s: %s must be a list", event, product.get("id"), field)
+            if raise_on_error:
+                raise error(field + " must be a list")
+            continue
+
+        for reference in references:
+            try:
+                if (
+                    not isinstance(reference, dict)
+                    or not isinstance(reference.get("id"), str)
+                    or not reference["id"].strip()
+                ):
+                    raise error("Each " + field + " reference must contain a " + plugin_type + " id")
+
+                instance = getattr(inventory, "get_" + plugin_type)(reference["id"])
+                if not isinstance(instance, dict) or instance.get("id") != reference["id"]:
+                    raise error("Invalid inventory " + plugin_type + " reference: " + reference["id"])
+
+                plugin = load_inventory_plugin_module(instance, plugin_type)
+                if plugin is not None:
+                    if organizations is None:
+                        organizations = (
+                            _get_product_organization(product, settings.PROVIDER_ROLE),
+                            _get_product_organization(product, settings.CUSTOMER_ROLE),
+                        )
+                    provider, buyer = organizations
+                    getattr(plugin, "on_" + plugin_type + "_" + event)(provider, buyer, instance, product, order, contract, **context)
+            except Exception:
+                logger.exception(
+                    "%s %s notification failed for order %s, product %s, %s %s",
+                    plugin_type.title(),
+                    event,
+                    order.get("id"),
+                    product.get("id"),
+                    plugin_type,
+                    reference.get("id") if isinstance(reference, dict) else None,
+                )
+                if raise_on_error:
+                    raise
+
+
+def on_product_activation(product, order, contract=None):
+    """Activate service/resource instances before marking the product active."""
+    _notify_inventory_plugins(product, order, contract, "activation", raise_on_error=True)
+
+
+def on_product_renewal(order, contract, customer_bill_id):
+    """Notify purchased instances of settlement without interrupting processing."""
+    try:
+        product = InventoryClient().get_product(contract.product_id)
+        raw_order = OrderingClient().get_order(order.order_id)
+        _notify_inventory_plugins(product, raw_order, contract, "renewal", customer_bill_id=customer_bill_id)
+    except Exception:
+        logger.exception("Renewal notification failed for bill %s", customer_bill_id)
+
+
+def on_product_termination(order, contract):
+    """Notify plugins of product termination without blocking the operation."""
+    try:
+        product = InventoryClient().get_product(contract.product_id)
+        if not isinstance(product, dict) or product.get("id") != contract.product_id:
+            raise PluginError("Invalid inventory product for termination")
+        raw_order = OrderingClient().get_order(order.order_id)
+        if not isinstance(raw_order, dict) or raw_order.get("id") != order.order_id:
+            raise PluginError("Invalid order for product termination")
+        _notify_inventory_plugins(product, raw_order, contract, "termination")
+    except Exception:
+        logger.exception("Termination notification failed for order %s, product %s", order.order_id, contract.product_id)
 
 
 def process_product_notification(order, contract, type_):
+    # Usage dispatch remains deferred.
     pass
-    # Get digital asset from the contract
-    # offering_assets = []
-    # offering = Offering.objects.get(pk=ObjectId(contract.offering))
-
-    # if len(offering.bundled_offerings) > 0:
-    #     offering_assets = [
-    #         Offering.objects.get(pk=ObjectId(key)).asset
-    #         for key in offering.bundled_offerings
-    #         if Offering.objects.get(pk=ObjectId(key)).is_digital
-    #     ]
-
-    # elif offering.is_digital:
-    #     offering_assets = [offering.asset]
-
-    # assets = _expand_bundled_assets(offering_assets)
-
-    # for event_asset in assets:
-    #     _execute_asset_event(event_asset, order, contract, type_)
-
-
-def on_product_acquired(order, contract):
-    process_product_notification(order, contract, "activate")
-
-
-def on_product_suspended(order, contract):
-    process_product_notification(order, contract, "suspend")
 
 
 def on_usage_refreshed(order, contract):
     process_product_notification(order, contract, "usage")
+
+
+def _on_pre_specification_write(func, plugin_type, loader, operation):
+    @wraps(func)
+    def wrapper(self, provider, specification):
+        plugin = loader(specification)
+        if plugin is None:
+            return
+
+        getattr(plugin, "on_pre_" + plugin_type + "_spec_" + operation)(provider, specification)
+        return func(self, provider, specification, plugin._model)
+
+    return wrapper
+
+
+def on_pre_service_spec_creation(func):
+    return _on_pre_specification_write(
+        func, "service", lambda specification: load_plugin_module(service_spec=specification), "creation"
+    )
+
+
+def on_pre_resource_spec_creation(func):
+    return _on_pre_specification_write(
+        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification), "creation"
+    )
+
+
+def on_pre_service_spec_update(func):
+    return _on_pre_specification_write(
+        func, "service", lambda specification: load_plugin_module(service_spec=specification), "update"
+    )
+
+
+def on_pre_resource_spec_update(func):
+    return _on_pre_specification_write(
+        func, "resource", lambda specification: load_resource_plugin_module(resource_spec=specification), "update"
+    )
+
+
+def on_post_service_spec_update(provider, service_spec):
+    return _on_post_specification_write(provider, service_spec, "service", load_plugin_module, "update")
+
+
+def on_post_resource_spec_update(provider, resource_spec):
+    return _on_post_specification_write(provider, resource_spec, "resource", load_resource_plugin_module, "update")

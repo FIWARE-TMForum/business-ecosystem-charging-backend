@@ -343,6 +343,7 @@ class BillingClient:
         logger.info("set_customer_bill")
         if state not in ["new", "sent", "partiallySettled", "settled"]:
             raise ValueError("invalid customer bill state")
+
         data = {
             "state": state,
         }
@@ -354,6 +355,16 @@ class BillingClient:
         except requests.exceptions.HTTPError as e:
             logger.error("Error patching customer bill: " + str(e) + " data:" + str(data))
             raise
+
+    def close_unpaid_customer_bill(self, bill):
+        """Stop automatic collection without changing bill amounts or applied rates."""
+        data = {"state": "onHold"}
+        response = requests.patch(
+            get_service_url("billing", f"customerBill/{bill['id']}"),
+            json=data,
+            verify=settings.VERIFY_REQUESTS,
+        )
+        response.raise_for_status()
 
     def _create_cb_api(self, cb_model, cb_state=None):
         cb_model["state"] = cb_state if cb_state is not None else "sent"

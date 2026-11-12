@@ -20,670 +20,778 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-from importlib import reload
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
 
-from bson import ObjectId
-from django.core.exceptions import PermissionDenied
-from django.test.testcases import TestCase
-from mock import MagicMock, call
+from django.test import RequestFactory, SimpleTestCase
+from django.urls import resolve
+from requests.exceptions import ConnectionError, HTTPError
 from parameterized import parameterized
 
-from wstore.asset_manager import product_validator
-from wstore.asset_manager.errors import ProductError
-from wstore.asset_manager.test.product_validator_test_data import *
-from wstore.store_commons.errors import ConflictError
+from wstore.asset_manager.errors import ProductError, ServiceError
+from wstore.asset_manager.product_validator import ProductValidator
+from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
+from wstore.asset_manager.resource_plugins.plugin import ServicePlugin, ResourcePlugin
+from wstore.asset_manager.offering_validator import OfferingValidator
+from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
 
-class ValidatorTestCase(TestCase):
+def service_spec(specification_id, category=None):
+    specification = {"id": specification_id, "specCharacteristic": []}
+    if category:
+        specification["specCharacteristic"].append(
+            {
+                "name": "Service Type",
+                "characteristicValueSpecification": [{"value": category}],
+            }
+        )
+    return specification
+
+
+def product_spec(specification_id="product-1", services=()):
+    return {
+        "id": specification_id,
+        "name": "Example product",
+        "version": "1.0",
+        "isBundle": False,
+        "serviceSpecification": [{"id": service} for service in services],
+    }
+
+
+class ValidatorTestCase(SimpleTestCase):
     tags = ("product-validator",)
 
-    def _mock_validator_imports(self, module):
-        reload(module)
-
-        module.ResourcePlugin = MagicMock()
-        module.ResourcePlugin.objects.get.return_value = self._plugin_instance
-
-        module.Resource = MagicMock()
-        self._asset_instance = MagicMock()
-        self._asset_instance.resource_type = "Widget"
-        self._asset_instance.content_type = "application/x-widget"
-        self._asset_instance.provider = self._provider
-        self._asset_instance.product_id = None
-        self._asset_instance.is_public = False
-        self._asset_instance.pk = ObjectId("61004aba5e05acc115f022f0")
-
-        module.Resource.objects.filter.return_value = [self._asset_instance]
-        module.Resource.objects.get.return_value = self._asset_instance
-        module.Resource.objects.create.return_value = self._asset_instance
-
     def setUp(self):
-        self._provider = MagicMock()
-
-        self._plugin_instance = MagicMock()
-        self._plugin_instance.media_types = ["application/x-widget"]
-        self._plugin_instance.formats = ["FILE"]
-        self._plugin_instance.module = "wstore.asset_manager.resource_plugins.plugin.Plugin"
-        self._plugin_instance.form = {}
-
-        import wstore.asset_manager.resource_plugins.decorators
-
-        wstore.asset_manager.resource_plugins.decorators.ResourcePlugin = MagicMock()
-        wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.get.return_value = self._plugin_instance
-
-        # Mock Site
-        product_validator.settings.SITE = "http://testlocation.org/"
-
-    def tearDown(self):
-        reload(product_validator)
-
-    def _not_existing(self):
-        self._plugin_instance.formats = ["FILE", "URL"]
-        product_validator.Resource.objects.filter.return_value = []
-
-    def _not_supported(self):
-        import wstore.asset_manager.resource_plugins.decorators
-
-        wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.get.side_effect = Exception("Not found")
-        self._mock_validator_imports(product_validator)
-
-    def _inv_media(self):
-        product_validator.Resource.objects.filter.return_value = []
-        self._plugin_instance.media_types = ["text/plain"]
-        self._plugin_instance.formats = ["URL"]
-
-    def _not_owner(self):
-        self._asset_instance.provider = MagicMock()
-
-    def _diff_media(self):
-        self._asset_instance.content_type = "text/plain"
-
-    def _existing_asset(self):
-        self._asset_instance.product_id = 27
-
-    def _invalid_type(self):
-        self._asset_instance.resource_type = "Mashup"
-
-    def _metadata_plugin(self):
-        self._plugin_instance.form = {"data": "data"}
-        self._plugin_instance.formats = ["URL"]
-        product_validator.Resource.objects.filter.return_value = []
-
-    def _pub_asset(self):
-        self._asset_instance.is_public = True
-
-    def test_validate_creation_registered_file(self):
-        self._mock_validator_imports(product_validator)
-
-        validator = product_validator.ProductValidator()
-        validator.validate("create", self._provider, BASIC_PRODUCT["product"])
-
-        product_validator.ResourcePlugin.objects.get.assert_called_once_with(name="Widget")
-        product_validator.Resource.objects.filter.assert_called_once_with(download_link=PRODUCT_LOCATION)
-        self.assertFalse(product_validator.Resource.objects.get().has_terms)
-        product_validator.Resource.objects.get().save.assert_called_once_with()
-
-    def test_validate_creation_new_url(self):
-        self._mock_validator_imports(product_validator)
-        product_validator.Resource.objects.filter.return_value = []
-        self._plugin_instance.formats = ["URL"]
-
-        validator = product_validator.ProductValidator()
-        validator.validate("create", self._provider, TERMS_PRODUCT["product"])
-
-        product_validator.Resource.objects.create.assert_called_once_with(
-            has_terms=True,
-            resource_path="",
-            download_link=PRODUCT_LOCATION,
-            provider=self._provider,
-            content_type="application/x-widget",
-        )
-
-    def _attached(self):
-        self._asset_instance.state = "attached"
-
-    def _inv_product_id(self):
-        self._asset_instance.state = "upgrading"
-        self._asset_instance.product_id = "10"
-
-    def _set_asset_params(self):
-        self._asset_instance.state = "upgrading"
-        self._asset_instance.product_id = UPGRADE_PRODUCT["product"]["id"]
-
-    def _high_asset_version(self):
-        self._set_asset_params()
-        self._asset_instance.old_versions = [MagicMock(version="3.0")]
-        self._asset_instance.resource_path = ""
-
-    @parameterized.expand(
-        [
+        self.provider = object()
+        self.validator = ProductValidator()
+        self.resolver = CatalogResolver()
+        self.services = {
+            "service-1": service_spec("service-1", "category-1"),
+            "service-2": service_spec("service-2", "category-2"),
+            "ordinary": service_spec("ordinary"),
+        }
+        for name, patcher in (
+            ("catalog", patch.object(self.resolver, "_service_catalog")),
+            ("product_catalog", patch.object(self.resolver, "_catalog")),
             (
-                "invalid_action",
-                INVALID_ACTION,
-                None,
-                ValueError,
-                "The provided action (invalid) is not valid. Allowed values are create, attach, update, upgrade, and delete",
+                "resolve",
+                patch("wstore.asset_manager.resource_plugins.decorators.CatalogResolver", return_value=self.resolver),
             ),
-            (
-                "missing_media",
-                MISSING_MEDIA,
-                None,
-                ProductError,
-                "ProductError: Digital product specifications must contain a media type characteristic",
-            ),
-            (
-                "missing_type",
-                MISSING_TYPE,
-                None,
-                ProductError,
-                "ProductError: Digital product specifications must contain a asset type characteristic",
-            ),
-            (
-                "missing_location",
-                MISSING_LOCATION,
-                None,
-                ProductError,
-                "ProductError: Digital product specifications must contain a location characteristic",
-            ),
-            (
-                "missing_asset_id",
-                MISSING_ASSET_ID,
-                None,
-                ProductError,
-                "ProductError: Digital product specifications must contain a asset characteristic",
-            ),
-            (
-                "multiple_license",
-                MULTIPLE_TERMS,
-                None,
-                ProductError,
-                "ProductError: The product specification must not contain more than one license characteristic",
-            ),
-            (
-                "multiple_char",
-                MULTIPLE_LOCATION,
-                None,
-                ProductError,
-                "ProductError: The product specification must not contain more than one location characteristic",
-            ),
-            (
-                "multiple_values",
-                MULTIPLE_VALUES,
-                None,
-                ProductError,
-                "ProductError: The characteristic Location must not contain multiple values",
-            ),
-            (
-                "inv_location",
-                INVALID_LOCATION,
-                None,
-                ProductError,
-                "ProductError: The location characteristic included in the product specification is not a valid URL",
-            ),
-            (
-                "unauthorized",
-                BASIC_PRODUCT,
-                _not_owner,
-                PermissionDenied,
-                "You are not authorized to use the digital asset specified in the location characteristic",
-            ),
-            (
-                "existing_asset",
-                BASIC_PRODUCT,
-                _existing_asset,
-                ConflictError,
-                "There is already an existing product specification defined for the given digital asset",
-            ),
-            (
-                "invalid_asset_type",
-                BASIC_PRODUCT,
-                _invalid_type,
-                ProductError,
-                "ProductError: The specified asset type is different from the asset one",
-            ),
-            (
-                "diff_media",
-                BASIC_PRODUCT,
-                _diff_media,
-                ProductError,
-                "ProductError: The provided media type characteristic is different from the asset one",
-            ),
-            (
-                "not_asset",
-                BASIC_PRODUCT,
-                _not_existing,
-                ProductError,
-                "ProductError: The URL specified in the location characteristic does not point to a valid digital asset",
-            ),
-            (
-                "exp_metadata",
-                TERMS_PRODUCT,
-                _metadata_plugin,
-                ProductError,
-                "ProductError: Automatic creation of digital assets with expected metadata is not supported",
-            ),
-            (
-                "inv_media",
-                BASIC_PRODUCT,
-                _inv_media,
-                ProductError,
-                "ProductError: The media type characteristic included in the product specification is not valid for the given asset type",
-            ),
-            (
-                "public_asset",
-                BASIC_PRODUCT,
-                _pub_asset,
-                ProductError,
-                "ProductError: It is not allowed to create products with public assets",
-            ),
-            (
-                "upgrade_asset_not_found",
-                UPGRADE_PRODUCT,
-                _not_existing,
-                ProductError,
-                "ProductError: The URL specified in the location characteristic does not point to a valid digital asset",
-            ),
-            (
-                "upgrade_attached_asset",
-                UPGRADE_PRODUCT,
-                _attached,
-                ProductError,
-                "ProductError: There is not a new version of the specified digital asset",
-            ),
-            (
-                "upgrade_invalid_product_id",
-                UPGRADE_PRODUCT,
-                _inv_product_id,
-                ProductError,
-                "ProductError: The specified digital asset is included in other product spec",
-            ),
-            (
-                "upgrade_asset_inv_version",
-                UPGRADE_PRODUCT_INV_VERSION,
-                _set_asset_params,
-                ProductError,
-                "ProductError: The field version does not have a valid format",
-            ),
-            (
-                "upgrade_low_version",
-                UPGRADE_PRODUCT,
-                _high_asset_version,
-                ProductError,
-                "ProductError: The provided version is not higher that the previous one",
-            ),
-        ]
-    )
-    def test_validate_error(self, name, data, side_effect, err_type, err_msg):
-        self._mock_validator_imports(product_validator)
-        self._mock_document_lock()
+            ("lookup", patch("wstore.asset_manager.resource_plugins.decorators._get_plugin_model")),
+            ("load", patch("wstore.asset_manager.resource_plugins.decorators._load_plugin_model")),
+        ):
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.catalog.get_specification.side_effect = self.services.get
+        self.plugins = {"category-1": Mock(spec=ServicePlugin), "category-2": Mock(spec=ServicePlugin)}
+        self.lookup.side_effect = lambda category_id, plugin_type: category_id if category_id in self.plugins else None
+        self.load.side_effect = self.plugins.get
+        self.product = product_spec(services=("service-1", "ordinary", "service-2"))
 
-        if side_effect is not None:
-            side_effect(self)
+    def test_multiple_plugins_receive_their_own_services_and_product(self):
+        events = Mock()
+        for category, plugin in self.plugins.items():
+            events.attach_mock(plugin, category)
 
-        error = None
-        try:
-            validator = product_validator.ProductValidator()
-            validator.validate(data["action"], self._provider, data["product"])
-        except Exception as e:
-            error = e
+        self.validator.validate("create", self.provider, self.product)
 
-        self.assertTrue(isinstance(error, err_type))
-        self.assertEquals(err_msg, str(error))
-
-    def _mock_upgrading_asset(self, version):
-        self._asset_instance.state = "upgrading"
-        self._asset_instance.product_id = UPGRADE_PRODUCT["product"]["id"]
-        self._asset_instance.version = version
-        self._asset_instance.old_versions = [MagicMock(version="1.0")]
-
-    def _mock_document_lock(self):
-        document_lock = MagicMock()
-        product_validator.DocumentLock = MagicMock(return_value=document_lock)
-
-        return document_lock
-
-    def test_validate_upgrade(self):
-        self._mock_validator_imports(product_validator)
-        self._mock_upgrading_asset("")
-
-        doc_lock = self._mock_document_lock()
-
-        validator = product_validator.ProductValidator()
-        validator.validate("upgrade", self._provider, UPGRADE_PRODUCT["product"])
-
-        self.assertEquals(UPGRADE_PRODUCT["product"]["version"], self._asset_instance.version)
-        self.assertEquals("upgrading", self._asset_instance.state)
-        self._asset_instance.save.assert_called_once_with()
-
-        product_validator.DocumentLock.assert_called_once_with("wstore_resource", self._asset_instance.pk, "asset")
-        doc_lock.wait_document.assert_called_once_with()
-        doc_lock.unlock_document.assert_called_once_with()
-
-    def test_attach_upgrade(self):
-        self._mock_validator_imports(product_validator)
-        self._mock_upgrading_asset(UPGRADE_PRODUCT["product"]["version"])
-
-        doc_lock = self._mock_document_lock()
-
-        # Mock inventory upgrader class
-        product_validator.InventoryUpgrader = MagicMock()
-
-        validator = product_validator.ProductValidator()
-        validator.validate("attach_upgrade", self._provider, UPGRADE_PRODUCT["product"])
-
-        self.assertEquals("attached", self._asset_instance.state)
-
-        product_validator.InventoryUpgrader.assert_called_once_with(self._asset_instance)
-        product_validator.InventoryUpgrader().start.assert_called_once_with()
-
-        self._asset_instance.save.assert_called_once_with()
-
-        product_validator.DocumentLock.assert_called_once_with("wstore_resource", self._asset_instance.pk, "asset")
-        doc_lock.wait_document.assert_called_once_with()
-        doc_lock.unlock_document.assert_called_once_with()
-
-    def test_attach_upgrade_non_digital(self):
-        self._mock_validator_imports(product_validator)
-
-        validator = product_validator.ProductValidator()
-        validator.validate(
-            "attach_upgrade",
-            self._provider,
-            {"version": "1.0", "productSpecCharacteristic": []},
-        )
-
-        # The method did nothing
-        self.assertEquals(0, product_validator.ResourcePlugin.objects.get.call_count)
-
-    @parameterized.expand(
-        [
-            ("missing_version", {}),
-            ("missing_charact", {"version": "1.0"}),
-            ("non_digital", {"version": "1.0", "productSpecCharacteristic": []}),
-        ]
-    )
-    def test_validate_upgrade_missing_info(self, name, data):
-        self._mock_validator_imports(product_validator)
-        self._asset_instance.state = "upgrading"
-
-        validator = product_validator.ProductValidator()
-        validator.validate("upgrade", self._provider, data)
-
-        self.assertEquals("upgrading", self._asset_instance.state)
-
-    def _non_digital(self):
-        return [[], []]
-
-    def _mixed_assets(self):
-        digital_asset = MagicMock(pk="1")
-        product_validator.Resource.objects.filter.side_effect = [[], [digital_asset]]
-
-    def _all_digital(self):
-        digital_asset = MagicMock(pk="1")
-        digital_asset1 = MagicMock(pk="2")
-        return [[digital_asset], [digital_asset1]]
-
-    @parameterized.expand([("non_digital", _non_digital, False), ("all_digital", _all_digital)])
-    def test_bundle_creation(self, name, asset_mocker, created=True):
-        self._mock_validator_imports(product_validator)
-
-        assets = asset_mocker(self)
-        expected_assets = [asset[0].pk for asset in assets if len(asset)]
-
-        product_validator.Resource.objects.filter.side_effect = assets
-
-        validator = product_validator.ProductValidator()
-        validator.validate(
-            BASIC_BUNDLE_CREATION["action"],
-            self._provider,
-            BASIC_BUNDLE_CREATION["product"],
-        )
-
-        # Validate filter calls
-        self.assertEquals(
+        self.assertEqual(
             [
-                call(product_id=BASIC_BUNDLE_CREATION["product"]["bundledProductSpecification"][0]["id"]),
-                call(product_id=BASIC_BUNDLE_CREATION["product"]["bundledProductSpecification"][1]["id"]),
+                call.__getattr__("category-1").on_pre_product_spec_creation(
+                    self.provider, self.services["service-1"], self.product
+                ),
+                call.__getattr__("category-2").on_pre_product_spec_creation(
+                    self.provider, self.services["service-2"], self.product
+                ),
             ],
-            product_validator.Resource.objects.filter.call_args_list,
+            events.mock_calls,
         )
 
-        # Check resource creation
-        if created:
-            product_validator.Resource.objects.create.assert_called_once_with(
-                has_terms=False,
-                resource_path="",
-                download_link="",
-                provider=self._provider,
-                content_type="bundle",
-                bundled_assets=expected_assets,
+        for plugin in self.plugins.values():
+            plugin.on_pre_service_spec_creation.assert_not_called()
+            plugin.on_post_service_spec_creation.assert_not_called()
+        self.catalog.get_specification.assert_has_calls([call("service-1"), call("ordinary"), call("service-2")])
+
+    def test_two_services_using_same_plugin_receive_separate_calls(self):
+        self.services["service-2"] = service_spec("service-2", "category-1")
+
+        self.validator.validate("create", self.provider, self.product)
+        self.assertEqual(
+            [
+                call(self.provider, self.services["service-1"], self.product),
+                call(self.provider, self.services["service-2"], self.product),
+            ],
+            self.plugins["category-1"].on_pre_product_spec_creation.call_args_list,
+        )
+
+        self.plugins["category-2"].on_pre_product_spec_creation.assert_not_called()
+
+    def test_ordinary_and_non_plugin_categories_do_not_invoke_plugins(self):
+        self.services["ordinary"] = service_spec("ordinary", "external-category")
+
+        self.validator.validate("create", self.provider, product_spec(services=("ordinary",)))
+
+        self.catalog.get_specification.assert_called_once_with("ordinary")
+        self.load.assert_not_called()
+
+    def test_product_without_services_needs_no_asset_or_catalog_lookup(self):
+        self.validator.validate("create", self.provider, product_spec())
+        self.catalog.get_specification.assert_not_called()
+        self.lookup.assert_not_called()
+
+    def test_product_characteristics_are_not_parsed_as_asset_metadata(self):
+        self.product["productSpecCharacteristic"] = [{"name": "Media Type", "productSpecCharacteristicValue": []}]
+
+        self.validator.validate("create", self.provider, self.product)
+
+    def test_plugin_failure_is_reported_without_catalog_writes(self):
+        self.plugins["category-1"].on_pre_product_spec_creation.side_effect = PluginError("reject")
+
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.product)
+        self.plugins["category-2"].on_pre_product_spec_creation.assert_not_called()
+
+        self.assertEqual(
+            [
+                call.get_specification("service-1"),
+                call.get_specification("ordinary"),
+                call.get_specification("service-2"),
+            ],
+            self.catalog.mock_calls,
+        )
+
+    def test_invalid_service_references_fail_before_any_hook(self):
+        for response in (None, [], {}, {"id": "wrong"}, {"error": "not found"}):
+            with self.subTest(response=response):
+                self.catalog.get_specification.side_effect = [self.services["service-1"], response]
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, product_spec(services=("service-1", "missing")))
+        self.load.assert_not_called()
+
+    def test_service_catalog_failures_are_validation_errors(self):
+        for error in (ConnectionError("offline"), HTTPError("404"), ValueError("invalid JSON")):
+            with self.subTest(error=error):
+                self.catalog.get_specification.side_effect = error
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_malformed_service_type_is_rejected(self):
+        self.services["service-1"]["specCharacteristic"][0]["characteristicValueSpecification"] = []
+
+        with self.assertRaises(ServiceError):
+            self.validator.validate("create", self.provider, self.product)
+
+    def test_invalid_product_shapes_and_references(self):
+        invalid = [
+            None,
+            [],
+            {"isBundle": "false"},
+            {"serviceSpecification": {}},
+            {"serviceSpecification": [None]},
+            {"serviceSpecification": [{"id": " "}]},
+            {"serviceSpecification": [{"id": "service-1"}, {"id": "service-1"}]},
+            {"isBundle": False, "bundledProductSpecification": [{"id": "p"}]},
+        ]
+        for specification in invalid:
+            with self.subTest(specification=specification), self.assertRaises(ProductError):
+                self.validator.validate("create", self.provider, specification)
+
+    def test_product_characteristics_are_forwarded_without_terms_validation(self):
+        self.product["productSpecCharacteristic"] = [{"name": "License"}, {"name": "license"}]
+        original = deepcopy(self.product)
+
+        self.validator.validate("create", self.provider, self.product)
+
+        self.assertEqual(original, self.product)
+        self.plugins["category-1"].on_pre_product_spec_creation.assert_called_once_with(
+            self.provider, self.services["service-1"], original
+        )
+
+    def test_parent_interface_keyword_arguments_work_for_creation_and_update(self):
+        self.validator.validate_creation(provider=self.provider, catalog_element=self.product)
+        self.plugins["category-1"].on_pre_product_spec_creation.assert_called_once_with(
+            self.provider, self.services["service-1"], self.product
+        )
+        self.plugins["category-1"].reset_mock()
+
+        self.validator.validate_update(provider=self.provider, catalog_element=self.product)
+
+        self.plugins["category-1"].on_pre_product_spec_update.assert_called_once_with(
+            self.provider, self.services["service-1"], self.product
+        )
+
+    def test_update_uses_supplied_product_without_fetching_previous_version(self):
+        proposed = product_spec(services=("service-2",))
+        original = deepcopy(proposed)
+
+        with patch.object(self.product_catalog, "get_specification") as get_product:
+            self.validator.validate("update", self.provider, proposed)
+
+        get_product.assert_not_called()
+        self.catalog.get_specification.assert_called_once_with("service-2")
+        self.plugins["category-1"].on_pre_product_spec_update.assert_not_called()
+        self.plugins["category-2"].on_pre_product_spec_update.assert_called_once_with(
+            self.provider, self.services["service-2"], proposed
+        )
+        self.assertIs(proposed, self.plugins["category-2"].on_pre_product_spec_update.call_args.args[2])
+        self.assertEqual(original, proposed)
+
+    def test_dispatch_and_unimplemented_operations_are_inherited(self):
+        from wstore.asset_manager.catalog_validator import CatalogValidator
+
+        self.assertIs(ProductValidator.validate, CatalogValidator.validate)
+        for action in ("upgrade", "delete"):
+            with self.subTest(action=action):
+                self.validator.validate(action, self.provider, self.product)
+        self.catalog.get_specification.assert_not_called()
+        self.load.assert_not_called()
+        for action in ("attach", "attach_upgrade", "rollback_create", "rollback_upgrade", "invalid"):
+            with self.subTest(action=action), self.assertRaises(ValueError):
+                self.validator.validate(action, self.provider, self.product)
+
+
+class ProductBundleTests(SimpleTestCase):
+    def setUp(self):
+        ValidatorTestCase.setUp(self)
+        self.bundle = {"isBundle": True, "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}]}
+        self.products = {
+            "p1": product_spec("p1", ("service-1", "ordinary")),
+            "p2": product_spec("p2", ("service-1", "service-2")),
+        }
+        patcher = patch.object(self.product_catalog, "get_specification", side_effect=self.products.get)
+        self.get_product = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_bundle_services_receive_their_directly_containing_product(self):
+        self.validator.validate("create", self.provider, self.bundle)
+        self.plugins["category-1"].on_pre_product_spec_creation.assert_has_calls(
+            [
+                call(self.provider, self.services["service-1"], self.products["p1"]),
+                call(self.provider, self.services["service-1"], self.products["p2"]),
+            ]
+        )
+
+        self.assertEqual(2, self.plugins["category-1"].on_pre_product_spec_creation.call_count)
+        self.plugins["category-2"].on_pre_product_spec_creation.assert_called_once_with(
+            self.provider, self.services["service-2"], self.products["p2"]
+        )
+
+    def test_nested_bundle_rejected_before_hooks_or_service_downloads(self):
+        self.products["p2"] = {
+            "id": "p2",
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p3"}, {"id": "p4"}],
+        }
+
+        with self.assertRaisesRegex(ProductError, "other bundles"):
+            self.validator.validate("create", self.provider, self.bundle)
+        self.catalog.get_specification.assert_not_called()
+        self.load.assert_not_called()
+
+        self.assertEqual([call("p1"), call("p2")], self.get_product.call_args_list)
+
+    def test_bundle_structure_restrictions(self):
+        for refs in ([], [{"id": "p1"}], [{"id": "p1"}, {"id": "p1"}]):
+            with self.subTest(refs=refs), self.assertRaises(ProductError):
+                self.validator.validate(
+                    "create", self.provider, {"isBundle": True, "bundledProductSpecification": refs}
+                )
+        self.bundle["serviceSpecification"] = [{"id": "service-1"}]
+
+        with self.assertRaisesRegex(ProductError, "own services"):
+            self.validator.validate("create", self.provider, self.bundle)
+
+    def test_bundle_update_resolves_supplied_children_without_loading_previous_bundle(self):
+        self.products["p3"] = product_spec("p3", ("service-2",))
+        proposed = {
+            "id": "bundle",
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p1"}, {"id": "p3"}],
+        }
+
+        self.validator.validate("update", self.provider, proposed)
+
+        self.assertEqual([call("p1"), call("p3")], self.get_product.call_args_list)
+        self.plugins["category-2"].on_pre_product_spec_update.assert_called_once_with(
+            self.provider, self.services["service-2"], self.products["p3"]
+        )
+
+
+class ProductEndpointTests(SimpleTestCase):
+    def setUp(self):
+        self.user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(current_organization=object(), get_current_roles=lambda: ["provider"]),
+        )
+        self.factory = RequestFactory()
+
+    def request(self, body):
+        request = self.factory.post(
+            "/charging/api/assetManagement/assets/validateJob", data=json.dumps(body), content_type="application/json"
+        )
+        request.user = self.user
+        return request
+
+    @patch("wstore.asset_manager.resource_plugins.decorators._load_plugin_model")
+    @patch("wstore.asset_manager.resource_plugins.decorators._get_plugin_model")
+    @patch("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog.get_specification")
+    def test_creation_route_runs_single_hook_before_success(self, get, lookup, load):
+        service = service_spec("service-1", "category-1")
+        get.return_value = service
+        plugin = load.return_value
+        product = product_spec(services=("service-1",))
+
+        request = self.request({"action": "create", "product": product})
+
+        response = resolve(request.path).func(request)
+
+        self.assertEqual(200, response.status_code)
+        lookup.assert_called_once_with(category_id="category-1", plugin_type="service")
+        plugin.on_pre_product_spec_creation.assert_called_once_with(
+            self.user.userprofile.current_organization, service, product
+        )
+        plugin.on_pre_product_spec_creation.side_effect = PluginError("reject")
+
+        request = self.request({"action": "create", "product": product})
+
+        self.assertEqual(422, resolve(request.path).func(request).status_code)
+
+    def test_ordinary_products_and_parent_default_actions(self):
+        for action, status in (
+            ("create", 200),
+            ("attach", 400),
+            ("upgrade", 200),
+            ("attach_upgrade", 400),
+            ("invalid", 400),
+        ):
+            with self.subTest(action=action):
+                request = self.request({"action": action, "product": product_spec()})
+                self.assertEqual(status, resolve(request.path).func(request).status_code)
+
+    @patch("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog.get_specification")
+    def test_missing_reference_and_invalid_service_type_are_400(self, get):
+        for service in ({"error": "not found"}, {"id": "service-1", "specCharacteristic": [{"name": "Service Type"}]}):
+            with self.subTest(service=service):
+                get.return_value = service
+                request = self.request({"action": "create", "product": product_spec(services=("service-1",))})
+                self.assertEqual(400, resolve(request.path).func(request).status_code)
+
+    def test_invalid_body_and_non_provider_are_rejected(self):
+        request = self.request([])
+
+        self.assertEqual(400, resolve(request.path).func(request).status_code)
+        self.user.userprofile.get_current_roles = lambda: []
+
+        request = self.request({"action": "create", "product": product_spec()})
+
+        self.assertEqual(403, resolve(request.path).func(request).status_code)
+
+
+def resource_spec(specification_id, category=None):
+    specification = {"id": specification_id, "resourceSpecCharacteristic": []}
+    if category is not None:
+        specification["resourceSpecCharacteristic"].append(
+            {
+                "name": "Resource Type",
+                "resourceSpecCharacteristicValue": [{"value": category}],
+            }
+        )
+    return specification
+
+
+class ResourceProductValidationTests(SimpleTestCase):
+    def setUp(self):
+        from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin
+
+        ValidatorTestCase.setUp(self)
+        self.resources = {
+            "resource-1": resource_spec("resource-1", "category-1"),
+            "resource-2": resource_spec("resource-2", "category-2"),
+            "ordinary-resource": resource_spec("ordinary-resource"),
+        }
+        patcher = patch.object(self.resolver, "_resource_catalog")
+        self.resource_catalog = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.resource_catalog.get_specification.side_effect = self.resources.get
+        self.resource_plugins = {
+            "category-1": Mock(spec=ResourcePlugin),
+            "category-2": Mock(spec=ResourcePlugin),
+        }
+        self.typed_plugins = {
+            **{("service", category): plugin for category, plugin in self.plugins.items()},
+            **{("resource", category): plugin for category, plugin in self.resource_plugins.items()},
+        }
+        self.lookup.side_effect = lambda category_id, plugin_type: (
+            (plugin_type, category_id) if (plugin_type, category_id) in self.typed_plugins else None
+        )
+        self.load.side_effect = self.typed_plugins.get
+        self.product["resourceSpecification"] = [{"id": id_} for id_ in self.resources]
+
+    def test_mixed_products_dispatch_each_domains_own_specification(self):
+        self.validator.validate("create", self.provider, self.product)
+        for n in (1, 2):
+            self.plugins[f"category-{n}"].on_pre_product_spec_creation.assert_called_once_with(
+                self.provider,
+                self.services[f"service-{n}"],
+                self.product,
             )
-        else:
-            self.assertEquals(0, product_validator.Resource.objects.call_count)
-
-    def _validate_bundle_creation_error(self, product_request, msg, side_effect=None):
-        self._mock_validator_imports(product_validator)
-
-        if side_effect is not None:
-            side_effect()
-
-        try:
-            validator = product_validator.ProductValidator()
-            validator.validate(product_request["action"], self._provider, product_request["product"])
-        except ProductError as e:
-            error = e
-
-        self.assertEquals(msg, str(error))
-
-    def test_bundle_creation_missing_products(self):
-        self._validate_bundle_creation_error(
-            {"action": "create", "product": {"isBundle": True}},
-            "ProductError: A product spec bundle must contain at least two bundled product specs",
-        )
-
-    def test_bundle_creation_mixed_content(self):
-        self._validate_bundle_creation_error(
-            BASIC_BUNDLE_CREATION,
-            "ProductError: Mixed product bundles are not allowed. All bundled products must be digital or physical",
-            self._mixed_assets,
-        )
-
-    def test_bundle_assets_included(self):
-        product_request = deepcopy(BASIC_PRODUCT)
-        product_request["product"]["isBundle"] = True
-
-        self._validate_bundle_creation_error(
-            product_request,
-            "ProductError: Product spec bundles cannot define digital assets",
-        )
-
-    def _non_pending_bundles(self):
-        product_validator.Resource.objects.filter.return_value = []
-
-    def _pending_bundles(self):
-        product1 = MagicMock(product_id="1", pk="1a")
-        product2 = MagicMock(product_id="2", pk="2a")
-
-        bundle1 = MagicMock()
-        bundle1.bundled_assets = [{}]
-
-        bundle2 = MagicMock()
-        bundle2.bundled_assets = ["2a", "3a"]
-
-        self._asset_instance.bundled_assets = ["1a", "2a"]
-
-        product_validator.Resource.objects.filter.side_effect = [
-            [bundle1, bundle2, self._asset_instance],
-            [product1],
-            [product2],
-        ]
-
-    @parameterized.expand(
-        [
-            ("digital_asset", BASIC_PRODUCT["product"], True, True),
-            ("non_digital", {"isBundle": False}),
-            (
-                "bundle_non_pending",
-                BASIC_BUNDLE_CREATION["product"],
-                False,
-                False,
-                True,
-                _non_pending_bundles,
-            ),
-            (
-                "bundle_multiple_pending",
-                BASIC_BUNDLE_CREATION["product"],
-                False,
-                True,
-                True,
-                _pending_bundles,
-            ),
-        ]
-    )
-    def test_attach_info(
-        self,
-        name,
-        product_spec,
-        is_digital=False,
-        is_attached=False,
-        is_bundle=False,
-        filter_mock=None,
-    ):
-        self._mock_validator_imports(product_validator)
-
-        if filter_mock is not None:
-            filter_mock(self)
-
-        validator = product_validator.ProductValidator()
-
-        digital_chars = (
-            ("type", "media", "http://location", "61004aba5e05acc115f022f0") if is_digital else (None, None, None, None)
-        )
-        validator.parse_characteristics = MagicMock(return_value=digital_chars)
-
-        validator.validate("attach", self._provider, product_spec)
-
-        # Check calls
-        validator.parse_characteristics.assert_called_once_with(product_spec)
-        if is_digital:
-            product_validator.Resource.objects.get.assert_called_once_with(pk=ObjectId(digital_chars[3]))
-            self.assertEquals(0, product_validator.Resource.objects.filter.call_count)
-
-        if is_bundle:
-            self.assertEquals(
-                [
-                    call(
-                        product_id=None,
-                        provider=self._provider,
-                        content_type="bundle",
-                        resource_path="",
-                        download_link="",
-                    ),
-                    call(product_id="1"),
-                    call(product_id="2"),
-                ],
-                product_validator.Resource.objects.filter.call_args_list,
+            self.resource_plugins[f"category-{n}"].on_pre_product_spec_creation.assert_called_once_with(
+                self.provider,
+                self.resources[f"resource-{n}"],
+                self.product,
             )
-            self.assertEquals(0, product_validator.Resource.objects.get.call_count)
+            self.resource_plugins[f"category-{n}"].on_pre_resource_spec_creation.assert_not_called()
+            self.resource_plugins[f"category-{n}"].on_post_resource_spec_creation.assert_not_called()
+        self.lookup.assert_any_call(category_id="category-1", plugin_type="service")
+        self.lookup.assert_any_call(category_id="category-1", plugin_type="resource")
 
-        if is_attached:
-            self.assertEquals(product_spec["id"], self._asset_instance.product_id)
-            self.assertEquals(product_spec["version"], self._asset_instance.version)
-            self.assertEquals(digital_chars[0], self._asset_instance.resource_type)
-            self.assertEquals("attached", self._asset_instance.state)
+    def test_resource_only_product_needs_no_service_catalog_read(self):
+        self.product.pop("serviceSpecification")
+        self.validator.validate("create", self.provider, self.product)
+        self.catalog.get_specification.assert_not_called()
+        for plugin in self.resource_plugins.values():
+            plugin.on_pre_product_spec_creation.assert_called_once()
 
-            self._asset_instance.save.assert_called_once_with()
-        else:
-            self.assertEquals(0, self._asset_instance.save.call_count)
+    def test_ordinary_or_uninstalled_resource_category_skips_hooks(self):
+        self.product["serviceSpecification"] = []
+        self.product["resourceSpecification"] = [{"id": "ordinary-resource"}, {"id": "external"}]
+        self.resources["external"] = resource_spec("external", "not-installed")
+        self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
 
-    @parameterized.expand([("no_chars", NO_CHARS_PRODUCT), ("no_digital_chars", EMPTY_CHARS_PRODUCT)])
-    def test_validate_physical(self, name, product):
-        self._mock_validator_imports(product_validator)
-        validator = product_validator.ProductValidator()
-        validator.validate("create", self._provider, product)
+    @parameterized.expand([("create",), ("update",)])
+    def test_proposed_product_is_forwarded_without_fetching_previous_version(self, action):
+        before = deepcopy(self.product)
+        self.validator.validate(action, self.provider, self.product)
+        self.product_catalog.get_specification.assert_not_called()
+        self.assertEqual(before, self.product)
+        self.assertIs(
+            self.product,
+            getattr(
+                self.resource_plugins["category-1"],
+                "on_pre_product_spec_" + ("creation" if action == "create" else "update"),
+            ).call_args.args[2],
+        )
 
-        self.assertEquals(0, product_validator.ResourcePlugin.objects.get.call_count)
-        self.assertEquals(0, product_validator.Resource.objects.get.call_count)
-        self.assertEquals(0, product_validator.Resource.objects.create.call_count)
+    def test_resources_sharing_plugin_receive_separate_calls(self):
+        self.resources["resource-2"] = resource_spec("resource-2", "category-1")
+        self.validator.validate("create", self.provider, self.product)
+        self.assertEqual(
+            [
+                call(self.provider, self.resources["resource-1"], self.product),
+                call(self.provider, self.resources["resource-2"], self.product),
+            ],
+            self.resource_plugins["category-1"].on_pre_product_spec_creation.call_args_list,
+        )
 
-    def _mock_non_attached(self):
-        self._asset_instance.product_id = None
+    def test_invalid_resource_references_prevent_any_plugin_hook(self):
+        for refs in (
+            {},
+            [None],
+            [{}],
+            [{"id": " "}],
+            [{"id": "resource-1"}, {"id": "resource-1"}],
+            [{"id": "missing"}],
+        ):
+            with self.subTest(refs=refs):
+                self.product["resourceSpecification"] = refs
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
 
-    def _mock_non_upgraded(self):
-        self._asset_instance.product_id = BASIC_PRODUCT["product"]["id"]
-        self._asset_instance.state = "upgrading"
-        self._asset_instance.resource_path = ""
-        self._asset_instance.old_versions = [
-            MagicMock(
-                version="1.0",
-                content_type="type",
-                resource_path="/old/path",
-                download_link="http://host/old/path",
+    def test_invalid_downloaded_resource_document_prevents_all_hooks(self):
+        for response in (None, [], {}, {"id": "wrong"}):
+            with self.subTest(response=response):
+                self.resource_catalog.get_specification.side_effect = None
+                self.resource_catalog.get_specification.return_value = response
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_resource_catalog_errors_are_product_validation_errors(self):
+        for error in (ConnectionError("offline"), HTTPError("404"), ValueError("invalid JSON")):
+            with self.subTest(error=error):
+                self.resource_catalog.get_specification.side_effect = error
+                with self.assertRaises(ProductError):
+                    self.validator.validate("create", self.provider, self.product)
+        self.load.assert_not_called()
+
+    def test_resource_plugin_rejection_blocks_product_validation(self):
+        self.resource_plugins["category-1"].on_pre_product_spec_creation.side_effect = PluginError("reject")
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.product)
+        self.resource_plugins["category-2"].on_pre_product_spec_creation.assert_not_called()
+
+    def test_bundle_resources_receive_directly_containing_products(self):
+        first = product_spec("p1", ("service-1",))
+        second = product_spec("p2")
+        for product in (first, second):
+            product["resourceSpecification"] = [{"id": "resource-1"}]
+        self.product_catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        bundle = {"isBundle": True, "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}]}
+        self.validator.validate("create", self.provider, bundle)
+        self.assertEqual(
+            [
+                call(self.provider, self.resources["resource-1"], first),
+                call(self.provider, self.resources["resource-1"], second),
+            ],
+            self.resource_plugins["category-1"].on_pre_product_spec_creation.call_args_list,
+        )
+
+    def test_bundle_cannot_define_its_own_resources_or_include_nested_bundles(self):
+        bundle = {
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}],
+            "resourceSpecification": [{"id": "resource-1"}],
+        }
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, bundle)
+        bundle.pop("resourceSpecification")
+        self.product_catalog.get_specification.side_effect = [
+            product_spec("p1"),
+            {"id": "p2", "isBundle": True},
+        ]
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, bundle)
+        self.resource_catalog.get_specification.assert_not_called()
+        self.catalog.get_specification.assert_not_called()
+        self.load.assert_not_called()
+
+    def test_product_endpoint_dispatches_resource_hooks_and_reports_rejection(self):
+        from django.test import RequestFactory
+        from django.urls import resolve
+        from types import SimpleNamespace
+
+        def invoke():
+            request = RequestFactory().post(
+                "/charging/api/assetManagement/assets/validateJob",
+                data=json.dumps({"action": "create", "product": self.product}),
+                content_type="application/json",
             )
-        ]
+            request.user = SimpleNamespace(
+                is_anonymous=False,
+                is_staff=False,
+                userprofile=SimpleNamespace(
+                    current_organization=self.provider,
+                    get_current_roles=lambda: ["provider"],
+                ),
+            )
+            return resolve(request.path).func(request)
 
-    def _mock_attached(self):
-        self._asset_instance.product_id = BASIC_PRODUCT["product"]["id"]
+        self.assertEqual(200, invoke().status_code)
+        self.resource_plugins["category-1"].on_pre_product_spec_creation.assert_called_once()
+        self.resource_plugins["category-1"].on_pre_product_spec_creation.side_effect = PluginError("reject")
+        self.assertEqual(422, invoke().status_code)
 
-    def _mock_wrong_product(self):
-        self._asset_instance.product_id = "10"
-        self._asset_instance.resource_path = "/new/path"
 
-    def _validate_non_attached(self):
-        self._asset_instance.delete.assert_called_once_with()
-
-    def _validate_non_upgraded(self):
-        self.assertEquals("1.0", self._asset_instance.version)
-        self.assertEquals("type", self._asset_instance.content_type)
-        self.assertEquals("/old/path", self._asset_instance.resource_path)
-        self.assertEquals("http://host/old/path", self._asset_instance.download_link)
-        self._asset_instance.save.assert_called_once_with()
-
-    def _validate_not_called(self):
-        self.assertEquals(0, self._asset_instance.delete.call_count)
-
-    def _validate_non_downgraded(self):
-        self.assertEquals("/new/path", self._asset_instance.resource_path)
-
-    @parameterized.expand(
-        [
+class _CatalogPostActionTests:
+    def setUp(self):
+        self.provider = object()
+        self.user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(current_organization=self.provider, get_current_roles=lambda: ["provider"]),
+        )
+        self.pre_action = "create" if self.operation == "creation" else "update"
+        self.post_action = "post-" + self.pre_action
+        self.pre_hook = "on_pre_" + self.target + "_" + self.operation
+        self.post_hook = "on_post_" + self.target + "_" + self.operation
+        self.specifications = {
+            "service": service_spec("s1", "shared-category"),
+            "resource": resource_spec("r1", "shared-category"),
+        }
+        self.product = product_spec("p1", services=("s1",))
+        self.product["resourceSpecification"] = [{"id": "r1"}]
+        self.products = {"p1": self.product}
+        self.offerings = {}
+        self.document = (
+            self.product
+            if self.element == "product"
+            else {
+                "id": "o1",
+                "name": "Persisted offering",
+                "productSpecification": {"id": "p1"},
+                "productOfferingPrice": [{"id": "price-not-needed-for-post-action"}],
+            }
+        )
+        self.plugins = {"service": Mock(spec=ServicePlugin), "resource": Mock(spec=ResourcePlugin)}
+        self.catalog, self.service_catalog, self.resource_catalog = Mock(), Mock(), Mock()
+        self.catalog.get_specification.side_effect = self.products.__getitem__
+        self.catalog.get_offering.side_effect = self.offerings.__getitem__
+        self.service_catalog.get_specification.return_value = self.specifications["service"]
+        self.resource_catalog.get_specification.return_value = self.specifications["resource"]
+        for target, kwargs in (
+            ("wstore.asset_manager.resource_plugins.resolver.ProductCatalog", {"return_value": self.catalog}),
+            ("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog", {"return_value": self.service_catalog}),
+            ("wstore.asset_manager.resource_plugins.resolver.ResourceCatalog", {"return_value": self.resource_catalog}),
             (
-                "create_non_att",
-                "rollback_create",
-                BASIC_PRODUCT["product"],
-                _mock_non_attached,
-                _validate_non_attached,
+                "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",
+                {
+                    "side_effect": lambda category_id, plugin_type: plugin_type,
+                },
             ),
             (
-                "upgrade_saved",
-                "rollback_upgrade",
-                BASIC_PRODUCT["product"],
-                _mock_non_upgraded,
-                _validate_non_upgraded,
+                "wstore.asset_manager.resource_plugins.decorators._load_plugin_model",
+                {
+                    "side_effect": self.plugins.__getitem__,
+                },
             ),
-            ("create_non_dig", "rollback_create", {}, None, _validate_not_called),
-            (
-                "create_attached",
-                "rollback_create",
-                BASIC_PRODUCT["product"],
-                _mock_attached,
-                _validate_not_called,
+        ):
+            patcher = patch(target, **kwargs)
+            result = patcher.start()
+            self.addCleanup(patcher.stop)
+            if target.endswith("_get_plugin_model"):
+                self.lookup = result
+            if target.endswith("_load_plugin_model"):
+                self.load = result
+        # Isolate whether pricing is invoked; existing pricing suites exercise its rules.
+        pricing = patch.object(OfferingValidator, "_validate_offering_pricing", return_value=(False, False))
+        self.pricing = pricing.start()
+        self.addCleanup(pricing.stop)
+        self.validator = self.validator_class()
+
+    def post(self, action=None, document=None):
+        path = "validateJob" if self.element == "product" else "offeringJob"
+        request = RequestFactory().post(
+            "/charging/api/assetManagement/assets/" + path,
+            data=json.dumps(
+                {"action": action or self.post_action, self.element: self.document if document is None else document}
             ),
-            (
-                "upgrade_wrong_id",
-                "rollback_upgrade",
-                BASIC_PRODUCT["product"],
-                _mock_wrong_product,
-                _validate_non_downgraded,
-            ),
-        ]
-    )
-    def test_rollback_handler(self, name, action, data, mocker, test_validator):
-        self._mock_validator_imports(product_validator)
+            content_type="application/json",
+        )
+        request.user = self.user
+        return resolve(request.path).func(request)
 
-        if mocker is not None:
-            mocker(self)
+    def expected_arguments(self, kind, document=None, product=None):
+        document = self.document if document is None else document
+        product = product if product is not None else (document if self.element == "product" else self.product)
+        args = (self.provider, self.specifications[kind], product)
+        return args + (document,) if self.element == "offering" else args
 
-        validator = product_validator.ProductValidator()
-        validator.validate(action, self._provider, data)
+    def test_post_action_only_notifies_matching_hooks_with_persisted_documents(self):
+        before = deepcopy(self.document)
+        self.validator.validate(self.post_action, self.provider, self.document)
+        for kind, plugin in self.plugins.items():
+            getattr(plugin, self.post_hook).assert_called_once_with(*self.expected_arguments(kind))
+            self.assertEqual([self.post_hook], [call[0] for call in plugin.method_calls])
+            payload = getattr(plugin, self.post_hook).call_args.args
+            self.assertIs(self.document, payload[-1])
+        self.pricing.assert_not_called()
+        self.assertEqual(before, self.document)
+        self.assertEqual({"service", "resource"}, {call.kwargs["plugin_type"] for call in self.lookup.call_args_list})
+        self.catalog.get_price.assert_not_called()
+        self.assertFalse(
+            any(call[0].startswith(("create", "update", "patch", "delete")) for call in self.catalog.mock_calls)
+        )
 
-        test_validator(self)
+    def test_real_routes_separate_pre_and_post_requests(self):
+        proposed = deepcopy(self.document)
+        if self.operation == "creation":
+            del proposed["id"]
+        self.assertEqual(200, self.post(self.pre_action, proposed).status_code)
+        for kind, plugin in self.plugins.items():
+            getattr(plugin, self.pre_hook).assert_called_once_with(*self.expected_arguments(kind, proposed))
+            getattr(plugin, self.post_hook).assert_not_called()
+        self.assertEqual(1 if self.element == "offering" else 0, self.pricing.call_count)
+        self.assertEqual(200, self.post().status_code)
+        for plugin in self.plugins.values():
+            self.assertEqual([self.pre_hook, self.post_hook], [call[0] for call in plugin.method_calls])
+        self.assertEqual(1 if self.element == "offering" else 0, self.pricing.call_count)
+
+    def test_post_plugin_failure_is_reported_without_replaying_pre_checks(self):
+        getattr(self.plugins["resource"], self.post_hook).side_effect = PluginError("notification failed")
+        before = deepcopy(self.document)
+        response = self.post()
+        self.assertEqual(422, response.status_code)
+        self.assertIn("notification failed", response.content.decode())
+        self.pricing.assert_not_called()
+        for plugin in self.plugins.values():
+            getattr(plugin, self.pre_hook).assert_not_called()
+        self.assertEqual(before, self.document)
+
+    def test_pre_plugin_failure_blocks_validation_without_sending_post_notifications(self):
+        getattr(self.plugins["service"], self.pre_hook).side_effect = PluginError("validation rejected")
+        self.assertEqual(422, self.post(self.pre_action).status_code)
+        self.assertEqual(1 if self.element == "offering" else 0, self.pricing.call_count)
+        for plugin in self.plugins.values():
+            getattr(plugin, self.post_hook).assert_not_called()
+
+    def test_invalid_post_document_is_rejected_before_catalog_or_plugin_lookup(self):
+        for document in ([], "not-a-document", 1, {}, {"id": ""}, {"id": " "}, {"id": 1}, {"id": None}):
+            with self.subTest(document=document):
+                self.assertEqual(400, self.post(document=document).status_code)
+        self.lookup.assert_not_called()
+        self.catalog.get_specification.assert_not_called()
+        self.service_catalog.get_specification.assert_not_called()
+        self.resource_catalog.get_specification.assert_not_called()
+        self.pricing.assert_not_called()
+
+    def test_bad_referenced_specification_prevents_all_notifications(self):
+        self.resource_catalog.get_specification.return_value = {"id": "wrong"}
+        self.assertEqual(400, self.post().status_code)
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+        self.pricing.assert_not_called()
+
+    def test_ordinary_and_uninstalled_specifications_skip_notifications(self):
+        self.lookup.return_value = None
+        self.lookup.side_effect = None
+        self.assertEqual(200, self.post().status_code)
+        self.load.assert_not_called()
+        self.specifications["service"]["specCharacteristic"] = []
+        self.specifications["resource"]["resourceSpecCharacteristic"] = []
+        self.lookup.reset_mock()
+        self.assertEqual(200, self.post().status_code)
+        self.lookup.assert_not_called()
+        self.pricing.assert_not_called()
+
+    def test_default_plugin_hooks_are_optional(self):
+        self.load.side_effect = lambda kind: (ServicePlugin if kind == "service" else ResourcePlugin)(object())
+        self.assertEqual(200, self.post(self.pre_action).status_code)
+        self.assertEqual(200, self.post().status_code)
+
+    def test_post_action_preserves_authentication_and_provider_permissions(self):
+        self.user.is_anonymous = True
+        self.assertEqual(401, self.post().status_code)
+        self.user.is_anonymous = False
+        self.user.userprofile.get_current_roles = lambda: ["customer"]
+        self.assertEqual(403, self.post().status_code)
+        self.lookup.assert_not_called()
+
+    def test_product_bundle_post_callbacks_keep_each_containing_product(self):
+        first, second = deepcopy(self.product), deepcopy(self.product)
+        second["id"] = "p2"
+        self.products["p2"] = second
+        bundle = {"id": "bundle", "isBundle": True, "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}]}
+        self.products["bundle"] = bundle
+        document = bundle if self.element == "product" else {**self.document, "productSpecification": {"id": "bundle"}}
+        self.assertEqual(200, self.post(document=document).status_code)
+        for kind, plugin in self.plugins.items():
+            self.assertEqual(
+                [self.expected_arguments(kind, document, product) for product in (first, second)],
+                [call.args for call in getattr(plugin, self.post_hook).call_args_list],
+            )
+        self.pricing.assert_not_called()
+
+    def test_interface_names_match_each_operation_and_phase(self):
+        for plugin in (ServicePlugin, ResourcePlugin):
+            self.assertTrue(hasattr(plugin, self.pre_hook))
+            self.assertTrue(hasattr(plugin, self.post_hook))
+            self.assertFalse(hasattr(plugin, "on_product_spec_validation"))
+            self.assertFalse(hasattr(plugin, "on_pre_product_offering_validation"))
+            self.assertFalse(hasattr(plugin, "on_post_product_offering_validation"))
+
+
+class ProductPostCreationTests(_CatalogPostActionTests, SimpleTestCase):
+    operation = "creation"
+    element = "product"
+    validator_class = ProductValidator
+    target = "product_spec"
+
+
+class ProductPostUpdateTests(ProductPostCreationTests):
+    operation = "update"

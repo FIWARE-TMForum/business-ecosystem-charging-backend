@@ -26,7 +26,8 @@ from wstore.views import ServeMedia
 
 urlpatterns = [
     url(
-        r"^charging/media/(?P<path>.+)/(?P<name>[\w -.]+)/?$",
+        # Retain legacy matches while admitting the expanded upload filenames.
+        r"^charging/media/(?P<path>.+)/(?P<name>[\w -.]+|[^/\\#?%\x00-\x1f\x7f-\x9f]+)/?$",
         ServeMedia(permitted_methods=("GET",)),
     )
 ]

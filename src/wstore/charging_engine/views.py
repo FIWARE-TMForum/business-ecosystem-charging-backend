@@ -29,7 +29,6 @@ from requests.exceptions import HTTPError
 import jwt
 from django.http import HttpResponse
 
-from wstore.asset_manager.resource_plugins.decorators import on_product_acquired
 from wstore.rss.cdr_manager import CDRManager
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.charging_engine.payment_client.payment_client import PaymentClient, PaymentClientError
@@ -83,15 +82,14 @@ class PaymentConfirmation(Resource):
             logger.error("reason: %s", e)
 
     def _set_renovation_states(self, transactions, raw_order, order):
+        # The legacy routing to this method is commented out below; verify the active
+        # path before integrating. Renewal must not invoke initial service activation.
         inventory_client = InventoryClient()
 
         for transaction in transactions:
             try:
                 contract = order.get_item_contract(transaction["item"])
                 inventory_client.activate_product(contract.product_id)
-
-                # Activate the product
-                on_product_acquired(order, contract)
             except:
                 pass
 

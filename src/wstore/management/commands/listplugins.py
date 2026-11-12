@@ -33,7 +33,7 @@ class Command(BaseCommand):
         try:
             plugins = ResourcePlugin.objects.all()
             for plugin in plugins:
-                self.stdout.write("Name: " + plugin.name + " id: " + plugin.plugin_id + "\n")
+                self.stdout.write("Name: " + plugin.name + " type: " + plugin.type + " id: " + plugin.plugin_id + "\n")
 
         except Exception as e:
             raise CommandError(str(e))

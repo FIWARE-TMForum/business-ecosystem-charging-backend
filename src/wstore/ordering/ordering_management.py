@@ -20,23 +20,22 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-import re
 import datetime
-from decimal import Decimal
 from logging import getLogger
-from urllib.parse import urlparse
 
 import requests
-from bson import ObjectId
 from django.conf import settings
 
+from wstore.admin.users.notification_handler import NotificationsHandler
 from wstore.charging_engine.charging.billing_client import BillingClient
-from wstore.asset_manager.product_validator import ProductValidator
-from wstore.asset_manager.resource_plugins.decorators import on_product_suspended, on_product_acquired
+from wstore.asset_manager.resource_plugins.decorators import (
+    on_product_activation,
+    on_product_renewal,
+)
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
 from wstore.ordering.inventory_client import InventoryClient
-from wstore.ordering.models import Contract, Offering, Order, PaymentRecord
+from wstore.ordering.models import Contract, Order, PaymentRecord
 from wstore.ordering.ordering_client import OrderingClient
 from wstore.store_commons.rollback import rollback
 from wstore.store_commons.utils.url import get_service_url
@@ -48,7 +47,6 @@ logger = getLogger("wstore.default_logger")
 class OrderingManager:
     def __init__(self):
         self._customer = None
-        self._validator = ProductValidator()
         self.ordering_client = OrderingClient()
 
     def _download(self, url, element, item_id):
@@ -67,155 +65,6 @@ class OrderingManager:
 
         offering_info = self._download(offering_url, "product offering", item["id"])
         return offering_info
-
-    def _get_offering(self, item):
-        offering_info = self._get_offering_info(item)
-        offering_id = offering_info["id"]
-
-        # Check if the offering has been already loaded in the system
-        if len(Offering.objects.filter(off_id=offering_id)) > 0:
-            offering = Offering.objects.get(off_id=offering_id)
-
-            # If the offering defines a digital product, check if the customer already owns it
-            included_offerings = [Offering.objects.get(pk=ObjectId(off_pk)) for off_pk in offering.bundled_offerings]
-            included_offerings.append(offering)
-
-            for off in included_offerings:
-                if off.is_digital and off.pk in self._customer.userprofile.current_organization.acquired_offerings:
-                    logger.error(
-                        f"The customer already owns the digital product offering {off.name} with id {off.off_id}"
-                    )
-                    raise OrderingError(
-                        f"The customer already owns the digital product offering {off.name} with id {off.off_id}"
-                    )
-        else:
-            logger.error(f"The offering {offering_id} has not been previously registered")
-            raise OrderingError(f"The offering {offering_id} has not been previously registered")
-
-        return offering, offering_info
-
-    def _parse_price(self, model_mapper, price):
-        if price["priceType"].lower() not in model_mapper:
-            logger.error(f"Cant parse price: Invalid price model {price['priceType']}")
-            raise OrderingError(f"Invalid price model {price['priceType']}")
-
-        unit_field = {
-            "one time": "priceType",
-            "recurring": "recurringChargePeriod",
-            "usage": "unitOfMeasure",
-        }
-
-        value = str(price["price"]["taxIncludedAmount"]["value"])
-        tax_rate = str(price["price"]["taxRate"])
-        duty_free = str(Decimal(value) - ((Decimal(value) * Decimal(tax_rate)) / 100))
-        return {
-            "value": value,
-            "unit": price[unit_field[price["priceType"].lower()]].lower(),
-            "tax_rate": tax_rate,
-            "duty_free": duty_free,
-        }
-
-    def _parse_alteration(self, alteration, type_):
-        # Alterations cannot specify usage models
-        if alteration["priceType"].lower() != "one time" and alteration["priceType"].lower() != "recurring":
-            logger.error("Invalid priceType in price alteration, it must be one time or recurring")
-            raise OrderingError("Invalid priceType in price alteration, it must be one time or recurring")
-
-        # Check if it is a fixed value or a percentage
-        if "percentage" in alteration["price"] and Decimal(alteration["price"]["percentage"]) > Decimal(0):
-            value = alteration["price"]["percentage"]
-        else:
-            value = {
-                "value": alteration["price"]["taxIncludedAmount"],
-                "duty_free": alteration["price"]["dutyFreeAmount"],
-            }
-
-        alt_model = {
-            "type": type_,
-            "value": value,
-            "period": alteration["priceType"].lower(),
-        }
-
-        # Parse condition
-        if "priceCondition" in alteration and len(alteration["priceCondition"]):
-            exp = re.compile(r"^(eq|lt|gt|le|ge) \d+(\.\d+)?$")
-
-            if not exp.match(alteration["priceCondition"]):
-                logger.error(
-                    "Invalid priceCondition in price alteration, format must be: [eq | lt | gt | le | ge] value"
-                )
-                raise OrderingError(
-                    "Invalid priceCondition in price alteration, format must be: [eq | lt | gt | le | ge] value"
-                )
-
-            op, value = alteration["priceCondition"].split(" ")
-
-            alt_model["condition"] = {"operation": op, "value": value}
-
-        return alt_model
-
-    def _get_effective_pricing(self, item_id, product_price, offering_info):
-        # Search the pricing chosen by the user
-        def field_included(pricing, field):
-            return field in pricing and len(pricing[field]) > 0
-
-        offering_pricing = None
-        for off_price in offering_info.get("productOfferingPrice", []):
-            if off_price["id"] == product_price["productOfferingPrice"]["id"]:
-                # Download the product offering price model
-
-                price_url = get_service_url("catalog", f"/productOfferingPrice/{off_price['id']}")
-                offering_pricing = self._download(price_url, "product offering price", off_price["id"])
-
-                break
-        else:
-            # The given price does not match any from the product offering
-            logger.error("Product price does not match any prices in offering")
-            raise OrderingError(
-                f"The product price included in productOrderItem {item_id} "
-                "does not match with any of the prices included in the related offering"
-            )
-
-        # Validate that all pricing fields match
-        # MATCHING NO LONGER NEEDED ONLY ID IS PROVIDED NOW
-        if (
-            offering_pricing["priceType"].lower() != product_price["priceType"].lower()
-            or (
-                field_included(offering_pricing, "unitOfMeasure") and not field_included(product_price, "unitOfMeasure")
-            )
-            or (
-                not field_included(offering_pricing, "unitOfMeasure") and field_included(product_price, "unitOfMeasure")
-            )
-            or (
-                field_included(offering_pricing, "unitOfMeasure")
-                and field_included(product_price, "unitOfMeasure")
-                and offering_pricing["unitOfMeasure"]["units"].lower() != product_price["unitOfMeasure"].lower()
-            )
-            or (
-                field_included(offering_pricing, "recurringChargePeriodType")
-                and not field_included(product_price, "recurringChargePeriod")
-            )
-            or (
-                not field_included(offering_pricing, "recurringChargePeriodType")
-                and field_included(product_price, "recurringChargePeriod")
-            )
-            or (
-                field_included(offering_pricing, "recurringChargePeriodType")
-                and field_included(product_price, "recurringChargePeriod")
-                and offering_pricing["recurringChargePeriodType"].lower()
-                != product_price["recurringChargePeriod"].lower()
-            )
-            or Decimal(offering_pricing["price"]["value"])
-            != Decimal(product_price["price"]["taxIncludedAmount"]["value"])
-            or offering_pricing["price"]["unit"].lower() != product_price["price"]["taxIncludedAmount"]["unit"].lower()
-        ):
-            logger.error("Product price does not match any prices in offering")
-            raise OrderingError(
-                f"The product price included in productOrderItem {item_id} "
-                "does not match with any of the prices included in the related offering"
-            )
-
-        return product_price
 
     def _get_mode(self, offering_info):
         if "productOfferingTerm" in offering_info:
@@ -267,33 +116,6 @@ class OrderingManager:
             options=item.get("product", {}).get("productCharacteristic", []),
         ), offering_info, mode
 
-    def _build_contract(self, item):
-        # Build offering
-        offering, offering_info = self._get_offering(item)
-
-        # Now pricing is taken from a different field
-        #
-        product_price = None
-        if "itemTotalPrice" in item and len(item["itemTotalPrice"]) > 0 and "productOfferingPrice" in item["itemTotalPrice"][0]:
-            product_price = item["itemTotalPrice"][0]["productOfferingPrice"]
-
-        # Check if the product price has not been included but must
-        if product_price is None and len(offering_info.get("productOfferingPrice", [])) and not offering.is_custom:
-            raise OrderingError(f"The price model has not been included for productOrderItem {item['id']}")
-
-        # Build pricing if included
-        pricing = {}
-        if product_price is not None:
-            if offering.is_custom:
-                raise OrderingError(f"Custom pricing models are handled externally, please don't include a price in product")
-
-        return Contract(
-            item_id=item["id"],
-            pricing_model=pricing,
-            # revenue_class=revenue_class,
-            offering=offering.pk,
-        )
-
     def _get_billing_address(self, billing_account):
         # Download BillingAccount
         account = None
@@ -341,8 +163,10 @@ class OrderingManager:
 
     def _filter_add_items(self, items):
         process_items = []
+        offering_names = []
         for item in items:
             new_contract, offering_info, mode = self._filter_item(item)
+            offering_names.append(offering_info.get("name", ""))
             if new_contract is not None:
                 process_items.append({
                     'item': item,
@@ -351,7 +175,7 @@ class OrderingManager:
                     'mode': mode
                 })
 
-        return process_items
+        return process_items, offering_names
 
     def _process_add_items(self, item_info, order, description, terms_accepted):
         order_id = order["id"]
@@ -447,13 +271,6 @@ class OrderingManager:
         contract = next(c for c in order.contracts if c.product_id == product["id"])
         logger.debug(f"contract product id: {contract.product_id}")
 
-        # Build the new contract
-        # TODO: Maybe needed in the future. SRS
-        # new_contract = self._build_contract(item)
-        # if new_contract.pricing_model != {}:
-        #     contract.pricing_model = new_contract.pricing_model
-        #     contract.revenue_class = new_contract.revenue_class
-
         order.order_id = raw_order["id"]
         order.save()
 
@@ -482,9 +299,6 @@ class OrderingManager:
             if not order.claim_contract_for_termination(product["id"]):
                 logger.error("Only activated products are deletable")
                 raise OrderingError("Only activated products are deletable")
-
-            # Suspend the access to the service
-            on_product_suspended(order, contract)
 
             # Terminate product in the inventory
             client.terminate_product(product["id"])
@@ -529,11 +343,12 @@ class OrderingManager:
                 raise OrderingError("Missing billing account in product order")
 
             # Filter out the items that are not going to be processed
-            process_items = self._filter_add_items(items["add"])
+            process_items, offering_names = self._filter_add_items(items["add"])
             logger.info("Items are being processed")
 
             if len(process_items) == 0:
-                # No contracts to process, all the items as manual
+                # No contracts to process, all the items as manual.
+                NotificationsHandler.send_provider_notification(order, offering_names)
                 return None
 
             # Update status of items to be processed
@@ -542,6 +357,8 @@ class OrderingManager:
             logger.info("Status of orders and items set to inProgress")
 
             redirection_url = self._process_add_items(process_items, order, description, terms_accepted)
+            NotificationsHandler.send_provider_notification(order, offering_names)
+
         if len(items["modify"]):
             self.ordering_client.update_items_state(order, "inProgress", root_state="inProgress", items=items["modify"])
         if len(items["delete"]):
@@ -637,6 +454,7 @@ class OrderingManager:
             extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
 
         processed_items = []
+        activated_products = []
         item_states = {
             "unchecked": 0,
             "acknowledged": 0,
@@ -684,9 +502,14 @@ class OrderingManager:
                 billing_client.set_customer_bill("settled", item_cb["id"])
 
             logger.info("customer bill updated")
-            self.activate_product(order["id"], new_product)
+            if self._get_mode(offering_info) == "automatic":
+                on_product_activation(new_product, order, contract)
+
+            self._activate_order_product(order, new_product)
             order_model.mark_contract_as_processed(contract.item_id)
             processed_items.append(orderItem)
+
+            activated_products.append((new_product, offering_info))
 
         self.ordering_client.update_items_state(order, "completed", items=processed_items)
         item_states["completed"] += len(processed_items)
@@ -699,6 +522,9 @@ class OrderingManager:
             self.ordering_client.update_state(order, "inProgress")
         elif item_states["acknowledged"] > 0:
             self.ordering_client.update_state(order, "acknowledged")
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
 
         logger.info("Items completed")
 
@@ -743,7 +569,9 @@ class OrderingManager:
             "failed": 0
         }
         logger.debug("Processing an individual order item")
+
         processed_items = []
+        activated_products = []
         for orderItem in raw_order["productOrderItem"]:
             if contract.item_id == orderItem["id"]:
                 new_product = self.complete_inventory_product(raw_order, orderItem, offering_info, extra_char=extra_char, contract=contract)
@@ -755,9 +583,14 @@ class OrderingManager:
                     billing_client.set_customer_bill("settled", item_cb["id"])
 
                 logger.info("customer bill updated")
-                self.activate_product(raw_order["id"], new_product)
+                if self._get_mode(offering_info) == "automatic":
+                    on_product_activation(new_product, raw_order, contract)
+                self._activate_order_product(raw_order, new_product)
+
                 order_model.mark_contract_as_processed(contract.item_id)
                 processed_items.append(orderItem)
+
+                activated_products.append((new_product, offering_info))
             else:
                 item_states[orderItem.get("state", "unchecked")] += 1
 
@@ -772,32 +605,66 @@ class OrderingManager:
             root_state = "acknowledged"
         else:
             raise OrderingError("error setting root state")
+
         self.ordering_client.update_items_state(raw_order, "completed", items=processed_items, root_state=root_state)
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
 
         logger.info("Item completed")
 
-    def complete_cb_webhook(self, customer_bill_id):
-        db = get_database_connection()
-        order_model = None
+    def _get_order_model_by_bill(self, customer_bill_id):
+        try:
+            order_model = Order.get_by_customer_bill_id(customer_bill_id)
+        except OrderingError:
+            order_model = None
+
+        return order_model
+
+    def _get_order_model_by_product(self, customer_bill_id):
+        # Scheduled recurring bills reference the product through their ACBRs.
+        renewal_product_id = BillingClient().get_product_id_by_cb(customer_bill_id)
+        if not renewal_product_id:
+            return None, None
 
         try:
-            order_model: Order = Order.get_by_customer_bill_id(customer_bill_id)
+            order_model = Order.get_by_product_id(renewal_product_id)
+        except OrderingError:
+            logger.info("No local purchase for settled bill %s", customer_bill_id)
+            return None, None
 
-            pre_value = db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": True}})
-            if not pre_value or "_lock" in pre_value and pre_value["_lock"]:
-                order_model = None
-                return {"locked": True}
+        return order_model, renewal_product_id
 
-            contract: Contract = order_model.get_contract_by_cb_id(customer_bill_id) # throw exception for manual procs
-            if contract.processed == False:
+    def complete_cb_webhook(self, customer_bill_id):
+        db = get_database_connection()
+        order_model = self._get_order_model_by_bill(customer_bill_id)
+
+        if order_model is None:
+            # This is a recurring bill
+            order_model, renewal_product_id = self._get_order_model_by_product(customer_bill_id)
+
+            if order_model is None:
+                return
+
+            contract = order_model.get_product_contract(renewal_product_id)
+            on_product_renewal(order_model, contract, customer_bill_id)
+
+        else:
+            try:
+                pre_value = db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": True}})
+                if not pre_value or "_lock" in pre_value and pre_value["_lock"]:
+                    order_model = None
+                    return {"locked": True}
+
+                contract = order_model.get_contract_by_cb_id(customer_bill_id)
+                if contract.processed:
+                    return
+
                 order = self.ordering_client.get_order(order_model.order_id)
                 self.notify_item_completed(order_model, contract, order)
-        except Exception as e:
-            logger.error(f"Error processing customer bill {customer_bill_id}: {e}")
-            logger.info("Probably automatic recurring/usage customer bills")
-        finally:
-            if order_model is not None:
-                db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})
+            finally:
+                if order_model is not None:
+                    db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})
 
     def process_order_completed(self, raw_order): # for manual procurement
         # TBD: It is easy to set a checking that only allows activation of product if it was paid previously
@@ -815,6 +682,7 @@ class OrderingManager:
             for sale_id in order_model.sales_ids:
                 extra_char.append({"name": "paymentPreAuthorizationId", "value": sale_id})
 
+        activated_products = []
         for orderItem in raw_order["productOrderItem"]:
             contract = None
             if order_model is not None:
@@ -836,17 +704,22 @@ class OrderingManager:
                 if "id" in item_cb:
                     billing_client.set_customer_bill("settled", item_cb["id"])
 
-                # Activate asset
-                try:
-                    on_product_acquired(raw_order, contract)
-                except:
-                    return 400, "The asset has failed to be activated"
-
-                self.activate_product(raw_order["id"], new_product)
+                self._activate_order_product(raw_order, new_product)
             else:
                 # Activate product for manual payment
-                inventory_client = InventoryClient()
-                inventory_client.activate_product(new_product["id"])
+                self._activate_order_product(raw_order, new_product, manual=True)
+            activated_products.append((new_product, offering_info))
+
+        for product, offering in activated_products:
+            NotificationsHandler.send_acquired_notification(product, offering)
+
+    def _activate_order_product(self, order, product, manual=False):
+        if manual:
+            InventoryClient().activate_product(product["id"])
+        else:
+            result = self.activate_product(order["id"], product)
+            if isinstance(result, tuple) and result[0] >= 400:
+                raise OrderingError(result[1])
 
 
     def activate_product(self, order_id, product):
@@ -862,12 +735,6 @@ class OrderingManager:
 
         if contract is None:
             return 404, "There is not a contract for the specified product"
-
-        # Activate asset
-        try:
-            on_product_acquired(order, contract)
-        except:
-            return 400, "The asset has failed to be activated"
 
         # Change product state to active
         inventory_client = InventoryClient()

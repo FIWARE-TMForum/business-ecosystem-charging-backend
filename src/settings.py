@@ -50,6 +50,9 @@ BASEDIR = path.dirname(path.abspath(__file__))
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 52428800
 
+PLUGIN_EXPANDED_MAX_BYTES = int(environ.get("BAE_CB_PLUGIN_EXPANDED_MAX_BYTES", 100 * 1024 * 1024))
+PLUGIN_ARCHIVE_MAX_ENTRIES = int(environ.get("BAE_CB_PLUGIN_ARCHIVE_MAX_ENTRIES", 1000))
+
 STORE_NAME = "WStore"
 AUTH_PROFILE_MODULE = "wstore.models.UserProfile"
 
@@ -201,7 +204,6 @@ TEST_RUNNER = "django_nose.NoseTestSuiteRunner"
 
 # Daily job that checks pending pay-per-use charges
 CRONJOBS = [
-    # ("0 5 * * *", "django.core.management.call_command", ["pending_charges_daemon"]),
     # ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
     # ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
     # Recurring billing: creates new CustomerBills for expired billing periods (off-peak hours)
@@ -350,3 +352,5 @@ DPAS_KEY = environ.get("DPAS_KEY", "")
 
 # PAYMENT AND BILLING RECURRING
 BILLING_HTTP_ENABLED = environ.get("BAE_CB_BILLING_BY_HTTP_TEST_ENABLED", "False") == "True"
+# Must be positive and shorter than each subscription's billing cycle.
+PAYMENT_RECOVERY_GRACE_HOURS = float(environ.get("BAE_CB_PAYMENT_RECOVERY_GRACE_HOURS", "72"))

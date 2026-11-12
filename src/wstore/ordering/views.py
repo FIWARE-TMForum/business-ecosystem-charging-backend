@@ -27,8 +27,6 @@ from django.http import HttpResponse
 from logging import getLogger
 
 from wstore.asset_manager.resource_plugins.decorators import (
-    on_product_acquired,
-    on_product_suspended,
     on_usage_refreshed,
 )
 from wstore.charging_engine.charging.billing_client import BillingClient
@@ -254,8 +252,6 @@ def process_product_payment(self, request, task, order, contract):
         # The error might be raised because renewing a suspended product not expired
         if str(e) == "OrderingError: There is not recurring payments to renovate" and contract.suspended:
             try:
-                on_product_acquired(order, contract)
-
                 # Change product state to active
                 contract.suspended = False
                 order.save()
@@ -271,42 +267,6 @@ def process_product_payment(self, request, task, order, contract):
         return None, build_response(request, 500, "An unexpected event prevented your payment to be created")
 
     return redirect_url, None
-
-
-class UnsubscriptionCollection(Resource):
-    @authentication_required
-    @supported_request_mime_types(("application/json",))
-    def create(self, request):
-        task, order, contract, error_response = validate_product_job(self, request)
-
-        if error_response is not None:
-            return error_response
-
-        # If the model is pay-per-use charge for pending payment
-        redirect_url = None
-        if task["priceType"].lower() == "usage":
-            # The update of the product status need to be postponed if there is a pending payment
-            redirect_url, error_response = process_product_payment(self, request, task, order, contract)
-
-            if error_response is not None:
-                return error_response
-
-        response = build_response(request, 200, "OK")
-
-        # Include redirection header if needed
-        if redirect_url is not None:
-            response["X-Redirect-URL"] = redirect_url
-        else:
-            # Suspend the product as no pending payment
-            on_product_suspended(order, contract)
-
-            contract.suspended = True
-            order.save()
-
-            client = InventoryClient()
-            client.suspend_product(contract.product_id)
-
-        return response
 
 
 class RenovationCollection(Resource):

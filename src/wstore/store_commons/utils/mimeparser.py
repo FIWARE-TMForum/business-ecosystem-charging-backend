@@ -40,7 +40,7 @@ Contents:
  - quality_parsed():    Just like quality() except the second parameter must be
                           pre-parsed.
  - best_match():        Choose the mime-type with the highest quality ('q')
-                          from a list of candidates.
+                          from a list of supported types.
 """
 
 
@@ -153,7 +153,7 @@ def quality(mime_type, ranges):
 
 
 def best_match(supported, header):
-    """Return mime-type with the highest quality ('q') from list of candidates.
+    """Return mime-type with the highest quality ('q') from list of supported types.
 
     Takes a list of supported mime-types and finds the best match for all the
     media-ranges listed in header. The value of header must be a string that

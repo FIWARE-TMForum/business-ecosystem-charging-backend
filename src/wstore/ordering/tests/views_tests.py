@@ -23,7 +23,7 @@
 import json
 from datetime import datetime
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from mock import MagicMock, call
 from parameterized import parameterized
 
@@ -396,3 +396,60 @@ class RenovationCollectionTestCase(TestCase):
                 views.Order.objects.get(),
                 views.Order.objects.get().get_product_contract(),
             )
+
+
+class DeleteOrderTerminationIntegrationTests(SimpleTestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from wstore.ordering import ordering_management
+
+        self.manager = ordering_management.OrderingManager()
+        self.order = Mock()
+        self.contract = SimpleNamespace(product_id="p1", suspended=False)
+        self.manager._get_existing_contract = Mock(return_value=(self.order, self.contract))
+        for name in ("InventoryClient", "on_product_termination"):
+            patcher = patch.object(ordering_management, name, create=True)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def test_delete_order_uses_inventory_termination(self):
+        from unittest.mock import Mock, call
+
+        sequence = Mock()
+        sequence.attach_mock(self.order.claim_contract_for_termination, "claim")
+        sequence.attach_mock(self.InventoryClient.return_value.terminate_product, "inventory")
+        self.manager._process_delete_items([{"product": {"id": "p1"}}])
+        self.assertEqual([
+            call.claim("p1"), call.inventory("p1")
+        ], sequence.mock_calls)
+        self.on_product_termination.assert_not_called()
+        self.order.save.assert_not_called()
+        self.assertFalse(self.contract.suspended)
+
+    def test_inventory_termination_failure_propagates(self):
+        self.InventoryClient.return_value.terminate_product.side_effect = RuntimeError("cleanup failed")
+        with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+            self.manager._process_delete_items([{"product": {"id": "p1"}}])
+        self.on_product_termination.assert_not_called()
+        self.InventoryClient.return_value.terminate_product.assert_called_once_with("p1")
+        self.order.claim_contract_for_termination.assert_called_once_with("p1")
+        self.order.save.assert_not_called()
+
+    def test_rejected_claim_does_not_invoke_plugins_or_inventory_termination(self):
+        from wstore.ordering.errors import OrderingError
+
+        self.order.claim_contract_for_termination.return_value = False
+        with self.assertRaises(OrderingError):
+            self.manager._process_delete_items([{"product": {"id": "p1"}}])
+        self.on_product_termination.assert_not_called()
+        self.InventoryClient.return_value.terminate_product.assert_not_called()
+
+    def test_removed_unsubscribe_endpoint_is_not_routable(self):
+        from django.urls import Resolver404, resolve
+        for path in (
+            "/charging/api/orderManagement/products/unsubscribeJob",
+            "/charging/api/orderManagement/products/unsubscribeJob/",
+        ):
+            with self.subTest(path=path), self.assertRaises(Resolver404):
+                resolve(path)

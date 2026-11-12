@@ -18,375 +18,213 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from importlib import reload
-from mock import MagicMock, call
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import Mock, call, patch
+import json
+
+from django.test import RequestFactory, SimpleTestCase
+from django.urls import resolve
 from parameterized import parameterized
-from bson import ObjectId
 
-from django.test.testcases import TestCase
-from django.test.utils import override_settings
+from wstore.asset_manager.offering_validator import OfferingValidator
+from wstore.asset_manager.errors import ProductError
+from wstore.asset_manager.resource_plugins.plugin import ServicePlugin
+from wstore.asset_manager.resource_plugins.plugin_error import PluginError
+from wstore.asset_manager.test import offering_validator_test_data as data
+from wstore.asset_manager.test.product_validator_tests import (
+    product_spec, service_spec, resource_spec, _CatalogPostActionTests,
+)
+from wstore.store_commons.product_catalog import ProductCatalog, ProductCatalogError
 
-from wstore.asset_manager import offering_validator
-from wstore.asset_manager.test.offering_validator_test_data import *
-from wstore.asset_manager.test.product_validator_test_data import BASIC_PRODUCT
 
-
-@override_settings(CATALOG='https://tmf-catalog.com')
-class OfferingValidatorTestCase(TestCase):
-    tags = ("offering-validator",)
-
+class OfferingPricingTests(SimpleTestCase):
     def setUp(self):
-        reload(offering_validator)
-        self._provider = MagicMock()
+        patcher = patch("wstore.asset_manager.resource_plugins.decorators.CatalogResolver")
+        self.resolver = patcher.start().return_value
+        self.addCleanup(patcher.stop)
+        self.resolver.offering_specifications.return_value = []
 
-        offering_validator.Offering.objects.create = MagicMock()
+        self.validator = OfferingValidator()
+        self.validator._catalog = Mock(spec=ProductCatalog)
+        self.provider = object()
 
-        self._asset_instance = MagicMock()
-        self._asset_instance.resource_type = "Widget"
-        self._asset_instance.content_type = "application/x-widget"
-        self._asset_instance.provider = self._provider
-        self._asset_instance.product_id = None
-        self._asset_instance.is_public = False
-        self._asset_instance.pk = ObjectId("61004aba5e05acc115f022f0")
+    def pricing(self, offering, prices, product=data.BASIC_PROD_SPEC):
+        self.validator._catalog.get_price.side_effect = deepcopy(prices)
+        self.validator._catalog.get_specification.return_value = deepcopy(product)
 
-        offering_validator.Resource.objects.filter = MagicMock()
-        offering_validator.Resource.objects.filter.return_value = [self._asset_instance]
+        return self.validator._validate_offering_pricing(self.provider, deepcopy(offering))
 
-        self._plugin_instance = MagicMock()
-        self._plugin_instance.media_types = ["application/x-widget"]
-        self._plugin_instance.formats = ["FILE"]
-        self._plugin_instance.module = "wstore.asset_manager.resource_plugins.plugin.Plugin"
-        self._plugin_instance.form = {}
-
-        import wstore.asset_manager.resource_plugins.decorators
-
-        wstore.asset_manager.resource_plugins.decorators.ResourcePlugin = MagicMock()
-        wstore.asset_manager.resource_plugins.decorators.ResourcePlugin.objects.get.return_value = self._plugin_instance
-
-    def tearDown(self):
-        reload(offering_validator)
-
-    def _mock_requests(self, responses):
-        offering_validator.requests = MagicMock()
-
-        mock_responses = []
-        for response in responses:
-            resp = MagicMock()
-            resp.json.return_value = response
-            resp.status_code = 200
-            mock_responses.append(resp)
-        
-        offering_validator.requests.get.side_effect = mock_responses
-
-    def _mock_offering_bundle(self, offering, is_digital=True):
-        offering_validator.Offering = MagicMock()
-
-        self._bundles = (
-            [[]]
-            if "bundledProductOffering" not in offering
-            else [[MagicMock(id=off["id"], is_digital=is_digital)] for off in offering["bundledProductOffering"]]
-        )
-        offering_validator.Offering.objects.filter.side_effect = self._bundles
-
-    def _validate_offering_calls(self, offering, asset, is_digital, is_open=False, is_custom=False):
-        # Check resource retrieving if needed
-        self.assertEquals([
-            call(product_id=offering["productSpecification"]["id"]),
-            #call(product_id=offering["productSpecification"]["id"])
-        ], offering_validator.Resource.objects.filter.call_args_list)
-
-        # Check offering creation
-        offering_validator.Offering.objects.create.assert_called_once_with(
-            owner_organization=self._provider,
-            name=offering["name"],
-            description="",
-            version=offering["version"],
-            is_digital=is_digital,
-            is_open=is_open,
-            asset=asset,
-            bundled_offerings=[],
-            is_custom=is_custom
-        )
-
-    def _validate_single_offering_calls(self, offering):
-        self.assertEquals([
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')),
-            call("{}/productSpecification/{}".format('https://tmf-catalog.com', 'urn:ProductSpecification:12345'))
-        ], offering_validator.requests.get.call_args_list)
-        self._validate_offering_calls(offering, self._asset_instance, True)
-
-    def _validate_physical_offering_calls(self, offering):
-        self._validate_offering_calls(offering, None, False)
-
-    def _validate_bundle_offering_calls(self, offering, is_digital, is_open=False):
-        self.assertEquals(
-            [call(off_id=off["id"]) for off in offering["bundledProductOffering"]],
-            offering_validator.Offering.objects.filter.call_args_list,
-        )
-
-        # Validate offering creation
-        offering_validator.Offering.objects.create.assert_called_once_with(
-            owner_organization=self._provider,
-            name=offering["name"],
-            description="",
-            version=offering["version"],
-            is_digital=is_digital,
-            is_open=is_open,
-            is_custom=False,
-            asset=None,
-            bundled_offerings=[off[0].pk for off in self._bundles],
-        )
-
-    def _validate_bundle_digital_offering_calls(self, offering):
-        self._validate_bundle_offering_calls(offering, True)
-
-    def _validate_bundle_physical_offering_calls(self, offering):
-        self._validate_bundle_offering_calls(offering, False)
-
-    def _validate_open_offering_calls(self, offering):
-        offering_validator.requests.get.assert_called_once_with(
-            "{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')
-        )
-        self._validate_offering_calls(offering, self._asset_instance, True, is_open=True)
-
-        self.assertTrue(self._asset_instance.is_public)
-        self._asset_instance.save.assert_called_once_with()
-
-    def _validate_open_bundle_calls(self, offering):
-        self._validate_bundle_offering_calls(offering, True, is_open=True)
-
-    def _validate_custom_pricing_calls(self, offering):
-        offering_validator.requests.get.assert_called_once_with(
-            "{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')
-        )
-        self._validate_offering_calls(offering, self._asset_instance, True, False, True)
-
-    def _validate_custom_pricing_calls_multiple(self, offering):
-        self.assertEquals([
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')),
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:4567'))
-        ], offering_validator.requests.get.call_args_list)
-
-        self._validate_offering_calls(offering, self._asset_instance, True, False, True)
-
-    def _validate_profile_plan(self, offering):
-        self.assertEquals([
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')),
-            call("{}/productSpecification/{}".format('https://tmf-catalog.com', 'urn:ProductSpecification:12345'))
-        ], offering_validator.requests.get.call_args_list)
-
-        self._validate_offering_calls(offering, self._asset_instance, True)
-
-    def _validate_profile_multiple(self, offering):
-        self.assertEquals([
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')),
-            call("{}/productSpecification/{}".format('https://tmf-catalog.com', 'urn:ProductSpecification:12345')),
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:ProductOfferingPrice:1111')),
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:ProductOfferingPrice:1112'))
-        ], offering_validator.requests.get.call_args_list)
-
-        self._validate_offering_calls(offering, self._asset_instance, True)
-
-    def _validate_component_multiple(self, offering):
-        self.assertEquals([
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:product-offering-price:1234')),
-            call("{}/productSpecification/{}".format('https://tmf-catalog.com', 'urn:ProductSpecification:12345')),
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:ProductOfferingPrice:1111')),
-            call("{}/productOfferingPrice/{}".format('https://tmf-catalog.com', 'urn:ProductOfferingPrice:1112'))
-        ], offering_validator.requests.get.call_args_list)
-
-        self._validate_offering_calls(offering, self._asset_instance, True)
-
-    def _non_digital_offering(self):
-        offering_validator.Resource.objects.filter.return_value = []
-
-    def _non_digital_bundle(self):
-        self._mock_offering_bundle(BUNDLE_OFFERING, is_digital=False)
-
-    def _open_bundled(self):
-        for bundle_resp in self._bundles:
-            for bundle in bundle_resp:
-                bundle.is_open = True
-
-    def _non_digital_offering(self):
-        offering_validator.Resource.objects.filter.return_value = []
-
-    def _invalid_bundled(self):
-        offering_validator.Offering.objects.filter.side_effect = None
-        offering_validator.Offering.objects.filter.return_value = []
-
-    def _open_existing(self):
-        offering_validator.Offering.objects.filter.side_effect = [[MagicMock(id="6"), MagicMock(id="8")]]
-
-    def _mixed_bundled_offerings(self):
-        offering_validator.Offering.objects.filter.side_effect = [
-            [MagicMock(id="6", is_digital=True)],
-            [MagicMock(id="7", is_digital=False)],
+    @parameterized.expand(
+        [
+            ("one_time", data.BASE_OFFERING, [data.OT_OFFERING_PRICE], data.BASIC_PROD_SPEC, (False, False)),
+            ("free", data.FREE_OFFERING, [], data.BASIC_PROD_SPEC, (False, False)),
+            ("open", data.BASE_OFFERING, [data.OPEN_OFFERING_PRICE], data.BASIC_PROD_SPEC, (True, False)),
+            ("custom", data.BASE_OFFERING, [data.CUSTOM_OFFERING_PRICING], data.BASIC_PROD_SPEC, (False, True)),
+            (
+                "multiple_custom",
+                data.BASE_OFFERING_MULTIPLE,
+                [data.CUSTOM_OFFERING_PRICING, data.CUSTOM_OFFERING_PRICING_2],
+                data.BASIC_PROD_SPEC,
+                (False, True),
+            ),
+            ("profile_single", data.BASE_OFFERING, [data.PROFILE_PLAN], data.PROFILE_PROD_SPEC, (False, False)),
+            (
+                "profile_multiple",
+                data.BASE_OFFERING,
+                [data.PROFILE_PLAN_MULTIPLE, data.PRICE_COMPONENT_1, data.PRICE_COMPONENT_2],
+                data.PROFILE_PROD_SPEC,
+                (False, False),
+            ),
+            (
+                "component_conditions",
+                data.BASE_OFFERING,
+                [data.COMPONENT_PLAN, data.PRICE_COMPONENT_3, data.PRICE_COMPONENT_4],
+                data.PROFILE_PROD_SPEC,
+                (False, False),
+            ),
         ]
+    )
+    def test_current_price_plans(self, name, offering, prices, product, expected):
+        self.assertEqual(expected, self.pricing(offering, prices, product))
+        self.assertEqual(len(prices), self.validator._catalog.get_price.call_count)
 
-    def _catalog_api_error(self):
-        offering_validator.requests.get().status_code = 500
-
-    def _non_open_bundled(self):
-        for bundle_resp in self._bundles:
-            for bundle in bundle_resp:
-                bundle.is_open = False
-
-    @parameterized.expand([
-        ("onetime_pricing", BASE_OFFERING, [OT_OFFERING_PRICE, BASIC_PROD_SPEC], _validate_single_offering_calls),
-        ("free_offering", FREE_OFFERING, [], _validate_physical_offering_calls, _non_digital_offering),
-        ("bundle_offering", BUNDLE_OFFERING, [], _validate_bundle_digital_offering_calls),
-        ("bundle_offering_non_digital", BUNDLE_OFFERING, [], _validate_bundle_physical_offering_calls, _non_digital_bundle),
-        ("open_offering", BASE_OFFERING, [OPEN_OFFERING_PRICE], _validate_open_offering_calls),
-        ("open_bundle", OPEN_BUNDLE, [OPEN_OFFERING_PRICE], _validate_open_bundle_calls, _open_bundled),
-        ("custom_pricing", BASE_OFFERING, [CUSTOM_OFFERING_PRICING], _validate_custom_pricing_calls),
-        ("custom_pricing_multiple", BASE_OFFERING_MULTIPLE, [CUSTOM_OFFERING_PRICING, CUSTOM_OFFERING_PRICING_2], _validate_custom_pricing_calls_multiple),
-        ("profile_plan_single", BASE_OFFERING, [PROFILE_PLAN, PROFILE_PROD_SPEC], _validate_profile_plan),
-        ("profile_plan_multiple", BASE_OFFERING, [PROFILE_PLAN_MULTIPLE, PROFILE_PROD_SPEC, PRICE_COMPONENT_1, PRICE_COMPONENT_2], _validate_profile_multiple),
-        ("component_char_plan", BASE_OFFERING, [COMPONENT_PLAN, PROFILE_PROD_SPEC, PRICE_COMPONENT_3, PRICE_COMPONENT_4], _validate_component_multiple)
-    ])
-    def test_create_offering_validation(self, name, offering, requests, checker, side_effect=None):
-        # Mock requests
-        self._mock_requests(requests)
-        self._mock_offering_bundle(offering)
-
-        if side_effect is not None:
-            side_effect(self)
-
-        validator = offering_validator.OfferingValidator()
-        validator.validate("create", self._provider, offering)
-
-        checker(self, offering)
-
-    @parameterized.expand([
-        ("zero_offering", BASE_OFFERING, [ZERO_PRICING, BASIC_PROD_SPEC], "Invalid price, it must be greater than zero."),
-        ("missing_type", BASE_OFFERING, [MISSING_PRICETYPE, BASIC_PROD_SPEC], "Missing required field priceType in productOfferingPrice component"),
-        ("invalid_type", BASE_OFFERING, [INVALID_PRICETYPE, BASIC_PROD_SPEC], "Invalid priceType, it must be one time, recurring, or usage"),
-        ("missing_charge_period", BASE_OFFERING, [MISSING_PERIOD, BASIC_PROD_SPEC], "Missing required field recurringChargePeriodType for recurring priceType"),
-        ("invalid_period", BASE_OFFERING, [INVALID_PERIOD, BASIC_PROD_SPEC], "Unrecognized recurringChargePeriodType: invalid"),
-        ("missing_price", BASE_OFFERING, [MISSING_PRICE, BASIC_PROD_SPEC], "Missing required field price in productOfferingPrice",),
-        ("missing_currency", BASE_OFFERING, [MISSING_CURRENCY, BASIC_PROD_SPEC], "Missing currency code in price"),
-        ("invalid_currency", BASE_OFFERING, [INVALID_CURRENCY, BASIC_PROD_SPEC], "Unrecognized currency: invalid"),
-        ("missing_name", BASE_OFFERING, [MISSING_NAME], "Missing required field name in productOfferingPrice"),
-        ("multiple_names", BASE_OFFERING_MULTIPLE, [OT_OFFERING_PRICE, BASIC_PROD_SPEC, OT_OFFERING_PRICE_2], "Price plans names must be unique (plan)"),
-        ("bundle_missing", BUNDLE_MISSING_FIELD, [], "Offering bundles must contain a bundledProductOffering field"),
-        ("bundle_invalid_number", BUNDLE_MISSING_ELEMS, [], "Offering bundles must contain at least two bundled offerings"),
-        ("open_mixed", OPEN_MIXED, [OPEN_OFFERING_PRICE, OPEN_MIXED_PRICE, BASIC_PROD_SPEC], "Open offerings cannot include price plans"),
-        ("custom_pricing_error", BASE_OFFERING_MULTIPLE, [CUSTOM_OFFERING_PRICING, OT_OFFERING_PRICE_2, BASIC_PROD_SPEC], "Custom pricing offerings cannot include processed price plans"),
-        ("bundle_inv_bundled", BUNDLE_OFFERING, [], "The bundled offering 6 is not registered", _invalid_bundled),
-        ("bundle_mixed", BUNDLE_OFFERING, [], "Mixed bundle offerings are not allowed. All bundled offerings must be digital or physical", _mixed_bundled_offerings),
-        ("open_multiple_offers", BASE_OFFERING, [OPEN_OFFERING_PRICE], "Assets of open offerings cannot be monetized in other offerings", _open_existing),
-        ("open_non_digital", BASE_OFFERING, [OPEN_OFFERING_PRICE], "Non digital products cannot be open", _non_digital_offering),
-        ("open_bundle_mixed", OPEN_BUNDLE, [OPEN_OFFERING_PRICE], "If a bundle is open all the bundled offerings must be open", _non_open_bundled),
-        ("invalid_spec", INVALID_SPEC, [PROFILE_PLAN, INVALID_PROD_SPEC], "The productSpecValueUse point to an invalid product specification"),
-        ("invalid_char_use", BASE_OFFERING, [INVALID_USE, PROFILE_PROD_SPEC], "ProductSpecValueUse refers to non-existing product characteristic"),
-        ("invalid_char_use_value", BASE_OFFERING, [INVALID_USE_VALUE, PROFILE_PROD_SPEC], "ProductSpecValueUse refers to non-existing product characteristic value")
-    ])
-    def test_create_offering_validation_error(self, name, offering, pricing, msg, side_effect=None):
-        self._mock_requests(pricing)
-        self._mock_offering_bundle(offering)
-
-        if side_effect is not None:
-            side_effect(self)
-
-        err = False
-        try:
-            validator = offering_validator.OfferingValidator()
-            validator.validate("create", self._provider, offering)
-        except ValueError as e:
-            self.assertEquals(str(e), msg)
-            err = True
-
-        self.assertTrue(err)
-
-    def test_offering_attachment(self):
-        offering = MagicMock()
-        offering_validator.Offering = MagicMock()
-        offering_validator.Offering.objects.filter.return_value = [offering]
-
-        validator = offering_validator.OfferingValidator()
-        validator.validate("attach", self._provider, BASE_OFFERING)
-
-        self.assertEquals(BASE_OFFERING["href"], offering.href)
-        self.assertEquals(BASE_OFFERING["id"], offering.off_id)
-
-        offering.save.assert_called_once_with()
-
-    def test_offering_attachment_missing(self):
-        offering_validator.Offering = MagicMock()
-        offering_validator.Offering.objects.filter.return_value = []
-
-        error = None
-        try:
-            validator = offering_validator.OfferingValidator()
-            validator.validate("attach", self._provider, BASE_OFFERING)
-        except ValueError as e:
-            error = e
-
-        self.assertEquals("The specified offering has not been registered", str(error))
-
-    def _mock_offering_update(self, pricing):
-        offering_validator.Resource.objects.filter.return_value = [self._asset_instance]
-
-        self._mock_requests(pricing)
-
-        offering_validator.Offering = MagicMock()
-        offering_validator.Offering.objects.filter.return_value = []
-
-    def test_update_offering_validator(self):
-        self._mock_offering_update([OT_OFFERING_PRICE, BASIC_PROD_SPEC])
-
-        validator = offering_validator.OfferingValidator()
-        validator.validate("update", self._provider, BASE_OFFERING)
-
-        # Validate calls
-        self.assertEquals(0, offering_validator.Offering.objects.filter.call_count)
-        self.assertFalse(self._asset_instance.is_public)
-        self._asset_instance.save.assert_called_once_with()
-
-    def test_update_open_offering(self):
-        self._mock_offering_update([OPEN_OFFERING_PRICE])
-
-        validator = offering_validator.OfferingValidator()
-        validator.validate("update", self._provider, BASE_OFFERING)
-
-        # Validate calls
-        offering_validator.Offering.objects.filter.assert_called_once_with(asset=self._asset_instance)
-        self.assertTrue(self._asset_instance.is_public)
-        self._asset_instance.save.assert_called_once_with()
-
-    def test_update_open_offering_multiple_error(self):
-        self._mock_offering_update([OPEN_OFFERING_PRICE])
-
-        offering_validator.Offering.objects.filter.return_value = [
-            MagicMock(),
-            MagicMock(),
+    @parameterized.expand(
+        [
+            ("zero", data.BASE_OFFERING, [data.ZERO_PRICING], data.BASIC_PROD_SPEC, "greater than zero"),
+            (
+                "missing_type",
+                data.BASE_OFFERING,
+                [data.MISSING_PRICETYPE],
+                data.BASIC_PROD_SPEC,
+                "Missing required field priceType",
+            ),
+            ("invalid_type", data.BASE_OFFERING, [data.INVALID_PRICETYPE], data.BASIC_PROD_SPEC, "Invalid priceType"),
+            (
+                "missing_period",
+                data.BASE_OFFERING,
+                [data.MISSING_PERIOD],
+                data.BASIC_PROD_SPEC,
+                "Missing required field recurringChargePeriodType",
+            ),
+            (
+                "invalid_period",
+                data.BASE_OFFERING,
+                [data.INVALID_PERIOD],
+                data.BASIC_PROD_SPEC,
+                "Unrecognized recurringChargePeriodType",
+            ),
+            (
+                "missing_price",
+                data.BASE_OFFERING,
+                [data.MISSING_PRICE],
+                data.BASIC_PROD_SPEC,
+                "Missing required field price",
+            ),
+            ("missing_currency", data.BASE_OFFERING, [data.MISSING_CURRENCY], data.BASIC_PROD_SPEC, "Missing currency"),
+            (
+                "invalid_currency",
+                data.BASE_OFFERING,
+                [data.INVALID_CURRENCY],
+                data.BASIC_PROD_SPEC,
+                "Unrecognized currency",
+            ),
+            (
+                "missing_name",
+                data.BASE_OFFERING,
+                [data.MISSING_NAME],
+                data.BASIC_PROD_SPEC,
+                "Missing required field name",
+            ),
+            (
+                "duplicate_names",
+                data.BASE_OFFERING_MULTIPLE,
+                [data.OT_OFFERING_PRICE, data.OT_OFFERING_PRICE_2],
+                data.BASIC_PROD_SPEC,
+                "names must be unique",
+            ),
+            (
+                "open_mixed",
+                data.OPEN_MIXED,
+                [data.OPEN_OFFERING_PRICE, data.OPEN_MIXED_PRICE],
+                data.BASIC_PROD_SPEC,
+                "Open offerings cannot include price plans",
+            ),
+            (
+                "custom_mixed",
+                data.BASE_OFFERING_MULTIPLE,
+                [data.CUSTOM_OFFERING_PRICING, data.OT_OFFERING_PRICE_2],
+                data.BASIC_PROD_SPEC,
+                "Custom pricing offerings cannot include",
+            ),
+            (
+                "invalid_product",
+                data.INVALID_SPEC,
+                [data.PROFILE_PLAN],
+                data.INVALID_PROD_SPEC,
+                "invalid product specification",
+            ),
+            (
+                "invalid_characteristic",
+                data.BASE_OFFERING,
+                [data.INVALID_USE],
+                data.PROFILE_PROD_SPEC,
+                "non-existing product characteristic",
+            ),
+            (
+                "invalid_value",
+                data.BASE_OFFERING,
+                [data.INVALID_USE_VALUE],
+                data.PROFILE_PROD_SPEC,
+                "non-existing product characteristic value",
+            ),
         ]
-        error = None
-        try:
-            validator = offering_validator.OfferingValidator()
-            validator.validate("update", self._provider, BASE_OFFERING)
-        except Exception as e:
-            error = e
+    )
+    def test_current_price_plan_rejections(self, name, offering, prices, product, message):
+        with self.assertRaisesRegex(ValueError, message):
+            self.pricing(offering, prices, product)
 
-        self.assertTrue(isinstance(error, ValueError))
-        self.assertEqual(
-            str(error),
-            "Assets of open offerings cannot be monetized in other offerings",
+    def test_profile_and_component_conditions_cannot_be_combined(self):
+        component = deepcopy(data.PRICE_COMPONENT_1)
+        component["prodSpecCharValueUse"] = deepcopy(data.PROFILE_PLAN["prodSpecCharValueUse"])
+
+        with self.assertRaisesRegex(ValueError, "configuration profile"):
+            self.pricing(data.BASE_OFFERING, [data.PROFILE_PLAN_MULTIPLE, component], data.PROFILE_PROD_SPEC)
+
+    def test_recurring_variants_and_referenced_component_downloads(self):
+        for price_type in ("recurring", "recurring-prepaid", "recurring-postpaid"):
+            with self.subTest(price_type=price_type):
+                price = {**data.OT_OFFERING_PRICE, "priceType": price_type, "recurringChargePeriodType": "month"}
+                self.assertEqual((False, False), self.pricing(data.BASE_OFFERING, [price]))
+
+        self.validator._catalog.reset_mock()
+        self.pricing(
+            data.BASE_OFFERING,
+            [data.COMPONENT_PLAN, data.PRICE_COMPONENT_3, data.PRICE_COMPONENT_4],
+            data.PROFILE_PROD_SPEC,
         )
 
-    @parameterized.expand([
-        ("continuous_single_char", ANTICOLLISION_CONTINUOUS_SINGLE),
-        ("continuous_multiple_segments", ANTICOLLISION_CONTINUOUS_MULTIPLE_SEGMENTS),
-        ("continuous_with_multiple_values", ANTICOLLISION_CONTINUOUS_WITH_MULTIPLE_VALUES),
-        ("continuous_with_duplicates", ANTICOLLISION_CONTINUOUS_WITH_DUPLICATES),
-        ("multiple_chars_all_continuous", ANTICOLLISION_MULTIPLE_CHARS_ALL_CONTINUOUS),
-        ("exact_boundaries", ANTICOLLISION_EXACT_BOUNDARIES),
-        ("complex_branches", ANTICOLLISION_COMPLEX_BRANCHES)
-    ])
+        expected = [call(data.BASE_OFFERING["productOfferingPrice"][0]["id"])]
+        expected.extend(call(ref["id"]) for ref in data.COMPONENT_PLAN["bundledPopRelationship"])
+        self.assertEqual(expected, self.validator._catalog.get_price.call_args_list)
+
+
+class OfferingRangeTests(SimpleTestCase):
+    @parameterized.expand(
+        [
+            ("continuous_single_char", data.ANTICOLLISION_CONTINUOUS_SINGLE),
+            ("continuous_multiple_segments", data.ANTICOLLISION_CONTINUOUS_MULTIPLE_SEGMENTS),
+            ("continuous_with_multiple_values", data.ANTICOLLISION_CONTINUOUS_WITH_MULTIPLE_VALUES),
+            ("continuous_with_duplicates", data.ANTICOLLISION_CONTINUOUS_WITH_DUPLICATES),
+            ("multiple_chars_all_continuous", data.ANTICOLLISION_MULTIPLE_CHARS_ALL_CONTINUOUS),
+            ("exact_boundaries", data.ANTICOLLISION_EXACT_BOUNDARIES),
+            ("complex_branches", data.ANTICOLLISION_COMPLEX_BRANCHES),
+        ]
+    )
     def test_check_range_collision_continuous(self, name, anti_collision_data):
         from copy import deepcopy
-        validator = offering_validator.OfferingValidator()
+
+        validator = OfferingValidator()
 
         # deepcopy to avoid modifying the test data (method pops total_range)
         test_data = deepcopy(anti_collision_data)
@@ -395,13 +233,20 @@ class OfferingValidatorTestCase(TestCase):
         result = validator._check_range_collision(test_data)
         self.assertIsNone(result)
 
-    @parameterized.expand([
-        ("non_continuous_gap", ANTICOLLISION_NON_CONTINUOUS_GAP, "urn:Characteristic:9999"),
-        ("multiple_chars_one_non_continuous", ANTICOLLISION_MULTIPLE_CHARS_ONE_NON_CONTINUOUS, "urn:Characteristic:4444")
-    ])
+    @parameterized.expand(
+        [
+            ("non_continuous_gap", data.ANTICOLLISION_NON_CONTINUOUS_GAP, "urn:Characteristic:9999"),
+            (
+                "multiple_chars_one_non_continuous",
+                data.ANTICOLLISION_MULTIPLE_CHARS_ONE_NON_CONTINUOUS,
+                "urn:Characteristic:4444",
+            ),
+        ]
+    )
     def test_check_range_collision_non_continuous(self, name, anti_collision_data, expected_char_id):
         from copy import deepcopy
-        validator = offering_validator.OfferingValidator()
+
+        validator = OfferingValidator()
 
         # deepcopy to avoid modifying the test data
         test_data = deepcopy(anti_collision_data)
@@ -417,12 +262,9 @@ class OfferingValidatorTestCase(TestCase):
         self.assertIn("doesn't have continous subranges", str(error))
 
     def test_recursive_anti_collision_basic(self):
-        validator = offering_validator.OfferingValidator()
+        validator = OfferingValidator()
 
-        record = {
-            "from-1": [10],
-            "from-11": [20]
-        }
+        record = {"from-1": [10], "from-11": [20]}
 
         # Should find path from 1 to 20
         result = validator._recursive_anti_collision(1, 20, record)
@@ -433,7 +275,7 @@ class OfferingValidatorTestCase(TestCase):
         self.assertFalse(result)
 
     def test_recursive_anti_collision_multiple_paths(self):
-        validator = offering_validator.OfferingValidator()
+        validator = OfferingValidator()
 
         record = {
             "from-1": [10, 15, 20],
@@ -442,7 +284,7 @@ class OfferingValidatorTestCase(TestCase):
             "from-21": [35],
             "from-26": [40],
             "from-31": [45],
-            "from-36": [50]
+            "from-36": [50],
         }
 
         # Should find path from 1 to 50 through multiple branches
@@ -454,7 +296,7 @@ class OfferingValidatorTestCase(TestCase):
         self.assertTrue(result)
 
     def test_recursive_anti_collision_empty_record(self):
-        validator = offering_validator.OfferingValidator()
+        validator = OfferingValidator()
 
         record = {}
 
@@ -463,13 +305,488 @@ class OfferingValidatorTestCase(TestCase):
         self.assertFalse(result)
 
     def test_recursive_anti_collision_no_path(self):
-        validator = offering_validator.OfferingValidator()
+        validator = OfferingValidator()
 
-        record = {
-            "from-1": [50],
-            "from-60": [100]
-        }
+        record = {"from-1": [50], "from-60": [100]}
 
         # Should not find path from 1 to 100 due to gap
         result = validator._recursive_anti_collision(1, 100, record)
         self.assertFalse(result)
+
+
+class OfferingPluginTests(SimpleTestCase):
+    def setUp(self):
+        self.provider = object()
+        self.catalog = Mock(spec=ProductCatalog)
+        self.services = Mock()
+
+        for target, value in (
+            ("wstore.asset_manager.resource_plugins.resolver.ProductCatalog", self.catalog),
+            ("wstore.asset_manager.offering_validator.ProductCatalog", self.catalog),
+            ("wstore.asset_manager.resource_plugins.resolver.ServiceCatalog", self.services),
+        ):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.product = product_spec(services=("s1", "ordinary", "s2"))
+        self.specs = {
+            "s1": service_spec("s1", "c1"),
+            "s2": service_spec("s2", "c2"),
+            "ordinary": service_spec("ordinary"),
+        }
+        self.services.get_specification.side_effect = self.specs.get
+        self.catalog.get_specification.return_value = self.product
+        self.catalog.get_price.return_value = deepcopy(data.OT_OFFERING_PRICE)
+        self.offer = {**deepcopy(data.BASE_OFFERING), "productSpecification": {"id": self.product["id"]}}
+        self.plugins = {"c1": Mock(spec=ServicePlugin), "c2": Mock(spec=ServicePlugin)}
+
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",
+            side_effect=lambda category_id, plugin_type: category_id,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._load_plugin_model", side_effect=self.plugins.get
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.validator = OfferingValidator()
+
+    @parameterized.expand([("create", "creation"), ("update", "update")])
+    def test_pricing_before_pre_hooks_without_post_hooks(self, action, operation):
+        events = Mock()
+        events.attach_mock(self.plugins["c1"], "first")
+        events.attach_mock(self.plugins["c2"], "second")
+        events.attach_mock(self.catalog.get_price, "price")
+
+        self.validator.validate(action, self.provider, self.offer)
+
+        first = (self.provider, self.specs["s1"], self.product, self.offer)
+        second = (self.provider, self.specs["s2"], self.product, self.offer)
+        self.assertEqual(
+            [
+                call.price(self.offer["productOfferingPrice"][0]["id"]),
+                getattr(call.first, "on_pre_product_offering_" + operation)(*first),
+                getattr(call.second, "on_pre_product_offering_" + operation)(*second),
+            ],
+            events.mock_calls,
+        )
+        self.plugins["c1"].on_pre_product_spec_creation.assert_not_called()
+        self.plugins["c1"].on_pre_service_spec_creation.assert_not_called()
+
+    @parameterized.expand([("post-create", "creation"), ("post-update", "update")])
+    def test_post_offering_bundle_notifies_each_product_without_pricing(self, action, operation):
+        first = product_spec("p1", services=("s1",))
+        second = product_spec("p2", services=("s2",))
+        self.catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        self.catalog.get_offering.side_effect = {
+            "o1": {"id": "o1", "productSpecification": {"id": "p1"}},
+            "o2": {"id": "o2", "productSpecification": {"id": "p2"}},
+        }.get
+        persisted = {
+            "id": "created-offering-bundle",
+            "isBundle": True,
+            "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}],
+        }
+        self.validator.validate(action, self.provider, persisted)
+        self.catalog.get_price.assert_not_called()
+        for category, spec, product in (("c1", "s1", first), ("c2", "s2", second)):
+            plugin = self.plugins[category]
+            getattr(plugin, "on_post_product_offering_" + operation).assert_called_once_with(
+                self.provider, self.specs[spec], product, persisted
+            )
+            self.assertEqual(
+                ["on_post_product_offering_" + operation], [invocation[0] for invocation in plugin.method_calls]
+            )
+
+    def test_pre_failure_after_pricing_stops_remaining_hooks(self):
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
+
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.offer)
+
+        self.catalog.get_price.assert_called_once()
+        self.plugins["c2"].on_pre_product_offering_creation.assert_not_called()
+        self.plugins["c1"].on_post_product_offering_creation.assert_not_called()
+
+    @parameterized.expand([("create",), ("update",)])
+    def test_pricing_failure_prevents_all_plugin_hooks(self, action):
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+
+        with self.assertRaisesRegex(ValueError, "greater than zero"):
+            self.validator.validate(action, self.provider, self.offer)
+
+        for plugin in self.plugins.values():
+            self.assertEqual([], plugin.method_calls)
+        for plugin in getattr(self, "resource_plugins", {}).values():
+            self.assertEqual([], plugin.method_calls)
+
+    def test_post_failure_is_reported(self):
+        self.plugins["c1"].on_post_product_offering_creation.side_effect = PluginError("reject")
+
+        self.offer["id"] = "persisted-offer"
+        with self.assertRaises(PluginError):
+            self.validator.validate("post-create", self.provider, self.offer)
+
+        self.plugins["c2"].on_post_product_offering_creation.assert_not_called()
+
+    def test_ordinary_service_still_receives_price_validation(self):
+        self.product["serviceSpecification"] = [{"id": "ordinary"}]
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+
+        with self.assertRaises(ValueError):
+            self.validator.validate("create", self.provider, self.offer)
+
+        self.catalog.get_price.assert_called_once()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+
+    def test_free_open_and_custom_offerings_still_invoke_plugins(self):
+        for prices in ([], [data.OPEN_OFFERING_PRICE], [data.CUSTOM_OFFERING_PRICING]):
+            with self.subTest(prices=prices):
+                self.plugins["c1"].reset_mock()
+                self.offer["productOfferingPrice"] = [{"id": price["id"]} for price in prices]
+                self.catalog.get_price.side_effect = deepcopy(prices)
+
+                self.validator.validate("create", self.provider, self.offer)
+
+                self.plugins["c1"].on_pre_product_offering_creation.assert_called_once_with(
+                    self.provider, self.specs["s1"], self.product, self.offer
+                )
+
+    def test_update_uses_proposed_document_without_loading_old_offering(self):
+        proposed = {**self.offer, "name": "Renamed"}
+        original = deepcopy(proposed)
+
+        self.validator.validate_update(provider=self.provider, catalog_element=proposed)
+
+        self.catalog.get_offering.assert_not_called()
+        self.assertEqual(original, proposed)
+        self.assertIs(proposed, self.plugins["c1"].on_pre_product_offering_update.call_args.args[3])
+
+    def test_product_bundle_reuses_product_service_resolution(self):
+        first = product_spec("p1", ("s1",))
+        second = product_spec("p2", ("s1", "s2"))
+        bundle = {"id": "bundle", "isBundle": True, "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}]}
+        self.catalog.get_specification.side_effect = {"bundle": bundle, "p1": first, "p2": second}.get
+        self.offer["productSpecification"] = {"id": "bundle"}
+        self.offer["productOfferingPrice"] = []
+
+        self.validator.validate("create", self.provider, self.offer)
+
+        self.assertEqual(
+            [
+                call(self.provider, self.specs["s1"], first, self.offer),
+                call(self.provider, self.specs["s1"], second, self.offer),
+            ],
+            self.plugins["c1"].on_pre_product_offering_creation.call_args_list,
+        )
+        self.plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
+            self.provider, self.specs["s2"], second, self.offer
+        )
+
+    def test_offering_bundle_downloads_catalog_offerings(self):
+        first = product_spec("p1", ("s1",))
+        second = product_spec("p2", ("s2",))
+        self.catalog.get_offering.side_effect = {
+            "o1": {"id": "o1", "productSpecification": {"id": "p1"}},
+            "o2": {"id": "o2", "productSpecification": {"id": "p2"}},
+        }.get
+        self.catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+
+        self.validator.validate("create", self.provider, offer)
+
+        self.assertEqual([call("o1"), call("o2")], self.catalog.get_offering.call_args_list)
+        self.plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
+            self.provider, self.specs["s2"], second, offer
+        )
+
+    def test_nested_offering_bundle_is_rejected_before_service_lookup_or_hooks(self):
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+        self.catalog.get_offering.side_effect = [
+            {"id": "o1", "productSpecification": {"id": "p1"}},
+            {
+                "id": "o2",
+                "isBundle": True,
+                "bundledProductOffering": [{"id": "o3"}, {"id": "o4"}],
+            },
+        ]
+
+        with self.assertRaisesRegex(ProductError, "cannot contain other bundles"):
+            self.validator.validate("create", self.provider, offer)
+
+        self.assertEqual([call("o1"), call("o2")], self.catalog.get_offering.call_args_list)
+        self.catalog.get_specification.assert_not_called()
+        self.services.get_specification.assert_not_called()
+        self.catalog.get_price.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+
+    def test_invalid_references_stop_before_hooks(self):
+        self.services.get_specification.side_effect = None
+        self.services.get_specification.return_value = {"error": "missing"}
+
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, self.offer)
+
+        self.catalog.get_price.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+
+    def test_parent_dispatch_and_signatures_are_preserved(self):
+        from inspect import signature
+        from wstore.asset_manager.catalog_validator import CatalogValidator
+
+        self.assertIs(CatalogValidator.validate, OfferingValidator.validate)
+        for name in ("validate_creation", "validate_update"):
+            self.assertEqual(signature(getattr(CatalogValidator, name)), signature(getattr(OfferingValidator, name)))
+
+    def test_endpoint_maps_plugin_catalog_and_backend_failures(self):
+        user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(current_organization=self.provider, get_current_roles=lambda: ["provider"]),
+        )
+
+        def invoke():
+            request = RequestFactory().post(
+                "/charging/api/assetManagement/assets/offeringJob",
+                data=json.dumps({"action": "create", "offering": self.offer}),
+                content_type="application/json",
+            )
+            request.user = user
+            return resolve(request.path).func(request)
+
+        self.assertEqual(200, invoke().status_code)
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
+        self.assertEqual(422, invoke().status_code)
+        self.plugins["c1"].on_pre_product_offering_creation.side_effect = None
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+        self.assertEqual(400, invoke().status_code)
+        self.catalog.get_specification.side_effect = ProductCatalogError("offline")
+        self.assertEqual(422, invoke().status_code)
+
+
+class ResourceOfferingPluginTests(SimpleTestCase):
+    def setUp(self):
+        from wstore.asset_manager.resource_plugins.plugin import ResourcePlugin
+
+        OfferingPluginTests.setUp(self)
+        self.resources = Mock()
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.resolver.ResourceCatalog", return_value=self.resources
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.resource_specs = {
+            "r1": resource_spec("r1", "c1"),
+            "r2": resource_spec("r2", "c2"),
+            "ordinary-resource": resource_spec("ordinary-resource"),
+        }
+        self.resources.get_specification.side_effect = self.resource_specs.get
+        self.product["resourceSpecification"] = [{"id": id_} for id_ in self.resource_specs]
+        self.resource_plugins = {"c1": Mock(spec=ResourcePlugin), "c2": Mock(spec=ResourcePlugin)}
+        typed_plugins = {
+            **{("service", category): plugin for category, plugin in self.plugins.items()},
+            **{("resource", category): plugin for category, plugin in self.resource_plugins.items()},
+        }
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._get_plugin_model",
+            side_effect=lambda category_id, plugin_type: (plugin_type, category_id)
+            if (plugin_type, category_id) in typed_plugins
+            else None,
+        )
+        self.lookup = patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch(
+            "wstore.asset_manager.resource_plugins.decorators._load_plugin_model",
+            side_effect=typed_plugins.get,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @parameterized.expand([("create", "creation"), ("update", "update")])
+    def test_mixed_plugins_run_pricing_before_pre_hooks(self, action, operation):
+        events = Mock()
+        for name, plugin in (
+            ("s1", self.plugins["c1"]),
+            ("s2", self.plugins["c2"]),
+            ("r1", self.resource_plugins["c1"]),
+            ("r2", self.resource_plugins["c2"]),
+        ):
+            events.attach_mock(plugin, name)
+        events.attach_mock(self.catalog.get_price, "price")
+        self.validator.validate(action, self.provider, self.offer)
+        self.assertEqual(
+            [
+                "price",
+                "s1.on_pre_product_offering_" + operation,
+                "s2.on_pre_product_offering_" + operation,
+                "r1.on_pre_product_offering_" + operation,
+                "r2.on_pre_product_offering_" + operation,
+            ],
+            [invocation[0] for invocation in events.mock_calls],
+        )
+        for n in (1, 2):
+            expected = (self.provider, self.resource_specs[f"r{n}"], self.product, self.offer)
+            getattr(self.resource_plugins[f"c{n}"], "on_pre_product_offering_" + operation).assert_called_once_with(*expected)
+            self.resource_plugins[f"c{n}"].on_pre_product_spec_creation.assert_not_called()
+            self.resource_plugins[f"c{n}"].on_pre_resource_spec_creation.assert_not_called()
+        self.lookup.assert_any_call(category_id="c1", plugin_type="service")
+        self.lookup.assert_any_call(category_id="c1", plugin_type="resource")
+
+    def test_resource_only_product_does_not_read_service_catalog(self):
+        self.product.pop("serviceSpecification")
+        self.validator.validate("create", self.provider, self.offer)
+        self.services.get_specification.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once()
+
+    def test_ordinary_and_uninstalled_resource_types_skip_hooks_but_keep_pricing(self):
+        self.product["serviceSpecification"] = []
+        self.product["resourceSpecification"] = [{"id": "ordinary-resource"}, {"id": "external"}]
+        self.resource_specs["external"] = resource_spec("external", "external-category")
+        self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_called_once()
+        for plugin in self.resource_plugins.values():
+            self.assertEqual([], plugin.method_calls)
+
+    @parameterized.expand([("create",), ("update",)])
+    def test_resource_hooks_receive_complete_proposed_offering(self, action):
+        self.offer["name"] = "Proposed name"
+        before = deepcopy(self.offer)
+        self.validator.validate(action, self.provider, self.offer)
+        self.catalog.get_offering.assert_not_called()
+        self.assertEqual(before, self.offer)
+        self.assertIs(
+            self.offer,
+            getattr(
+                self.resource_plugins["c1"],
+                "on_pre_product_offering_" + ("creation" if action == "create" else "update"),
+            ).call_args.args[3],
+        )
+
+    def test_free_open_custom_offerings_still_run_resource_hooks(self):
+        for prices in ([], [data.OPEN_OFFERING_PRICE], [data.CUSTOM_OFFERING_PRICING]):
+            with self.subTest(prices=prices):
+                self.resource_plugins["c1"].reset_mock()
+                self.offer["productOfferingPrice"] = [{"id": price["id"]} for price in prices]
+                self.catalog.get_price.side_effect = deepcopy(prices)
+                self.validator.validate("create", self.provider, self.offer)
+                self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once()
+
+    def test_product_bundle_resource_hooks_keep_containing_product(self):
+        first, second = product_spec("p1"), product_spec("p2")
+        for product in (first, second):
+            product["resourceSpecification"] = [{"id": "r1"}]
+        bundle = {
+            "id": "bundle",
+            "isBundle": True,
+            "bundledProductSpecification": [{"id": "p1"}, {"id": "p2"}],
+        }
+        self.catalog.get_specification.side_effect = {"bundle": bundle, "p1": first, "p2": second}.get
+        self.offer["productSpecification"] = {"id": "bundle"}
+        self.offer["productOfferingPrice"] = []
+        self.validator.validate("create", self.provider, self.offer)
+        self.assertEqual(
+            [
+                call(self.provider, self.resource_specs["r1"], first, self.offer),
+                call(self.provider, self.resource_specs["r1"], second, self.offer),
+            ],
+            self.resource_plugins["c1"].on_pre_product_offering_creation.call_args_list,
+        )
+
+    def test_offering_bundle_resource_hooks_receive_original_offering(self):
+        first, second = product_spec("p1"), product_spec("p2")
+        first["resourceSpecification"] = [{"id": "r1"}]
+        second["resourceSpecification"] = [{"id": "r2"}]
+        self.catalog.get_specification.side_effect = {"p1": first, "p2": second}.get
+        self.catalog.get_offering.side_effect = {
+            "o1": {"id": "o1", "productSpecification": {"id": "p1"}},
+            "o2": {"id": "o2", "productSpecification": {"id": "p2"}},
+        }.get
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+        self.validator.validate("create", self.provider, offer)
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_called_once_with(
+            self.provider, self.resource_specs["r1"], first, offer
+        )
+        self.resource_plugins["c2"].on_pre_product_offering_creation.assert_called_once_with(
+            self.provider, self.resource_specs["r2"], second, offer
+        )
+
+    def test_nested_offering_bundle_rejected_before_resource_reads(self):
+        self.catalog.get_offering.side_effect = [
+            {"id": "o1", "productSpecification": {"id": self.product["id"]}},
+            {"id": "o2", "isBundle": True},
+        ]
+        offer = {"isBundle": True, "bundledProductOffering": [{"id": "o1"}, {"id": "o2"}]}
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, offer)
+        self.resources.get_specification.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+
+    def test_invalid_resource_reference_prevents_all_pre_hooks_and_pricing(self):
+        self.resources.get_specification.side_effect = None
+        self.resources.get_specification.return_value = {"id": "wrong-resource"}
+        with self.assertRaises(ProductError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_not_called()
+        self.plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+
+    def test_resource_pre_hook_failure_after_pricing_stops_remaining_hooks(self):
+        self.resource_plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
+        with self.assertRaises(PluginError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.catalog.get_price.assert_called_once()
+        self.resource_plugins["c2"].on_pre_product_offering_creation.assert_not_called()
+        self.plugins["c1"].on_post_product_offering_creation.assert_not_called()
+
+    def test_pricing_failure_prevents_resource_pre_and_post_hooks(self):
+        self.catalog.get_price.return_value = deepcopy(data.ZERO_PRICING)
+        with self.assertRaises(ValueError):
+            self.validator.validate("create", self.provider, self.offer)
+        self.resource_plugins["c1"].on_pre_product_offering_creation.assert_not_called()
+        self.resource_plugins["c1"].on_post_product_offering_creation.assert_not_called()
+
+    def test_resource_post_hook_rejection_is_reported(self):
+        self.resource_plugins["c1"].on_post_product_offering_creation.side_effect = PluginError("reject")
+        self.offer["id"] = "persisted-offer"
+        with self.assertRaises(PluginError):
+            self.validator.validate("post-create", self.provider, self.offer)
+        self.catalog.get_price.assert_not_called()
+        self.resource_plugins["c2"].on_post_product_offering_creation.assert_not_called()
+
+    def test_endpoint_invokes_resource_hooks_and_reports_plugin_failure(self):
+        user = SimpleNamespace(
+            is_anonymous=False,
+            is_staff=False,
+            userprofile=SimpleNamespace(
+                current_organization=self.provider,
+                get_current_roles=lambda: ["provider"],
+            ),
+        )
+
+        def invoke():
+            request = RequestFactory().post(
+                "/charging/api/assetManagement/assets/offeringJob",
+                data=json.dumps({"action": "create", "offering": self.offer}),
+                content_type="application/json",
+            )
+            request.user = user
+            return resolve(request.path).func(request)
+
+        self.assertEqual(200, invoke().status_code)
+        self.resource_plugins["c1"].on_pre_product_offering_creation.side_effect = PluginError("reject")
+        self.assertEqual(422, invoke().status_code)
+
+
+class OfferingPostCreationTests(_CatalogPostActionTests, SimpleTestCase):
+    operation = "creation"
+    element = "offering"
+    validator_class = OfferingValidator
+    target = "product_offering"
+
+
+class OfferingPostUpdateTests(OfferingPostCreationTests):
+    operation = "update"

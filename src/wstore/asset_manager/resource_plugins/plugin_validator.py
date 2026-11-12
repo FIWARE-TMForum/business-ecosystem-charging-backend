@@ -30,13 +30,12 @@ logger = getLogger("wstore.default_logger")
 class PluginValidator:
     REQUIRED_FIELDS = [
         ("name", str),
+        ("type", str),
         ("author", str),
-        ("formats", list),
+        ("requires_file", bool),
         ("module", str),
         ("version", str),
     ]
-
-    VALID_FORMATS = ["FILE", "URL"]
 
     VALID_OVERRIDE_VALUES = ["NAME", "VERSION", "OPEN"]
 
@@ -106,6 +105,9 @@ class PluginValidator:
         }
 
         for k, v in form_info.items():
+            if k.strip().lower() in ("file", "service type", "resource type"):
+                return "Invalid form field: " + k + " is reserved for specification references"
+
             # Validate component
             if not isinstance(v, dict):
                 reason = "Invalid form field: " + k + " entry is not an object"
@@ -161,16 +163,12 @@ class PluginValidator:
             logger.error("Errors in required fields in plugin info")
             return errors
 
+        if plugin_info["type"] not in ("service", "resource"):
+            errors.append("Plugin `type` must be service or resource")
+
         if not is_valid_id(plugin_info["name"]):
             logger.error("Invalid name format: invalid character")
             errors.append("Invalid name format: invalid character")
-
-        # Validate formats
-        if any(pformat not in self.VALID_FORMATS for pformat in plugin_info["formats"]) or not (
-            0 < len(plugin_info["formats"]) <= len(self.VALID_FORMATS)
-        ):
-            logger.error("Invalid format")
-            errors.append(f"Format must contain at least one format of: {self.VALID_FORMATS}")
 
         # Validate overrides
         if "overrides" in plugin_info and not all(
@@ -179,9 +177,15 @@ class PluginValidator:
             logger.error("Invalid override values")
             errors.append(f"Override values should be one of: {self.VALID_OVERRIDE_VALUES}")
 
-        if "media_types" in plugin_info and not isinstance(plugin_info["media_types"], list):
+        if "media_types" in plugin_info and (
+            not isinstance(plugin_info["media_types"], list)
+            or any(
+                not isinstance(media_type, str) or not media_type.strip()
+                for media_type in plugin_info["media_types"]
+            )
+        ):
             logger.error("Invalid media types")
-            errors.append("Plugin `media_types` must be a list")
+            errors.append("Plugin `media_types` must be a list of non-empty strings")
 
         if not is_valid_version(plugin_info["version"]):
             logger.error("Invalid plugin version")

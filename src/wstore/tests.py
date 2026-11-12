@@ -19,221 +19,177 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
+from copy import deepcopy
+from types import SimpleNamespace
 
+from bson import ObjectId
+from django.test import TestCase, override_settings
 from django.test.client import RequestFactory
-from mock import call
+from mock import MagicMock, call, patch
+from parameterized import parameterized
+from requests.exceptions import HTTPError, Timeout
+
+from wstore.ordering.errors import InventoryError
 
 from wstore import views
 from wstore.admin.users.tests import *
 from wstore.store_commons.tests import *
 
 
+@override_settings(
+    MEDIA_ROOT="/home/test/media/", MEDIA_URL="/media/", MEDIA_DIR="media/", USE_XSENDFILE=False, CUSTOMER_ROLE="Buyer"
+)
 class ServeMediaTestCase(TestCase):
     tags = ("media",)
 
     _resource_path = "media/assets/test_user/widget.wgt"
     _expected_file = "assets/test_user/widget.wgt"
+    _file_id = "507f1f77bcf86cd799439011"
+    _customer_id = "urn:ngsi-ld:organization:customer-1"
 
     def setUp(self):
-        # Mock user
-        self._user = MagicMock()
-        self._user.is_anonymous = False
-        self._org = MagicMock()
+        for name in ("Organization", "Resource", "ResourcePlugin", "Order", "serve", "smart_str"):
+            patcher = patch.object(views, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+        self.inventory_patch = patch.object(views, "InventoryClient")
+        self.inventory = self.inventory_patch.start()
+        self.addCleanup(self.inventory_patch.stop)
+        self.client = self.inventory.return_value
+        file_patcher = patch.object(views.os.path, "isfile", return_value=True)
+        self.file_exists = file_patcher.start()
+        self.addCleanup(file_patcher.stop)
+
+        self._user = MagicMock(is_anonymous=False)
+        self._org = SimpleNamespace(actor_id="provider-party", name="test_user")
         self._user.userprofile.current_organization = self._org
+        self.Organization.objects.get.return_value = self._org
+        self._asset_inst = MagicMock(pk=ObjectId(self._file_id), is_public=False, provider=self._org)
+        self.Resource.objects.filter.return_value = [self._asset_inst]
+        self.ResourcePlugin.objects.filter.return_value.exists.return_value = True
+        self.Order.objects.get.return_value.owner_organization = self._org
+        self.smart_str.return_value = "smart string"
 
-        views.Organization = MagicMock()
-        views.Organization.objects.get.return_value = self._org
+        self.service = {
+            "id": "service-1",
+            "state": "reserved",
+            "serviceCharacteristic": [
+                {"name": "Service Type", "value": "file-category"},
+                {"name": "File", "value": self._file_id},
+            ],
+        }
+        self.product = {
+            "id": "product-1",
+            "status": "active",
+            "realizingService": [{"id": "service-1"}],
+            "relatedParty": [{"id": self._customer_id, "role": views.settings.CUSTOMER_ROLE}],
+        }
+        self.client.iter_services.return_value = [self.service]
+        self.client.iter_resources.return_value = []
+        self.client.iter_products.return_value = [self.product]
 
-        # Mock Resource model
-        views.Resource = MagicMock()
-        self._asset_inst = MagicMock()
-        self._asset_inst.is_public = False
-        self._asset_inst.provider = self._org
-
-        views.Resource.objects.filter.return_value = [self._asset_inst]
-
-        # Mock serve and smart_str
-        views.serve = MagicMock()
-        views.smart_str = MagicMock()
-        views.smart_str.return_value = "smart string"
-
-        # Mock is_file
-        views.os.path.isfile = MagicMock()
-
-        # Mock Order
-        views.Order = MagicMock()
-        order_inst = MagicMock()
-        order_inst.owner_organization = self._org
-        views.Order.objects.get.return_value = order_inst
-
-        # Mock offering
-        views.Offering = MagicMock()
-        self._offering_inst = MagicMock()
-        self._offering_inst.asset = self._asset_inst
-        views.Offering.objects.get.side_effect = [MagicMock(), self._offering_inst]
+    def _request(self, path="assets/test_user", name="widget.wgt"):
+        self.request = RequestFactory().get("/charging/media/" + path + "/" + name)
+        self.request.user = self._user
+        return views.ServeMedia(permitted_methods=("GET",)).read(self.request, path, name)
 
     def _validate_res_call(self):
-        views.Resource.objects.filter.assert_called_once_with(resource_path=self._resource_path)
-        self.assertEquals(0, views.Order.objects.get.call_count)
+        self.Resource.objects.filter.assert_called_once_with(resource_path=self._resource_path)
+        self.Order.objects.get.assert_not_called()
 
-    def _validate_off_call(self):
+    def _validate_inventory_call(self):
         self._validate_res_call()
-        self.assertEquals(
-            [
-                call(pk=ObjectId("61004aba5e05acc115f022f0")),
-                call(pk=ObjectId("61004aba5e05acc115f022f1")),
-            ],
-            views.Offering.objects.get.call_args_list,
+        self.client.iter_services.assert_called_once_with(query={"serviceCharacteristic.value": self._file_id})
+        self.client.iter_products.assert_called_once_with(
+            query={
+                "realizingService.id": "service-1",
+                "relatedParty.id": self._customer_id,
+                "status": "active",
+            }
         )
-
-    def _validate_bundle_call(self):
-        self._validate_res_call()
-        self.assertEquals(
-            [
-                call(pk=ObjectId("61004aba5e05acc115f022f0")),
-                call(pk=ObjectId("61004aba5e05acc115f022f1")),
-                call(pk=ObjectId("61004aba5e05acc115f022f2")),
-                call(pk=ObjectId("61004aba5e05acc115f022f2")),
-                call(pk=ObjectId("61004aba5e05acc115f022f3")),
-                call(pk=ObjectId("61004aba5e05acc115f022f3")),
-            ],
-            views.Offering.objects.get.call_args_list,
-        )
-
-    def _validate_product_bundle_call(self):
-        views.Resource.objects.filter.assert_called_once_with(resource_path=self._resource_path)
-        self.assertEquals(
-            [call(pk="prodpk1"), call(pk="prodpk2")],
-            views.Resource.objects.get.call_args_list,
-        )
-        self.assertEquals(0, views.Order.objects.get.call_count)
-
-        self.assertEquals(
-            [
-                call(pk=ObjectId("61004aba5e05acc115f022f0")),
-                call(pk=ObjectId("61004aba5e05acc115f022f1")),
-            ],
-            views.Offering.objects.get.call_args_list,
-        )
+        self.ResourcePlugin.objects.filter.assert_called_once_with(category_id="file-category", type="service", requires_file=True)
 
     def _validate_upgrading_call(self):
-        self.assertEquals(
+        self.assertEqual(
             [
                 call(resource_path=self._resource_path),
                 call(state="upgrading", provider=self._org),
             ],
-            views.Resource.objects.filter.call_args_list,
+            self.Resource.objects.filter.call_args_list,
         )
-
-        views.Organization.objects.get.assert_called_once_with(name="test_user")
+        self.Organization.objects.get.assert_called_once_with(name="test_user")
 
     def _validate_order_call(self):
-        views.Order.objects.get.assert_called_once_with(pk="111111111111111111111111")
-        self.assertEquals(0, views.Resource.objects.get.call_count)
+        self.Order.objects.get.assert_called_once_with(pk="111111111111111111111111")
+        self.Resource.objects.get.assert_not_called()
 
     def _validate_empty_call(self):
-        self.assertEquals(0, views.Resource.objects.get.call_count)
-        self.assertEquals(0, views.Order.objects.get.call_count)
+        self.Resource.objects.get.assert_not_called()
+        self.Order.objects.get.assert_not_called()
 
     def _validate_error(self, response, expected):
-        resp = json.loads(response.content)
-        self.assertEquals(expected[0], response.status_code)
-        self.assertEquals(expected[1], resp)
+        self.assertEqual(expected[0], response.status_code)
+        self.assertEqual(expected[1], json.loads(response.content))
+        self.serve.assert_not_called()
 
     def _validate_serve(self, response, expected):
-        views.os.path.isfile(expected)
-        views.serve.assert_called_once_with(self.request, expected, document_root="/home/test/media/")
+        self.file_exists.assert_called_once_with("/home/test/media/" + expected)
+        self.serve.assert_called_once_with(self.request, expected, document_root="/home/test/media/")
 
     def _validate_xfile(self, response, expected):
-        views.os.path.isfile(expected)
-        views.smart_str.assert_called_once_with(expected)
-        self.assertEquals("smart string", response["X-Sendfile"])
+        self.file_exists.assert_called_once_with("/home/test/media/" + expected)
+        self.smart_str.assert_called_once_with(expected)
+        self.assertEqual("smart string", response["X-Sendfile"])
 
     def _public_asset(self):
         self._asset_inst.is_public = True
-        self._asset_inst.provider = MagicMock()
+        self._asset_inst.provider = SimpleNamespace(actor_id="other-provider")
 
     def _usexfiles(self):
-        views.settings = MagicMock()
-        views.settings.USE_XSENDFILE = True
-        views.settings.MEDIA_ROOT = "/home/test/media/"
-        views.settings.MEDIA_URL = "/media/"
-        views.settings.MEDIA_DIR = "media/"
+        override = override_settings(USE_XSENDFILE=True)
+        override.enable()
+        self.addCleanup(override.disable)
 
     def _asset_error(self):
-        views.Resource.objects.filter.return_value = []
+        self.Resource.objects.filter.return_value = []
 
     def _order_error(self):
-        views.Order.objects.get.side_effect = Exception("Not found")
+        self.Order.objects.get.side_effect = Exception("Not found")
 
     def _unauthorized(self):
         self._acquired()
-        views.Offering.objects.get.side_effect = [
-            MagicMock(is_digital=False),
-            MagicMock(is_digital=True, asset=MagicMock()),
-        ]
+        self.client.iter_products.return_value = []
 
     def _not_loged(self):
         self._user.is_anonymous = True
 
     def _not_found(self):
-        views.os.path.isfile.return_value = False
+        self.file_exists.return_value = False
 
     def _acquired(self):
-        self._user.userprofile.current_organization = MagicMock()
-        self._user.userprofile.current_organization.acquired_offerings = [
-            "61004aba5e05acc115f022f0",
-            "61004aba5e05acc115f022f1",
-        ]
+        self._user.userprofile.current_organization = SimpleNamespace(actor_id=self._customer_id, name="buyer")
 
     def _bundle_acquired(self):
         self._acquired()
-        self._offering_inst = MagicMock(
-            asset=None,
-            bundled_offerings=["61004aba5e05acc115f022f2", "61004aba5e05acc115f022f3"],
-        )
-
-        views.Offering.objects.get.side_effect = [
-            MagicMock(),
-            self._offering_inst,
-            MagicMock(is_digital=True, asset=MagicMock()),
-            MagicMock(is_digital=True, asset=MagicMock()),
-            MagicMock(is_digital=True, asset=self._asset_inst),
-            MagicMock(is_digital=True, asset=self._asset_inst),
-        ]
+        self.product["realizingService"].insert(0, {"id": "other-service"})
 
     def _product_bundle_acquired(self):
-        self._acquired()
-        self._offering_inst.asset = MagicMock(bundled_assets=["prodpk1", "prodpk2"])
-
-        views.Resource.objects.get.side_effect = [
-            self._asset_inst,
-            MagicMock(),
-            self._asset_inst,
-        ]
+        self._bundle_acquired()
+        self.product["isBundle"] = True
 
     def _upgrading(self):
         self._asset_inst.old_versions = [MagicMock(resource_path=self._resource_path)]
-        views.Resource.objects.filter.side_effect = [
-            [],
-            [MagicMock(old_versions=[]), self._asset_inst],
-        ]
+        self.Resource.objects.filter.side_effect = [[], [MagicMock(old_versions=[]), self._asset_inst]]
 
     @parameterized.expand(
         [
-            (
-                "asset",
-                "assets/test_user",
-                "widget.wgt",
-                _validate_res_call,
-                _validate_serve,
-                _expected_file,
-            ),
+            ("asset", "assets/test_user", "widget.wgt", _validate_res_call, _validate_serve, _expected_file),
             (
                 "asset_acquired",
                 "assets/test_user",
                 "widget.wgt",
-                _validate_off_call,
+                _validate_inventory_call,
                 _validate_serve,
                 _expected_file,
                 _acquired,
@@ -242,7 +198,7 @@ class ServeMediaTestCase(TestCase):
                 "asset_in_bundle",
                 "assets/test_user",
                 "widget.wgt",
-                _validate_bundle_call,
+                _validate_inventory_call,
                 _validate_serve,
                 _expected_file,
                 _bundle_acquired,
@@ -251,7 +207,7 @@ class ServeMediaTestCase(TestCase):
                 "asset_in_product_bundle",
                 "assets/test_user",
                 "widget.wgt",
-                _validate_product_bundle_call,
+                _validate_inventory_call,
                 _validate_serve,
                 _expected_file,
                 _product_bundle_acquired,
@@ -289,10 +245,7 @@ class ServeMediaTestCase(TestCase):
                 "widget.wgt",
                 _validate_upgrading_call,
                 _validate_error,
-                (
-                    404,
-                    {"result": "error", "error": "The specified asset does not exists"},
-                ),
+                (404, {"result": "error", "error": "The specified asset does not exists"}),
                 _asset_error,
             ),
             (
@@ -301,13 +254,7 @@ class ServeMediaTestCase(TestCase):
                 "widget.wgt",
                 _validate_res_call,
                 _validate_error,
-                (
-                    401,
-                    {
-                        "result": "error",
-                        "error": "You must be authenticated to download the specified asset",
-                    },
-                ),
+                (401, {"result": "error", "error": "You must be authenticated to download the specified asset"}),
                 _not_loged,
             ),
             (
@@ -316,13 +263,7 @@ class ServeMediaTestCase(TestCase):
                 "widget.wgt",
                 _validate_res_call,
                 _validate_error,
-                (
-                    403,
-                    {
-                        "result": "error",
-                        "error": "You are not authorized to download the specified asset",
-                    },
-                ),
+                (403, {"result": "error", "error": "You are not authorized to download the specified asset"}),
                 _unauthorized,
             ),
             (
@@ -331,13 +272,7 @@ class ServeMediaTestCase(TestCase):
                 "111111111111111111111111_userbill.pdf",
                 _validate_order_call,
                 _validate_error,
-                (
-                    404,
-                    {
-                        "result": "error",
-                        "error": "The specified invoice does not exists",
-                    },
-                ),
+                (404, {"result": "error", "error": "The specified invoice does not exists"}),
                 _order_error,
             ),
             (
@@ -346,13 +281,7 @@ class ServeMediaTestCase(TestCase):
                 "111111111111111111111111_userbill.pdf",
                 _validate_empty_call,
                 _validate_error,
-                (
-                    401,
-                    {
-                        "result": "error",
-                        "error": "You must provide credentials for downloading invoices",
-                    },
-                ),
+                (401, {"result": "error", "error": "You must provide credentials for downloading invoices"}),
                 _not_loged,
             ),
             (
@@ -361,13 +290,7 @@ class ServeMediaTestCase(TestCase):
                 "111111111111111111111111_userbill.pdf",
                 _validate_order_call,
                 _validate_error,
-                (
-                    403,
-                    {
-                        "result": "error",
-                        "error": "You are not authorized to download the specified invoice",
-                    },
-                ),
+                (403, {"result": "error", "error": "You are not authorized to download the specified invoice"}),
                 _unauthorized,
             ),
             (
@@ -389,26 +312,273 @@ class ServeMediaTestCase(TestCase):
             ),
         ]
     )
-    @override_settings(MEDIA_ROOT="/home/test/media/", MEDIA_URL="/media/", MEDIA_DIR="media/")
-    def test_serve_media(
-        self,
-        name,
-        path,
-        file_name,
-        call_validator,
-        res_validator,
-        expected,
-        side_effect=None,
-    ):
+    def test_serve_media(self, name, path, file_name, call_validator, res_validator, expected, side_effect=None):
         if side_effect is not None:
             side_effect(self)
 
-        factory = RequestFactory()
-        self.request = factory.post("media/" + path + "/" + file_name, HTTP_ACCEPT="application/json")
-        self.request.user = self._user
-
-        media_view = views.ServeMedia(permitted_methods=("GET",))
-
-        response = media_view.read(self.request, path, file_name)
+        response = self._request(path, file_name)
         call_validator(self)
         res_validator(self, response, expected)
+
+    def test_owner_and_public_downloads_do_not_query_inventory(self):
+        self._request()
+        self.inventory.assert_not_called()
+        self._public_asset()
+        self._not_loged()
+        self._request()
+        self.inventory.assert_not_called()
+
+    def test_file_name_and_value_must_belong_to_the_same_characteristic(self):
+        self._acquired()
+        self.service["serviceCharacteristic"] = [
+            {"name": "Service Type", "value": "file-category"},
+            {"name": "File", "value": "another-file"},
+            {"name": "endpoint", "value": self._file_id},
+        ]
+        self.assertEqual(403, self._request().status_code)
+        self.client.iter_products.assert_not_called()
+        self.ResourcePlugin.objects.filter.assert_not_called()
+
+    def test_party_id_and_customer_role_must_belong_to_the_same_party(self):
+        self._acquired()
+        self.product["relatedParty"] = [
+            {"id": self._customer_id, "role": "Seller"},
+            {"id": "another-organization", "role": views.settings.CUSTOMER_ROLE},
+        ]
+        self.assertEqual(403, self._request().status_code)
+        self.serve.assert_not_called()
+
+    def test_actual_product_status_and_service_reference_are_checked(self):
+        self._acquired()
+        for status in ("created", "pendingActive", "suspended", "terminated", None):
+            with self.subTest(status=status):
+                self.product["status"] = status
+                self.assertEqual(403, self._request().status_code)
+
+        self.product["status"] = "active"
+        self.product["realizingService"] = [{"id": "another-service"}]
+        self.assertEqual(403, self._request().status_code)
+        self.serve.assert_not_called()
+
+    def test_characteristic_names_and_customer_role_are_case_insensitive(self):
+        self._acquired()
+        self.service["serviceCharacteristic"][0]["name"] = " service TYPE "
+        self.service["serviceCharacteristic"][1]["name"] = "file"
+        self.product["relatedParty"][0]["role"] = views.settings.CUSTOMER_ROLE.lower()
+        self._request()
+        self.serve.assert_called_once()
+
+    @override_settings(CUSTOMER_ROLE="Purchaser")
+    def test_configured_customer_role_is_required(self):
+        self._acquired()
+
+        for role in ("Customer", "Buyer", "Seller"):
+            with self.subTest(role=role):
+                self.product["relatedParty"][0]["role"] = role
+                self.assertEqual(403, self._request().status_code)
+
+        self.product["relatedParty"][0]["role"] = "pUrChAsEr"
+        self._request()
+        self.serve.assert_called_once()
+
+    def test_other_party_ids_and_missing_customer_roles_do_not_grant_access(self):
+        self._acquired()
+        for parties in (
+            [{"id": "another-customer", "role": views.settings.CUSTOMER_ROLE}],
+            [{"id": self._customer_id}],
+            [],
+        ):
+            with self.subTest(parties=parties):
+                self.product["relatedParty"] = parties
+                self.assertEqual(403, self._request().status_code)
+        self.serve.assert_not_called()
+
+    def test_no_party_id_does_not_query_inventory(self):
+        self._acquired()
+        self._user.userprofile.current_organization.actor_id = None
+        self.assertEqual(403, self._request().status_code)
+        self.inventory.assert_not_called()
+
+    def test_non_file_plugins_and_services_without_service_type_do_not_grant_access(self):
+        self._acquired()
+        self.ResourcePlugin.objects.filter.return_value.exists.return_value = False
+        self.assertEqual(403, self._request().status_code)
+        self.service["serviceCharacteristic"].pop(0)
+        self.ResourcePlugin.objects.filter.reset_mock()
+        self.assertEqual(403, self._request().status_code)
+        self.client.iter_products.assert_not_called()
+        self.ResourcePlugin.objects.filter.assert_not_called()
+
+    def test_false_positive_services_are_skipped_before_product_queries(self):
+        self._acquired()
+        false_positive = deepcopy(self.service)
+        false_positive["id"] = "wrong-service"
+        false_positive["serviceCharacteristic"][1] = {"name": "endpoint", "value": self._file_id}
+        self.client.iter_services.return_value = [false_positive, self.service]
+        self._request()
+        self._validate_inventory_call()
+        self.serve.assert_called_once()
+
+    def test_later_matching_service_and_product_can_grant_access(self):
+        self._acquired()
+        second_service = deepcopy(self.service)
+        second_service["id"] = "service-2"
+        wrong_product = deepcopy(self.product)
+        wrong_product["relatedParty"] = [{"id": self._customer_id, "role": "Seller"}]
+        self.product["realizingService"] = [{"id": "service-2"}]
+        self.client.iter_services.return_value = [self.service, second_service]
+        self.client.iter_products.side_effect = [[wrong_product], [wrong_product, self.product]]
+        self._request()
+        self.assertEqual(2, self.client.iter_products.call_count)
+        self.serve.assert_called_once()
+
+    def test_inventory_failures_do_not_serve_the_file(self):
+        self._acquired()
+        for method in (self.client.iter_services, self.client.iter_products):
+            for error in (
+                HTTPError("offline"),
+                Timeout("timeout"),
+                ValueError("invalid JSON"),
+                InventoryError("invalid response"),
+            ):
+                with self.subTest(method=method, error=error):
+                    method.side_effect = error
+                    self.assertEqual(503, self._request().status_code)
+                    method.side_effect = None
+        self.serve.assert_not_called()
+
+    def _resource_purchase(self):
+        self._acquired()
+        self.client.iter_services.return_value = []
+        self.resource = {
+            "id": "resource-1",
+            "resourceCharacteristic": [
+                {"name": "Resource Type", "value": "resource-file-category"},
+                {"name": "File", "value": self._file_id},
+            ],
+        }
+        self.client.iter_resources.return_value = [self.resource]
+        self.product.pop("realizingService", None)
+        self.product["realizingResource"] = [{"id": "resource-1"}]
+
+    def test_resource_purchase_authorizes_download(self):
+        self._resource_purchase()
+        self._request()
+        self.client.iter_resources.assert_called_once_with(query={"resourceCharacteristic.value": self._file_id})
+        self.client.iter_products.assert_called_once_with(query={
+            "realizingResource.id": "resource-1", "relatedParty.id": self._customer_id, "status": "active",
+        })
+        self.ResourcePlugin.objects.filter.assert_called_once_with(
+            category_id="resource-file-category", type="resource", requires_file=True,
+        )
+        self.serve.assert_called_once()
+
+    @parameterized.expand([
+        ("wrong_file",), ("split_characteristic",), ("missing_type",), ("non_file_plugin",),
+        ("inactive_product",), ("wrong_resource",), ("service_link_only",),
+        ("wrong_buyer",), ("split_buyer_role",),
+    ])
+    def test_resource_download_rejects_invalid_purchase(self, case):
+        self._resource_purchase()
+        if case in ("wrong_file", "split_characteristic"):
+            self.resource["resourceCharacteristic"][1]["value"] = "another-file"
+            if case == "split_characteristic":
+                self.resource["resourceCharacteristic"].append({"name": "endpoint", "value": self._file_id})
+        elif case == "missing_type":
+            self.resource["resourceCharacteristic"].pop(0)
+        elif case == "non_file_plugin":
+            self.ResourcePlugin.objects.filter.return_value.exists.return_value = False
+        elif case == "inactive_product":
+            self.product["status"] = "terminated"
+        elif case == "wrong_resource":
+            self.product["realizingResource"] = [{"id": "other-resource"}]
+        elif case == "service_link_only":
+            self.product["realizingService"] = self.product.pop("realizingResource")
+        elif case == "wrong_buyer":
+            self.product["relatedParty"][0]["id"] = "another-buyer"
+        elif case == "split_buyer_role":
+            self.product["relatedParty"] = [
+                {"id": self._customer_id, "role": "Seller"},
+                {"id": "another-buyer", "role": views.settings.CUSTOMER_ROLE},
+            ]
+        self.assertEqual(403, self._request().status_code)
+        self.serve.assert_not_called()
+
+    def test_resource_purchase_in_bundle_and_case_insensitive_characteristics(self):
+        self._resource_purchase()
+        self.product["isBundle"] = True
+        self.product["realizingResource"].insert(0, {"id": "another-resource"})
+        self.resource["resourceCharacteristic"][0]["name"] = " resource TYPE "
+        self.resource["resourceCharacteristic"][1]["name"] = "file"
+        self._request()
+        self.serve.assert_called_once()
+
+    def test_resource_inventory_failure_does_not_serve_file(self):
+        self._resource_purchase()
+        self.client.iter_resources.side_effect = HTTPError("offline")
+        self.assertEqual(503, self._request().status_code)
+        self.serve.assert_not_called()
+
+    @patch("wstore.ordering.inventory_client.requests.get")
+    def test_resource_download_uses_real_client_and_value_fallback(self, get):
+        self._resource_purchase()
+        self.inventory_patch.stop()
+        services = MagicMock()
+        services.json.return_value = []
+        rejected = MagicMock(status_code=500)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        resources = MagicMock()
+        resources.json.return_value = [self.resource]
+        products = MagicMock()
+        products.json.return_value = [self.product]
+        get.side_effect = [services, rejected, resources, products]
+
+        self._request()
+
+        self.assertEqual(4, get.call_count)
+        params = [c.kwargs["params"] for c in get.call_args_list]
+        self.assertEqual({"resourceCharacteristic.value": self._file_id, "offset": 0, "limit": 100}, params[1])
+        self.assertEqual({"resourceCharacteristic.tmfValue": self._file_id, "offset": 0, "limit": 100}, params[2])
+        self.assertEqual({
+            "realizingResource.id": "resource-1", "relatedParty.id": self._customer_id,
+            "status": "active", "offset": 0, "limit": 100,
+        }, params[3])
+        self.serve.assert_called_once()
+
+    @patch("wstore.ordering.inventory_client.requests.get")
+    def test_real_inventory_client_queries_and_post_filters_api_results(self, get):
+        self._acquired()
+        self.inventory_patch.stop()
+        bad_service = deepcopy(self.service)
+        bad_service["id"] = "wrong-service"
+        bad_service["serviceCharacteristic"][1] = {"name": "unrelated", "value": self._file_id}
+        bad_product = deepcopy(self.product)
+        bad_product["relatedParty"] = [
+            {"id": self._customer_id, "role": "Seller"},
+            {"id": "another-customer", "role": views.settings.CUSTOMER_ROLE},
+        ]
+        service_response = MagicMock()
+        service_response.json.side_effect = [[bad_service] * 100, [self.service]]
+        product_response = MagicMock()
+        product_response.json.side_effect = [[bad_product] * 100, [self.product]]
+        get.side_effect = [service_response, service_response, product_response, product_response]
+
+        self._request()
+
+        self.assertEqual(4, get.call_count)
+        self.assertEqual([0, 100, 0, 100], [c.kwargs["params"]["offset"] for c in get.call_args_list])
+        self.assertEqual(
+            {"serviceCharacteristic.value": self._file_id, "offset": 0, "limit": 100},
+            get.call_args_list[0].kwargs["params"],
+        )
+        self.assertEqual(
+            {
+                "realizingService.id": "service-1",
+                "relatedParty.id": self._customer_id,
+                "status": "active",
+                "offset": 0,
+                "limit": 100,
+            },
+            get.call_args_list[2].kwargs["params"],
+        )
+        self.serve.assert_called_once()

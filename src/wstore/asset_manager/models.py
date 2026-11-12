@@ -77,6 +77,8 @@ class Resource(models.Model):
 class ResourcePlugin(models.Model):
     _id = models.ObjectIdField()
     plugin_id = models.CharField(max_length=100)
+    type = models.CharField(max_length=20, choices=(("service", "service"), ("resource", "resource")), default="service")
+    category_id = models.CharField(max_length=100, blank=True, null=True)
     name = models.CharField(max_length=100)
     version = models.CharField(max_length=50)
     version_history = models.JSONField(default=[])
@@ -84,7 +86,7 @@ class ResourcePlugin(models.Model):
     form_order = models.JSONField(default=[])  # String List
     module = models.CharField(max_length=200)
     media_types = models.JSONField(default=[])  # String List
-    formats = models.JSONField(default=[])  # String List
+    requires_file = models.BooleanField()
     overrides = models.JSONField(default=[])  # String List
     options = models.JSONField(default={})  # Dict
     form = models.JSONField(default={})  # Dict
