@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from logging import getLogger
+from os import environ
 import requests
 from decimal import ROUND_HALF_UP, Decimal
 from datetime import datetime
@@ -28,8 +29,8 @@ from django.conf import settings
 
 from wstore.store_commons.utils.url import get_service_url
 
-WSDL_URL = "https://ec.europa.eu/taxation_customs/tedb/ws/VatRetrievalService.wsdl"
-ENDPOINT_URL = "https://ec.europa.eu/taxation_customs/tedb/ws/"
+ENDPOINT_URL = environ.get("BAE_CB_VAT_URL", "https://ec.europa.eu/taxation_customs/tedb/ws/").rstrip("/") + "/"
+WSDL_URL = ENDPOINT_URL + "VatRetrievalService.wsdl"
 logger = getLogger("wstore.default_logger")
 
 class PriceEngine:
