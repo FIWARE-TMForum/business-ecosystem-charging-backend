@@ -2305,15 +2305,14 @@ class TerminationDispatchTests(SimpleTestCase):
         for plugin in self.plugins.values():
             self.assertEqual([], plugin.method_calls)
 
-    def test_failure_propagates_and_stops_remaining_hooks(self):
+    def test_failure_is_logged_and_remaining_termination_hooks_continue(self):
         self.plugins["service"].on_service_termination.side_effect = PluginError("cleanup failed")
         with self.assertLogs("wstore.default_logger", level="ERROR"):
-            with self.assertRaisesRegex(PluginError, "cleanup failed"):
-                self.dispatch()
-        self.plugins["resource"].on_resource_termination.assert_not_called()
+            self.dispatch()
+        self.plugins["resource"].on_resource_termination.assert_called_once()
         self.inventory.patch_product.assert_not_called()
 
-    def test_invalid_context_blocks_termination(self):
+    def test_invalid_termination_context_is_logged_without_propagation(self):
         for product, raw_order in (
             ({"id": "wrong"}, self.raw_order),
             (self.product, None),
@@ -2323,24 +2322,21 @@ class TerminationDispatchTests(SimpleTestCase):
                 self.inventory.get_product.return_value = product
                 self.OrderingClient.return_value.get_order.return_value = raw_order
                 with self.assertLogs("wstore.default_logger", level="ERROR"):
-                    with self.assertRaises(PluginError):
-                        self.dispatch()
+                    self.dispatch()
         self._load_plugin_model.assert_not_called()
 
-    def test_missing_provider_blocks_termination(self):
+    def test_missing_provider_is_logged_without_propagation(self):
         self.product["relatedParty"] = [{"id": "buyer", "role": "Buyer"}]
         with self.assertLogs("wstore.default_logger", level="ERROR"):
-            with self.assertRaises(ServiceError):
-                self.dispatch()
+            self.dispatch()
         for plugin in self.plugins.values():
             self.assertEqual([], plugin.method_calls)
 
-    def test_invalid_reference_blocks_termination(self):
+    def test_invalid_reference_is_logged_and_other_termination_hooks_continue(self):
         self.inventory.get_service.return_value = {"id": "wrong"}
         with self.assertLogs("wstore.default_logger", level="ERROR"):
-            with self.assertRaises(ServiceError):
-                self.dispatch()
-        self.plugins["resource"].on_resource_termination.assert_not_called()
+            self.dispatch()
+        self.plugins["resource"].on_resource_termination.assert_called_once()
 
     def test_inherited_termination_hooks_are_optional(self):
         self._load_plugin_model.side_effect = lambda kind: (
@@ -2585,3 +2581,47 @@ class PluginUninstallApiTests(SimpleTestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(self.views.get_plugin_info(model), json.loads(response.content))
         self.loader_class.assert_not_called()
+
+
+class RenewalDispatchTests(SimpleTestCase):
+    setUp = TerminationDispatchTests.setUp
+
+    def test_both_domains_receive_buyer_inventory_context_and_settled_bill_id(self):
+        decorators.on_product_renewal(self.local_order, self.contract, 'renewal-bill')
+        for kind, plugin in self.plugins.items():
+            getattr(plugin, 'on_' + kind + '_renewal').assert_called_once_with(
+                self.provider, self.buyer, self.instances[kind], self.product, self.raw_order, self.contract,
+                customer_bill_id='renewal-bill',
+            )
+            self.assertEqual(['on_' + kind + '_renewal'], [entry[0] for entry in plugin.method_calls])
+        for read in self.catalog_reads:
+            read.assert_not_called()
+        self.inventory.patch_product.assert_not_called()
+        self.inventory.activate_product.assert_not_called()
+
+    @parameterized.expand([('service',), ('resource',)])
+    def test_each_domain_can_receive_renewal_alone(self, kind):
+        other = 'resource' if kind == 'service' else 'service'
+        del self.product['realizing' + other.title()]
+        decorators.on_product_renewal(self.local_order, self.contract, 'renewal-bill')
+        getattr(self.plugins[kind], 'on_' + kind + '_renewal').assert_called_once()
+        self.assertEqual([], self.plugins[other].method_calls)
+
+    def test_failed_renewal_notification_is_logged_and_other_instances_continue(self):
+        self.plugins['service'].on_service_renewal.side_effect = PluginError('renewal unavailable')
+        with self.assertLogs('wstore.default_logger', level='ERROR'):
+            decorators.on_product_renewal(self.local_order, self.contract, 'renewal-bill')
+        self.plugins['resource'].on_resource_renewal.assert_called_once()
+        self.inventory.patch_product.assert_not_called()
+
+    def test_instances_without_installed_plugin_skip_renewal(self):
+        self._get_plugin_model.side_effect = None
+        self._get_plugin_model.return_value = None
+        decorators.on_product_renewal(self.local_order, self.contract, 'renewal-bill')
+        self._load_plugin_model.assert_not_called()
+
+    def test_default_renewal_hooks_are_optional_and_accept_bill_id(self):
+        self._load_plugin_model.side_effect = lambda kind: (
+            ServicePlugin if kind == 'service' else ResourcePluginHandler
+        )(object())
+        decorators.on_product_renewal(self.local_order, self.contract, 'renewal-bill')

@@ -261,8 +261,11 @@ class InventoryClient:
         from wstore.asset_manager.resource_plugins.decorators import on_product_termination
         from wstore.ordering.models import Order
 
-        order = Order.get_by_product_id(product_id)
-        on_product_termination(order, order.get_product_contract(product_id))
+        try:
+            order = Order.get_by_product_id(product_id)
+            on_product_termination(order, order.get_product_contract(product_id))
+        except Exception:
+            logger.exception("Plugin termination notification failed for product %s", product_id)
 
         # Keep track of the resources/services already patched so they can be
         # rolled back if a later patch fails

@@ -219,7 +219,7 @@ class PaymentRecoveryTestCase(SimpleTestCase):
         self.command._billing_client.close_unpaid_customer_bill.assert_called_once_with(self.cb)
 
     def test_termination_failure_preserves_bill_for_recovery(self):
-        self.command._inventory_client.terminate_product.side_effect = RuntimeError('plugin cleanup failed')
+        self.command._inventory_client.terminate_product.side_effect = RuntimeError('inventory operation failed')
         with self.assertRaises(RuntimeError):
             self.command._process_cb(self.cb)
         self.command._billing_client.close_unpaid_customer_bill.assert_not_called()

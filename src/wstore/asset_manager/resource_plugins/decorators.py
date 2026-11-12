@@ -244,7 +244,7 @@ def _get_product_organization(product, role):
     return Organization.objects.get(actor_id=party_ids.pop())
 
 
-def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False):
+def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False, **context):
     """Dispatch to realizing instances, propagating failures when the operation requires it."""
     inventory = InventoryClient()
     organizations = None
@@ -279,7 +279,7 @@ def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error
                             _get_product_organization(product, settings.CUSTOMER_ROLE),
                         )
                     provider, buyer = organizations
-                    getattr(plugin, "on_" + plugin_type + "_" + event)(provider, buyer, instance, product, order, contract)
+                    getattr(plugin, "on_" + plugin_type + "_" + event)(provider, buyer, instance, product, order, contract, **context)
             except Exception:
                 logger.exception(
                     "%s %s notification failed for order %s, product %s, %s %s",
@@ -299,8 +299,18 @@ def on_product_activation(product, order, contract=None):
     _notify_inventory_plugins(product, order, contract, "activation", raise_on_error=True)
 
 
+def on_product_renewal(order, contract, customer_bill_id):
+    """Notify purchased instances of settlement without interrupting processing."""
+    try:
+        product = InventoryClient().get_product(contract.product_id)
+        raw_order = OrderingClient().get_order(order.order_id)
+        _notify_inventory_plugins(product, raw_order, contract, "renewal", customer_bill_id=customer_bill_id)
+    except Exception:
+        logger.exception("Renewal notification failed for bill %s", customer_bill_id)
+
+
 def on_product_termination(order, contract):
-    """Run plugin cleanup for the purchase termination operation."""
+    """Notify plugins of product termination without blocking the operation."""
     try:
         product = InventoryClient().get_product(contract.product_id)
         if not isinstance(product, dict) or product.get("id") != contract.product_id:
@@ -308,10 +318,9 @@ def on_product_termination(order, contract):
         raw_order = OrderingClient().get_order(order.order_id)
         if not isinstance(raw_order, dict) or raw_order.get("id") != order.order_id:
             raise PluginError("Invalid order for product termination")
-        _notify_inventory_plugins(product, raw_order, contract, "termination", raise_on_error=True)
+        _notify_inventory_plugins(product, raw_order, contract, "termination")
     except Exception:
-        logger.exception("Termination failed for order %s, product %s", order.order_id, contract.product_id)
-        raise
+        logger.exception("Termination notification failed for order %s, product %s", order.order_id, contract.product_id)
 
 
 def process_product_notification(order, contract, type_):

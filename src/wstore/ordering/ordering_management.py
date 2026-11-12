@@ -30,6 +30,7 @@ from wstore.admin.users.notification_handler import NotificationsHandler
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.asset_manager.resource_plugins.decorators import (
     on_product_activation,
+    on_product_renewal,
 )
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
@@ -612,28 +613,58 @@ class OrderingManager:
 
         logger.info("Item completed")
 
-    def complete_cb_webhook(self, customer_bill_id):
-        db = get_database_connection()
-        order_model = None
+    def _get_order_model_by_bill(self, customer_bill_id):
+        try:
+            order_model = Order.get_by_customer_bill_id(customer_bill_id)
+        except OrderingError:
+            order_model = None
+
+        return order_model
+
+    def _get_order_model_by_product(self, customer_bill_id):
+        # Scheduled recurring bills reference the product through their ACBRs.
+        renewal_product_id = BillingClient().get_product_id_by_cb(customer_bill_id)
+        if not renewal_product_id:
+            return None, None
 
         try:
-            order_model: Order = Order.get_by_customer_bill_id(customer_bill_id)
+            order_model = Order.get_by_product_id(renewal_product_id)
+        except OrderingError:
+            logger.info("No local purchase for settled bill %s", customer_bill_id)
+            return None, None
 
-            pre_value = db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": True}})
-            if not pre_value or "_lock" in pre_value and pre_value["_lock"]:
-                order_model = None
-                return {"locked": True}
+        return order_model, renewal_product_id
 
-            contract: Contract = order_model.get_contract_by_cb_id(customer_bill_id) # throw exception for manual procs
-            if contract.processed == False:
+    def complete_cb_webhook(self, customer_bill_id):
+        db = get_database_connection()
+        order_model = self._get_order_model_by_bill(customer_bill_id)
+
+        if order_model is None:
+            # This is a recurring bill
+            order_model, renewal_product_id = self._get_order_model_by_product(customer_bill_id)
+
+            if order_model is None:
+                return
+
+            contract = order_model.get_product_contract(renewal_product_id)
+            on_product_renewal(order_model, contract, customer_bill_id)
+
+        else:
+            try:
+                pre_value = db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": True}})
+                if not pre_value or "_lock" in pre_value and pre_value["_lock"]:
+                    order_model = None
+                    return {"locked": True}
+
+                contract = order_model.get_contract_by_cb_id(customer_bill_id)
+                if contract.processed:
+                    return
+
                 order = self.ordering_client.get_order(order_model.order_id)
                 self.notify_item_completed(order_model, contract, order)
-        except Exception as e:
-            logger.error(f"Error processing customer bill {customer_bill_id}: {e}")
-            logger.info("Probably automatic recurring/usage customer bills")
-        finally:
-            if order_model is not None:
-                db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})
+            finally:
+                if order_model is not None:
+                    db.wstore_order.find_one_and_update({"_id": order_model.pk}, {"$set": {"_lock": False}})
 
     def process_order_completed(self, raw_order): # for manual procurement
         # TBD: It is easy to set a checking that only allows activation of product if it was paid previously

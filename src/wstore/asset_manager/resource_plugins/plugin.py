@@ -227,7 +227,7 @@ class ServicePlugin(Plugin):
         pass
 
     def on_service_termination(self, provider, buyer, service, product, order, contract=None):
-        """Release the inventory service; raise on failure. Must tolerate retries."""
+        """Notify service termination; notification failure does not block termination."""
         pass
 
     def on_service_modification(
@@ -236,8 +236,8 @@ class ServicePlugin(Plugin):
         """Apply proposed changes to an existing service, keeping its specification."""
         pass
 
-    def on_service_renewal(self, provider, service_spec, service, product, order, contract=None):
-        """Extend service entitlement after successful renewal."""
+    def on_service_renewal(self, provider, buyer, service, product, order, contract=None, *, customer_bill_id):
+        """Notify settled renewal; notification failure does not block processing."""
         pass
 
     def get_pending_accounting(self, service, contract, order):
@@ -311,7 +311,7 @@ class ResourcePlugin(Plugin):
         pass
 
     def on_resource_termination(self, provider, buyer, resource, product, order, contract=None):
-        """Release the inventory resource; raise on failure. Must tolerate retries."""
+        """Notify resource termination; notification failure does not block termination."""
         pass
 
     def on_resource_modification(
@@ -320,8 +320,8 @@ class ResourcePlugin(Plugin):
         """Apply proposed changes to an existing resource, keeping its specification."""
         pass
 
-    def on_resource_renewal(self, provider, resource_spec, resource, product, order, contract=None):
-        """Extend resource entitlement after successful renewal."""
+    def on_resource_renewal(self, provider, buyer, resource, product, order, contract=None, *, customer_bill_id):
+        """Notify settled renewal; notification failure does not block processing."""
         pass
 
     def get_pending_accounting(self, resource, contract, order):

@@ -100,49 +100,47 @@ class RetryPendingTerminationsTestCase(TestCase):
         pending1.delete.assert_called_once()
         pending2.delete.assert_called_once()
 
-    def test_plugin_failure_keeps_pending_and_other_products_continue(self):
+    def test_plugin_failure_does_not_block_termination_of_either_product(self):
         pending1 = _build_pending("product-1", [], [])
         pending2 = _build_pending("product-2", [], [])
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending1, pending2]
         client = self.use_real_inventory_termination()
-        self.on_product_termination.side_effect = [RuntimeError("cleanup failed"), None]
-        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
+        self.on_product_termination.side_effect = [RuntimeError("notification failed"), None]
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
             retry_pending_terminations.Command().handle()
-        pending1.delete.assert_not_called()
+        pending1.delete.assert_called_once()
         pending2.delete.assert_called_once()
-        client.patch_product.assert_called_once_with("product-2", ANY)
+        client.patch_product.assert_any_call("product-1", ANY)
+        client.patch_product.assert_any_call("product-2", ANY)
         self.assertEqual(2, self.on_product_termination.call_count)
 
-    def test_retry_runs_plugins_before_inventory_and_deletes_only_after_success(self):
+    def test_notification_failure_does_not_prevent_inventory_update_or_pending_deletion(self):
         pending = _build_pending("product-1", [], [])
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending]
         client = self.use_real_inventory_termination()
         sequence = MagicMock()
-        sequence.attach_mock(self.on_product_termination, "cleanup")
+        sequence.attach_mock(self.on_product_termination, "notification")
         sequence.attach_mock(client.patch_product, "inventory")
         sequence.attach_mock(pending.delete, "done")
-        self.on_product_termination.side_effect = [RuntimeError("cleanup failed"), None]
-        command = retry_pending_terminations.Command()
-        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
-            command.handle()
+        self.on_product_termination.side_effect = RuntimeError("notification failed")
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
+            retry_pending_terminations.Command().handle()
         order = self.get_order.return_value
-        cleanup = call.cleanup(order, order.get_product_contract.return_value)
-        self.assertEqual([cleanup], sequence.mock_calls)
-        command.handle()
         self.assertEqual([
-            cleanup, cleanup, call.inventory("product-1", ANY), call.done()
+            call.notification(order, order.get_product_contract.return_value),
+            call.inventory("product-1", ANY), call.done(),
         ], sequence.mock_calls)
 
-    def test_context_lookup_failure_keeps_pending_without_inventory_updates(self):
+    def test_notification_context_failure_does_not_block_inventory_termination(self):
         pending = _build_pending("product-1", [], [])
         retry_pending_terminations.PendingTermination.objects.all.return_value = [pending]
         client = self.use_real_inventory_termination()
         self.get_order.side_effect = RuntimeError("order unavailable")
-        with self.assertLogs("wstore.management.commands.retry_pending_terminations", level="ERROR"):
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
             retry_pending_terminations.Command().handle()
         self.on_product_termination.assert_not_called()
-        client.patch_product.assert_not_called()
-        pending.delete.assert_not_called()
+        client.patch_product.assert_called_once_with("product-1", ANY)
+        pending.delete.assert_called_once()
 
     def test_termination_failure_does_not_delete_and_continues(self):
         pending1 = _build_pending("product-1", [], [])

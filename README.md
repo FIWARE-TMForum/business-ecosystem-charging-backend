@@ -60,8 +60,8 @@ records without a failure timestamp start their window when a failure is first
 observed; historical failure dates are not inferred from bill or attempt creation.
 
 Products remain active during recovery. After expiry, an unsuccessful completed
-attempt causes whole-product termination through the existing plugin cleanup and
-termination recovery flow. A bill without a payment record follows the existing
+attempt causes whole-product termination through the existing termination flow
+and inventory-failure recovery. A bill without a payment record follows the existing
 first-payment flow regardless of its age; expiry applies only to a confirmed
 failed payment attempt. Pending attempts continue through the existing status
 checks; success settles the bill without changing billing periods. An indefinitely
@@ -73,6 +73,13 @@ automatic collection. Bill amounts and applied rates remain unchanged. The
 administrator can interpret unpaid charges using the types and coverage recorded
 in the ACBRs; this software does not adjust or collect debt after termination.
 The existing first-payment request flow is unchanged.
+
+Settled recurring bills notify service/resource renewal plugins through the
+existing CustomerBill webhook worker. Initial purchase completion keeps its own
+path. Renewal and termination notification failures are logged and do not block
+processing or trigger automatic callback retries. Renewal hooks receive
+`customer_bill_id` to identify duplicate notifications. Update plugin
+implementations to the buyer/inventory-based renewal signature before deployment.
 
 # Testing
 

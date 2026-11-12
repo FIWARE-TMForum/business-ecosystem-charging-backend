@@ -991,24 +991,22 @@ class InventoryClientTestCase(TestCase):
         terminate.assert_called_once_with("test-naive-utc", [], [])
         self.assertFalse(PendingTermination.objects.filter(product_id="test-naive-utc").exists())
 
-    def test_plugin_failure_retains_pending_without_inventory_updates(self):
-        self.termination.side_effect = RuntimeError("cleanup failed")
+    def test_plugin_notification_failure_does_not_block_inventory_updates(self):
+        self.termination.side_effect = RuntimeError("notification failed")
         with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
-            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
-                inventory_client.InventoryClient().terminate_product("1")
+            inventory_client.InventoryClient().terminate_product("1")
         inventory_client.PendingTermination.return_value.save.assert_called_once()
-        inventory_client.PendingTermination.return_value.delete.assert_not_called()
-        inventory_client.requests.patch.assert_not_called()
+        inventory_client.PendingTermination.return_value.delete.assert_called_once()
+        inventory_client.requests.patch.assert_called_once()
 
-    def test_context_failure_retains_pending_without_inventory_updates(self):
+    def test_notification_context_failure_does_not_block_inventory_updates(self):
         self.get_order.side_effect = RuntimeError("order unavailable")
         with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
-            with self.assertRaisesRegex(RuntimeError, "order unavailable"):
-                inventory_client.InventoryClient().terminate_product("1")
+            inventory_client.InventoryClient().terminate_product("1")
         inventory_client.PendingTermination.return_value.save.assert_called_once()
-        inventory_client.PendingTermination.return_value.delete.assert_not_called()
+        inventory_client.PendingTermination.return_value.delete.assert_called_once()
         self.termination.assert_not_called()
-        inventory_client.requests.patch.assert_not_called()
+        inventory_client.requests.patch.assert_called_once()
 
     def test_get_product(self):
         client = inventory_client.InventoryClient()

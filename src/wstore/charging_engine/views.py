@@ -82,7 +82,6 @@ class PaymentConfirmation(Resource):
             logger.error("reason: %s", e)
 
     def _set_renovation_states(self, transactions, raw_order, order):
-        # TODO (Step 7): wire on_service_renewal into the actual renewal completion path.
         # The legacy routing to this method is commented out below; verify the active
         # path before integrating. Renewal must not invoke initial service activation.
         inventory_client = InventoryClient()
