@@ -37,7 +37,7 @@ from wstore.admin.users import notification_handler
 from wstore.models import Organization
 from wstore.ordering import inventory_client, ordering_client, ordering_management
 from wstore.ordering.errors import OrderingError, InventoryError
-from wstore.ordering.models import Contract, Offering, Order
+from wstore.ordering.models import Contract, Offering, Order, PaymentRecord
 from wstore.ordering.tests.test_data import *
 
 
@@ -2391,3 +2391,38 @@ class PurchaseNotificationTriggersTestCase(SimpleTestCase):
             inventory.return_value.terminate_product.assert_called_once_with(self.product["id"])
             manager.activate_product.assert_not_called()
             notify.assert_not_called()
+
+
+class PaymentFailureTimestampTestCase(SimpleTestCase):
+    def setUp(self):
+        self.record = PaymentRecord(
+            _id=ObjectId(), customerBill_id='bill-1', payment_type='stripe', payment_reference='pi-1'
+        )
+
+    def test_records_without_failure_history_start_without_a_recovery_anchor(self):
+        self.assertIsNone(self.record.first_failed_at)
+
+    def test_first_failure_is_persisted_without_overwriting_an_existing_timestamp(self):
+        first_failure = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager, patch.object(self.record, 'refresh_from_db') as refresh:
+            refresh.side_effect = lambda **kwargs: setattr(self.record, 'first_failed_at', first_failure)
+            self.record.mark_failed(first_failure)
+            manager.filter.assert_called_once_with(pk=self.record.pk, first_failed_at__isnull=True)
+            manager.filter.return_value.update.assert_called_once_with(first_failed_at=first_failure)
+            refresh.assert_called_once_with(fields=['first_failed_at'])
+        self.assertEqual(self.record.first_failed_at, first_failure)
+
+    def test_later_failures_preserve_persisted_anchor_without_another_write(self):
+        self.record.first_failed_at = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager:
+            self.record.mark_failed(datetime(2026, 6, 2))
+            manager.filter.assert_not_called()
+        self.assertEqual(self.record.first_failed_at, datetime(2026, 6, 1))
+
+    def test_concurrent_first_failure_uses_the_timestamp_already_stored(self):
+        earlier_failure = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager, patch.object(self.record, 'refresh_from_db') as refresh:
+            manager.filter.return_value.update.return_value = 0
+            refresh.side_effect = lambda **kwargs: setattr(self.record, 'first_failed_at', earlier_failure)
+            self.record.mark_failed(datetime(2026, 6, 2))
+        self.assertEqual(self.record.first_failed_at, earlier_failure)

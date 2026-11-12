@@ -21,8 +21,8 @@
 
 from datetime import datetime
 
-from django.test import TestCase
-from mock import MagicMock
+from django.test import SimpleTestCase, TestCase
+from mock import MagicMock, patch
 from parameterized import parameterized
 
 from wstore.charging_engine.charging import billing_client
@@ -125,6 +125,35 @@ class BillingClientTestCase(TestCase):
 
         # session.send.assert_called_once_with(preped)
         # session.send().raise_for_status.assert_called_once_with()
+
+
+class UnpaidBillClosureTestCase(SimpleTestCase):
+    def setUp(self):
+        self.request_patch = patch.object(billing_client.requests, 'patch')
+        self.request = self.request_patch.start()
+        self.addCleanup(self.request_patch.stop)
+        url_patch = patch.object(billing_client, 'get_service_url', return_value='http://billing/customerBill/bill-1')
+        url_patch.start()
+        self.addCleanup(url_patch.stop)
+        self.client = billing_client.BillingClient()
+        self.bill = {'id': 'bill-1', 'taxIncludedAmount': {'unit': 'EUR', 'value': 30}}
+
+    def test_closure_preserves_all_existing_bill_amounts(self):
+        self.bill['amountDue'] = {'unit': 'EUR', 'value': 30}
+        self.bill['remainingAmount'] = {'unit': 'EUR', 'value': 30}
+        self.client.close_unpaid_customer_bill(self.bill)
+        self.assertEqual(self.request.call_args[1]['json'], {'state': 'onHold'})
+        for field in ('taxIncludedAmount', 'amountDue', 'remainingAmount'):
+            self.assertEqual(self.bill[field], {'unit': 'EUR', 'value': 30})
+
+    def test_closure_does_not_require_rates_or_amounts(self):
+        self.client.close_unpaid_customer_bill({'id': 'bill-1'})
+        self.assertEqual(self.request.call_args[1]['json'], {'state': 'onHold'})
+
+    def test_failed_bill_update_propagates_for_later_cleanup(self):
+        self.request.return_value.raise_for_status.side_effect = RuntimeError('billing API unavailable')
+        with self.assertRaises(RuntimeError):
+            self.client.close_unpaid_customer_bill(self.bill)
 
 
 class BillingClientAPITestCase(TestCase):

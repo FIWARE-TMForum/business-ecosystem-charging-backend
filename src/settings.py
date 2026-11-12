@@ -352,3 +352,5 @@ DPAS_KEY = environ.get("DPAS_KEY", "")
 
 # PAYMENT AND BILLING RECURRING
 BILLING_HTTP_ENABLED = environ.get("BAE_CB_BILLING_BY_HTTP_TEST_ENABLED", "False") == "True"
+# Must be positive and shorter than each subscription's billing cycle.
+PAYMENT_RECOVERY_GRACE_HOURS = float(environ.get("BAE_CB_PAYMENT_RECOVERY_GRACE_HOURS", "72"))

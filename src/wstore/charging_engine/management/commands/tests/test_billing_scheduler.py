@@ -306,6 +306,12 @@ class BillingSchedulerProcessProductTestCase(TestCase):
         cb_state = kwargs.get("cb_state", args[2] if len(args) > 2 else None)
         self.assertEqual(cb_state, "new")
 
+    def test_renewal_bill_uses_existing_bill_date_without_extra_due_date(self):
+        self.command._process_product(PRODUCT, TODAY)
+        bill = self.command._billing_client.create_customer_bill.call_args[0][1]
+        self.assertIn('billDate', bill)
+        self.assertNotIn('paymentDueDate', bill)
+
     def test_gets_usages_for_usage_pop(self):
         self.command._inventory_client.get_price_component.side_effect = [BUNDLE_POP, USAGE_POP]
         usage_price = {**PRICE, "priceId": USAGE_POP_ID, "priceType": "usage"}
