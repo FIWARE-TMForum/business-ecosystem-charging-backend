@@ -558,10 +558,10 @@ class AdminViewTestCase(TestCase):
         request = self._mock_request({}, is_staff=True)
         request.user.is_anonymous = True
 
-        views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
+        response = views.NotificationConfigConnectionTest(permitted_methods=("POST",)).create(request)
 
         views.NotificationsHandler.assert_not_called()
-        self.assertEqual(401, views.build_response.call_args[0][1])
+        self.assertEqual(401, response.status_code)
 
     def test_smtp_connection_test_returns_controlled_errors(self):
         failures = [
