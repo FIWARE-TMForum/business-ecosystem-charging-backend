@@ -295,7 +295,7 @@ def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error
 
 
 def on_product_activation(product, order, contract=None):
-    """Activate service/resource instances before marking the product active."""
+    """Provision or reconfigure instances for automatic add/modify completion."""
     _notify_inventory_plugins(product, order, contract, "activation", raise_on_error=True)
 
 

@@ -2150,13 +2150,13 @@ class FilePluginContractTests(SimpleTestCase):
         self.assertFalse(hasattr(Plugin, "on_resource_activation"))
         self.assertFalse(issubclass(ServicePlugin, ResourcePluginHandler))
         self.assertFalse(issubclass(ResourcePluginHandler, ServicePlugin))
-        for suffix in ("activation", "termination", "modification", "renewal"):
+        for suffix in ("activation", "termination", "renewal"):
             self.assertTrue(hasattr(ServicePlugin, "on_service_" + suffix))
             self.assertFalse(hasattr(ServicePlugin, "on_resource_" + suffix))
             self.assertTrue(hasattr(ResourcePluginHandler, "on_resource_" + suffix))
             self.assertFalse(hasattr(ResourcePluginHandler, "on_service_" + suffix))
 
-        for suffix in ("suspension", "resumption"):
+        for suffix in ("suspension", "resumption", "modification"):
             self.assertFalse(hasattr(ServicePlugin, "on_service_" + suffix))
             self.assertFalse(hasattr(ResourcePluginHandler, "on_resource_" + suffix))
 

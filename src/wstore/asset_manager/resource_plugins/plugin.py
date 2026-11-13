@@ -223,17 +223,15 @@ class ServicePlugin(Plugin):
         pass
 
     def on_service_activation(self, provider, buyer, service, product, order, contract=None):
-        """Provision the inventory service; raise on failure to prevent product activation."""
+        """Provision or reconfigure the service for automatic add/modify completion.
+
+        Use the updated product and order action to handle existing provisioning
+        safely. Raise on failure to prevent product activation and completion.
+        """
         pass
 
     def on_service_termination(self, provider, buyer, service, product, order, contract=None):
         """Notify service termination; notification failure does not block termination."""
-        pass
-
-    def on_service_modification(
-        self, provider, service_spec, service, product, order, changes, contract=None
-    ):
-        """Apply proposed changes to an existing service, keeping its specification."""
         pass
 
     def on_service_renewal(self, provider, buyer, service, product, order, contract=None, *, customer_bill_id):
@@ -307,17 +305,15 @@ class ResourcePlugin(Plugin):
         pass
 
     def on_resource_activation(self, provider, buyer, resource, product, order, contract=None):
-        """Provision the inventory resource; raise on failure to prevent product activation."""
+        """Provision or reconfigure the resource for automatic add/modify completion.
+
+        Use the updated product and order action to handle existing provisioning
+        safely. Raise on failure to prevent product activation and completion.
+        """
         pass
 
     def on_resource_termination(self, provider, buyer, resource, product, order, contract=None):
         """Notify resource termination; notification failure does not block termination."""
-        pass
-
-    def on_resource_modification(
-        self, provider, resource_spec, resource, product, order, changes, contract=None
-    ):
-        """Apply proposed changes to an existing resource, keeping its specification."""
         pass
 
     def on_resource_renewal(self, provider, buyer, resource, product, order, contract=None, *, customer_bill_id):
