@@ -3,6 +3,7 @@ from importlib import reload
 from django.conf import settings
 from django.test import TestCase
 from parameterized import parameterized
+from mock import patch
 import wstore.store_commons.utils.http as http_utils
 import wstore.rss.views as rss_views
 from django.test.client import Client
@@ -35,8 +36,8 @@ class AlgorithmViewsTestCase(TestCase):
         settings.RSS = "http://testhost.com/rssHost/"
         settings.STORE_NAME = "wstore"
 
-        http_utils.authentication_required = lambda x: x
-        reload(rss_views)
+        with patch.object(http_utils, "authentication_required", lambda x: x):
+            reload(rss_views)
         # Create Mocks
         TestCase.setUp(self)
 

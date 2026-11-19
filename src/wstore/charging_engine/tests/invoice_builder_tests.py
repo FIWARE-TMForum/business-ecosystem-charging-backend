@@ -20,7 +20,7 @@
 
 from bson.objectid import ObjectId
 from django.test import TestCase
-from mock import MagicMock
+from mock import MagicMock, patch
 from parameterized import parameterized
 
 from wstore.charging_engine import invoice_builder
@@ -292,18 +292,18 @@ class InvoiceBuilderTestCase(TestCase):
         self._file_handler = MagicMock()
         invoice_builder.codecs.open.return_value = self._file_handler
 
-        self._old_exists = invoice_builder.os.path.exists
-        invoice_builder.os.path.exists = MagicMock()
-
+        for target, name in (
+            (invoice_builder.os.path, "exists"),
+            (invoice_builder.os, "listdir"),
+            (invoice_builder.os, "remove"),
+        ):
+            patcher = patch.object(target, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         invoice_builder.os.path.exists.side_effect = [True, True, False]
-        invoice_builder.os.listdir = MagicMock()
         invoice_builder.os.listdir.return_value = ["file1.pdf", "file1.html"]
-        invoice_builder.os.remove = MagicMock()
 
         invoice_builder.subprocess = MagicMock()
-
-    def tearDown(self):
-        invoice_builder.os.path.exists = self._old_exists
 
     @parameterized.expand(
         [

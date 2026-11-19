@@ -28,7 +28,7 @@ from bson import ObjectId
 from django.core.exceptions import ObjectDoesNotExist
 from django.test import TestCase
 from django.test.utils import override_settings
-from mock import MagicMock, mock_open
+from mock import MagicMock, mock_open, patch
 from parameterized import parameterized
 
 from wstore.asset_manager import asset_manager, models
@@ -224,7 +224,9 @@ class UploadAssetTestCase(TestCase):
         self._file.read.return_value = "Test data content".encode()
         asset_manager.os.path.isdir.return_value = False
         # asset_manager.os.mkdir = MagicMock()
-        asset_manager.os.makedirs = MagicMock()
+        makedirs_patch = patch.object(asset_manager.os, "makedirs")
+        makedirs_patch.start()
+        self.addCleanup(makedirs_patch.stop)
 
     def _file_conflict(self):
         asset_manager.os.path.exists.return_value = True
@@ -795,9 +797,8 @@ class UploadAssetTestCase(TestCase):
 class ResourceModelTestCase(TestCase):
     tags = ("resource-model",)
 
+    @override_settings(SITE="http://testserver.com/")
     def test_resource_model(self):
-        models.settings.SITE = "http://testserver.com/"
-
         url = "http://example.com/media/resource"
 
         from wstore.models import Organization
@@ -817,5 +818,3 @@ class ResourceModelTestCase(TestCase):
         uri = "http://testserver.com/charging/api/assetManagement/assets/" + str(res.pk)
         self.assertEquals(url, res.get_url())
         self.assertEquals(uri, res.get_uri())
-
-        reload(models)

@@ -23,10 +23,9 @@
 import json
 from copy import deepcopy
 from datetime import datetime
-from importlib import reload
 
 from django.core.exceptions import PermissionDenied
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from mock import MagicMock, patch
 from parameterized import parameterized
 
@@ -292,20 +291,21 @@ NON_PRODUCT_USAGE = {
 }
 
 
+@override_settings(
+    USAGE="http://example.com",
+    INVENTORY="http://localhost:8080/DSProductInventory",
+    SITE="http://example.com/",
+)
 class UsageClientTestCase(TestCase):
     tags = ("usage-client",)
 
     def setUp(self):
-        usage_client.settings.USAGE = "http://example.com"
-        usage_client.requests = MagicMock()
-        self._old_inv = usage_client.settings.INVENTORY
-        usage_client.settings.INVENTORY = "http://localhost:8080/DSProductInventory"
+        requests_patch = patch.object(usage_client, "requests")
+        requests_patch.start()
+        self.addCleanup(requests_patch.stop)
 
         self._customer = "test_customer"
         self._product_id = "1"
-
-    def tearDown(self):
-        usage_client.settings.INVENTORY = self._old_inv
 
     @parameterized.expand(
         [
@@ -429,7 +429,6 @@ class UsageClientTestCase(TestCase):
                 self._product_id,
             ),
         )
-        reload(usage_client)
 
 
 MANAGER_DENIED_RESP = {"result": "error", "error": "Permission denied"}

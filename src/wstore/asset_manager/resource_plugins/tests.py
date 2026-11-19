@@ -129,10 +129,7 @@ class PluginLoaderTestCase(TestCase):
             (
                 "pull_accounting",
                 "test_plugin_8.zip",
-                None,
-                None,
-                Exception,
-                "Call to configure expecs",
+                {**PLUGIN_INFO_ACCOUNTING, "name": "test plugin 8"},
             ),
             (
                 "invalid_zip",
@@ -254,6 +251,7 @@ class PluginLoaderTestCase(TestCase):
             )
             self.assertEquals(plugin_model.media_types, expected.get("media_types", []))
             self.assertEquals(plugin_model.form, expected.get("form", {}))
+            self.assertEqual(plugin_model.pull_accounting, expected.get("pull_accounting", False))
 
             # Check plugin files
             test_plugin_dir = os.path.join(self.plugin_dir, plugin_dir_name)

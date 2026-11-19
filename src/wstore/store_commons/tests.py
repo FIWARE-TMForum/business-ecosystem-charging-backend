@@ -238,10 +238,12 @@ class RollbackTestCase(TestCase):
     tags = ("rollback",)
 
     def setUp(self):
+        self._old_os = rollback.os
         self._old_exists = rollback.os.path.exists
         rollback.os.path.exists = MagicMock()
 
     def tearDown(self):
+        rollback.os = self._old_os
         rollback.os.path.exists = self._old_exists
 
     def test_rollback_correct(self):
