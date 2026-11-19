@@ -30,7 +30,6 @@ OFFERING = {
     "version": "1.0",
     "description": "Example offering description",
     "productSpecification": {"href": "http://producturl.com/"},
-    "serviceCandidate": {"id": "productClass"},
     "productOfferingPrice": [{
         "id": "urn:ProductOfferingPrice:1",
         "href": "urn:ProductOfferingPrice:1"

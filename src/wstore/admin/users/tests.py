@@ -23,6 +23,7 @@ from importlib import reload
 import smtplib
 
 from bson import ObjectId
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase, override_settings
 from mock import MagicMock, call, mock_open, patch
@@ -271,35 +272,22 @@ class NotificationsTestCase(TestCase):
         )
 
     def test_acquisition_notification(self):
-        # Execute method
-        handler = notification_handler.NotificationsHandler()
-        handler.send_acquired_notification(self._order)
+        buyer = {"id": "buyer-party", "role": settings.CUSTOMER_ROLE}
+        product = {"id": "product-1", "relatedParty": [buyer]}
 
-        # Validate calls
-        self._validate_user_call()
+        with patch.object(notification_handler.NotificationsHandler, "_party_email", return_value="party@example.org"), patch.object(
+            notification_handler.NotificationsHandler, "send_custom_email"
+        ) as send:
+            notification_handler.NotificationsHandler.send_acquired_notification(
+                product, {"id": "offering-1", "name": "Offering1"}
+            )
 
-        notification_handler.MIMEMultipart.assert_called_once_with()
-
-        self.assertEquals(
-            [
-                call("Subject", "Product order accepted"),
-                call("From", "wstore@email.com"),
-                call("To", "user1@email.com,user2@email.com"),
-            ],
-            notification_handler.MIMEMultipart().__setitem__.call_args_list,
-        )
-
-        text = "We have received the payment of your order with reference 61004aba5e05acc115f022f0\n"
-        text += "containing the following product offerings: \n\n"
-        text += "Offering1 with id 1\n\n"
-        text += "Offering2 with id 2\n\n"
-        text += "You can review your orders at: \nhttp://localhost:8000/#/inventory/order\n"
-        text += "and your acquired products at: \nhttp://localhost:8000/#/inventory/product\n"
-
-        notification_handler.MIMEText.assert_called_once_with(text)
-
-        self._validate_multipart_call()
-        self._validate_email_call(notification_handler.MIMEMultipart)
+        recipient, subject, message = send.call_args.args
+        self.assertEqual("party@example.org", recipient)
+        self.assertEqual("Your product is ready", subject)
+        self.assertIn("Offering1", message)
+        self.assertIn("now active", message)
+        notification_handler.User.objects.get.assert_not_called()
 
     def test_renovation_notification(self):
         handler = notification_handler.NotificationsHandler()
@@ -333,21 +321,25 @@ class NotificationsTestCase(TestCase):
         self._validate_email_call(notification_handler.MIMEText, ["user1@email.com"])
 
     def test_provider_notification(self):
-        handler = notification_handler.NotificationsHandler()
-        handler.send_provider_notification(self._order, self._order.get_contracts()[0])
+        seller = {"id": "seller-party", "role": settings.PROVIDER_ROLE}
+        customer = {"id": "buyer-party", "role": settings.CUSTOMER_ROLE, "name": "Customer"}
+        order = {"id": "order-1", "relatedParty": [seller, customer], "productOrderItem": [{
+            "id": "item-1", "action": "add", "productOffering": {"id": "offering-1"},
+            "product": {},
+        }]}
 
-        # Validate calls
-        self._validate_provider_call()
+        with patch.object(notification_handler.NotificationsHandler, "_party_email", return_value="party@example.org"), patch.object(
+            notification_handler.NotificationsHandler, "send_custom_email"
+        ) as send:
+            notification_handler.NotificationsHandler.send_provider_notification(order, ["Offering1"])
 
-        text = "Your product offering with name Offering1 and id 1\n"
-        text += "has been acquired by the user customer\n"
-        text += "Please review you pending orders at: \n\nhttp://localhost:8000/#/inventory/order"
-
-        notification_handler.MIMEText.assert_called_once_with(text)
-
-        self._validate_mime_text_info("Product offering acquired")
-
-        self._validate_email_call(notification_handler.MIMEText)
+        recipient, subject, message = send.call_args.args
+        self.assertEqual("party@example.org", recipient)
+        self.assertEqual("You have a new order", subject)
+        self.assertIn("Offering1", message)
+        self.assertIn("ordered by Customer", message)
+        self.assertNotIn("buyer-party", message)
+        notification_handler.User.objects.get.assert_not_called()
 
     def test_payment_required_notification(self):
         handler = notification_handler.NotificationsHandler()

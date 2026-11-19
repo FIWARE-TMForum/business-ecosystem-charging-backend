@@ -56,6 +56,14 @@ urlpatterns = [
         offering_views.ValidateCollection(permitted_methods=("POST",)),
     ),
     url(
+        r"^charging/api/assetManagement/assets/validateServiceJob/?$",
+        offering_views.ValidateServiceCollection(permitted_methods=("POST",)),
+    ),
+    url(
+        r"^charging/api/assetManagement/assets/validateResourceJob/?$",
+        offering_views.ValidateResourceCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/assetManagement/assets/offeringJob/?$",
         offering_views.ValidateOfferingCollection(permitted_methods=("POST",)),
     ),
@@ -76,8 +84,12 @@ urlpatterns = [
         plugins_views.PluginCollection(permitted_methods=("GET",)),
     ),
     url(
+        r"^charging/api/assetManagement/assetTypes/installJob/?$",
+        plugins_views.PluginInstallCollection(permitted_methods=("POST",)),
+    ),
+    url(
         r"^charging/api/assetManagement/assetTypes/(?P<plugin_id>[\w -]+)/?$",
-        plugins_views.PluginEntry(permitted_methods=("GET",)),
+        plugins_views.PluginEntry(permitted_methods=("GET", "DELETE")),
     ),
     url(
         r"^charging/api/assetManagement/chargePeriods/?$",
@@ -118,10 +130,6 @@ urlpatterns = [
     url(
         r"^charging/api/orderManagement/products/renewJob/?$",
         ordering_views.RenovationCollection(permitted_methods=("POST",)),
-    ),
-    url(
-        r"^charging/api/orderManagement/products/unsubscribeJob/?$",
-        ordering_views.UnsubscriptionCollection(permitted_methods=("POST",)),
     ),
     url(
         r"^charging/api/orderManagement/accounting/?$",

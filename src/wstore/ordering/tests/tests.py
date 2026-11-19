@@ -20,21 +20,24 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from copy import deepcopy
+from email import message_from_string
 from datetime import datetime
 from urllib.parse import urlparse
 from datetime import datetime, timezone
 from bson.objectid import ObjectId
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.test.utils import override_settings
-from mock import MagicMock, call
+from mock import MagicMock, call, patch
 from parameterized import parameterized
 
+from wstore.admin.users import notification_handler
 from wstore.models import Organization
 from wstore.ordering import inventory_client, ordering_client, ordering_management
 from wstore.ordering.errors import OrderingError, InventoryError
-from wstore.ordering.models import Contract, Offering, Order
+from wstore.ordering.models import Contract, Offering, Order, PaymentRecord
 from wstore.ordering.tests.test_data import *
 
 
@@ -50,27 +53,20 @@ class OrderingManagementTestCase(TestCase):
     def setUp(self):
         self._customer = MagicMock()
 
+        ordering_client_patch = patch.object(ordering_management, "OrderingClient")
+        ordering_client_patch.start()
+        self.addCleanup(ordering_client_patch.stop)
+
         # Mock order model
         ordering_management.Order = MagicMock()
         self._order_inst = MagicMock()
         ordering_management.Order.objects.create.return_value = self._order_inst
         ordering_management.Order.objects.get.return_value = self._order_inst
 
-        # Mock Offering model
-        ordering_management.Offering = MagicMock()
-        self._offering_inst = MagicMock()
-        self._offering_inst.pk = "61004aba5e05acc115f022f0"
-        self._offering_inst.is_custom = False
-
-        self._order_inst.bundled_offerings = []
-
-        ordering_management.Offering.objects.filter.return_value = []
-        ordering_management.Offering.objects.create.return_value = self._offering_inst
-
         # Mock Contract model
         ordering_management.Contract = MagicMock()
         self._contract_inst = MagicMock()
-        self._contract_inst.offering = "61004aba5e05acc115f022f0"
+        self._contract_inst.offering = "5"
         ordering_management.Contract.return_value = self._contract_inst
 
         # Mock Charging Engine
@@ -88,33 +84,12 @@ class OrderingManagementTestCase(TestCase):
         # Mock organization model
         self._org_inst = MagicMock()
 
-        ordering_management.Organization = MagicMock()
-        ordering_management.Organization.objects.get.return_value = self._org_inst
         self._customer.userprofile.current_organization = self._org_inst
         self._customer.userprofile.access_token = "example_token"
-
-        # Mock Product validator
-        self._validator_inst = MagicMock()
-        ordering_management.ProductValidator = MagicMock()
-        ordering_management.ProductValidator.return_value = self._validator_inst
-        self._validator_inst.parse_characteristics.return_value = (
-            "type",
-            "media_type",
-            "http://location.com",
-        )
-
-        # Mock Resource
-        self._asset_instance = MagicMock()
-        ordering_management.Resource = MagicMock()
-        ordering_management.Resource.objects.get.return_value = self._asset_instance
 
         ordering_management.datetime = MagicMock()
         self._now = datetime(2016, 12, 3)
         ordering_management.datetime.datetime.utcnow.return_value = self._now
-
-        # Mock offering
-        ordering_management.Offering.objects.filter.return_value = [self._offering_inst]
-        ordering_management.Offering.objects.get.return_value = self._offering_inst
 
         # Mock billing client
         self._billing_instance = MagicMock()
@@ -122,21 +97,6 @@ class OrderingManagementTestCase(TestCase):
         ordering_management.BillingClient.return_value = self._billing_instance
 
         self._billing_instance.get_billing_account.return_value = BILLING_ACCOUNT
-
-    def _check_contract_call(self, pricing):
-        ordering_management.Contract.assert_called_once_with(
-            item_id="1",
-            pricing_model=pricing,
-            #revenue_class="productClass",
-            offering=self._offering_inst.pk,
-        )
-
-    def _check_offering_retrieving_call(self):
-        ordering_management.Offering.objects.filter.assert_called_once_with(off_id="20")
-        self.assertEqual(
-            [call(off_id="20"), call(pk=ObjectId("61004aba5e05acc115f022f0"))],
-            ordering_management.Offering.objects.get.call_args_list,
-        )
 
     def _basic_add_checker(self):
         # Check contract creation
@@ -148,9 +108,6 @@ class OrderingManagementTestCase(TestCase):
             options=[]
         )
 
-    def _non_digital_add_checker(self):
-        self._check_offering_retrieving_call()
-
     def _free_add_checker(self):
         ordering_management.Contract.assert_called_once_with(
             item_id="1",
@@ -160,96 +117,8 @@ class OrderingManagementTestCase(TestCase):
             options=[]
         )
 
-    def _basic_discount_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "alteration": {"type": "discount", "period": "one time", "value": 50},
-            }
-        )
-
-    def _recurring_fee_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "alteration": {
-                    "type": "fee",
-                    "period": "recurring",
-                    "value": {"value": "1.00", "duty_free": "0.80"},
-                    "condition": {"operation": "gt", "value": "300.00"},
-                },
-            }
-        )
-
-    def _double_price_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    }
-                ],
-                "single_payment": [
-                    {
-                        "value": "8.00",
-                        "unit": "one time",
-                        "tax_rate": "20.00",
-                        "duty_free": "6.00",
-                    }
-                ],
-            }
-        )
-
-    def _double_usage_checker(self):
-        self._check_offering_retrieving_call()
-        self._check_contract_call(
-            {
-                "general_currency": "EUR",
-                "pay_per_use": [
-                    {
-                        "value": "12.00",
-                        "unit": "megabyte",
-                        "tax_rate": "20.00",
-                        "duty_free": "10.00",
-                    },
-                    {
-                        "value": "8.00",
-                        "unit": "second",
-                        "tax_rate": "20.00",
-                        "duty_free": "6.00",
-                    },
-                ],
-            }
-        )
-
     def _invalid_billing(self):
         self._billing_instance.get_billing_account.side_effect = Exception('Billing error')
-
-    def _non_digital_offering(self):
-        self._validator_inst.parse_characteristics.return_value = (None, None, None)
 
     def _missing_offering(self):
         self._response.status_code = 404
@@ -264,31 +133,6 @@ class OrderingManagementTestCase(TestCase):
 
         ordering_management.requests.get = get
 
-    def _already_owned(self):
-        self._offering_inst.pk = "61004aba5e05acc115f022f0"
-        self._offering_inst.name = "Example offering"
-        self._offering_inst.off_id = "5"
-        self._customer.userprofile.current_organization.acquired_offerings = ["61004aba5e05acc115f022f0"]
-
-    def _already_owned_bundle(self):
-        bundle_offering = MagicMock()
-        bundle_offering.pk = "61004aba5e05acc115f022f0"
-        bundle_offering.name = "Bundle"
-        bundle_offering.off_id = "6"
-        self._offering_inst.bundled_offerings = ["61004aba5e05acc115f022f0"]
-        self._customer.userprofile.current_organization.acquired_offerings = ["61004aba5e05acc115f022f0"]
-
-        ordering_management.Offering.objects.get.side_effect = [
-            self._offering_inst,
-            bundle_offering,
-        ]
-
-    def _multiple_pricing(self):
-        OFFERING["productOfferingPrice"].append(BASIC_PRICING)
-
-    def _missing_offering_local(self):
-        ordering_management.Offering.objects.filter.return_value = []
-
     def _missing_contact(self):
         new_cust = deepcopy(BILLING_ACCOUNT)
         new_cust["contact"] = []
@@ -300,9 +144,6 @@ class OrderingManagementTestCase(TestCase):
             "contactMedium": []
         }]
         self._billing_instance.get_billing_account.return_value = new_cust
-
-    def _terms_not_required(self):
-        self._offering_inst.asset.has_terms = False
 
     @parameterized.expand(
         [
@@ -321,7 +162,7 @@ class OrderingManagementTestCase(TestCase):
                 BASIC_ORDER,
                 BASIC_PRICING,
                 _basic_add_checker,
-                _terms_not_required,
+                None,
                 None,
                 False,
                 OFFERING_NO_TERMS
@@ -334,13 +175,6 @@ class OrderingManagementTestCase(TestCase):
                 _invalid_billing,
                 "OrderingError: Invalid billing account, billing account could not be loaded",
             ),
-            # (
-            #     "non_digital_add",
-            #     BASIC_ORDER,
-            #     BASIC_PRICING,
-            #     _non_digital_add_checker,
-            #     _non_digital_offering,
-            # ),
             (
                 "recurring_add",
                 BASIC_ORDER,
@@ -387,30 +221,6 @@ class OrderingManagementTestCase(TestCase):
                 _missing_offering,
                 "OrderingError: The product offering specified in order item 1 does not exist",
             ),
-            # (
-            #     "already_owned",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _already_owned,
-            #     "OrderingError: The customer already owns the digital product offering Example offering with id 5",
-            # ),
-            # (
-            #     "already_owned_bundle",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _already_owned_bundle,
-            #     "OrderingError: The customer already owns the digital product offering Bundle with id 6",
-            # ),
-            # (
-            #     "offering_not_registered",
-            #     BASIC_ORDER,
-            #     {},
-            #     None,
-            #     _missing_offering_local,
-            #     "OrderingError: The offering 20 has not been previously registered",
-            # ),
             (
                 "missing_postal_address",
                 BASIC_ORDER,
@@ -668,11 +478,6 @@ class OrderingManagementTestCase(TestCase):
         }
 
         ordering = ordering_management.OrderingManager()
-        ordering._build_contract = MagicMock()
-        new_contract = MagicMock()
-        new_contract.pricing_model = new_pricing
-        new_contract.revenue_class = "new_revenue"
-        ordering._build_contract.return_value = new_contract
 
         error = None
         try:
@@ -975,6 +780,12 @@ class InventoryClientTestCase(TestCase):
             "value": "testing_value"
             }
     def setUp(self):
+        termination_patch = patch("wstore.asset_manager.resource_plugins.decorators.on_product_termination")
+        self.termination = termination_patch.start()
+        self.addCleanup(termination_patch.stop)
+        order_patch = patch("wstore.ordering.models.Order.get_by_product_id")
+        self.get_order = order_patch.start()
+        self.addCleanup(order_patch.stop)
         # Mock requests
         inventory_client.requests = MagicMock()
         self.response = MagicMock()
@@ -984,9 +795,9 @@ class InventoryClientTestCase(TestCase):
 
         inventory_client.settings.LOCAL_SITE = "http://localhost:8004/"
 
-        now = datetime(2016, 1, 22, 4, 10, 25, 176751, tzinfo=timezone.utc)
         inventory_client.datetime = MagicMock()
-        inventory_client.datetime.now.return_value = now
+        inventory_client.datetime.now.return_value = datetime(2016, 1, 22, 4, 10, 25, 176751, tzinfo=timezone.utc)
+        inventory_client.datetime.utcnow.return_value = datetime(2016, 1, 22, 4, 10, 25, 176751)
 
         inventory_client.PendingTermination = MagicMock()
         inventory_client.settings.RESOURCE_CATALOG = "http://testing-resource-catalog:8080"
@@ -1041,6 +852,42 @@ class InventoryClientTestCase(TestCase):
         msg += "please check that the inventory API is correctly configured "
         msg += "and that the inventory API is up and running"
         self.assertEquals(msg, str(error))
+
+    def test_get_service(self):
+        service = {"id": "service-1", "serviceSpecification": {"id": "spec-1"}}
+        self.response.json.return_value = service
+
+        result = inventory_client.InventoryClient().get_service("service-1")
+
+        inventory_client.requests.get.assert_called_once_with(
+            "http://localhost:7070/serviceInventory/service/service-1", verify=True, timeout=30
+        )
+        self.response.raise_for_status.assert_called_once_with()
+        self.assertEqual(service, result)
+
+    def test_get_service_http_error_propagates(self):
+        error = InventoryError("service inventory unavailable")
+        self.response.raise_for_status.side_effect = error
+
+        with self.assertRaises(InventoryError) as caught:
+            inventory_client.InventoryClient().get_service("service-1")
+
+        self.assertIs(error, caught.exception)
+        self.response.json.assert_not_called()
+
+    def test_get_resource(self):
+        resource = {"id": "resource-1", "resourceCharacteristic": [{"name": "Resource Type", "value": "category"}]}
+        self.response.json.return_value = resource
+        self.assertEqual(resource, inventory_client.InventoryClient().get_resource("resource-1"))
+        inventory_client.requests.get.assert_called_once_with(
+            "http://localhost:9090/resourceInventory/resource/resource-1", verify=True, timeout=30,
+        )
+        self.response.raise_for_status.assert_called_once_with()
+
+    def test_get_resource_http_error_propagates(self):
+        self.response.raise_for_status.side_effect = InventoryError("resource inventory unavailable")
+        with self.assertRaises(InventoryError): inventory_client.InventoryClient().get_resource("resource-1")
+        self.response.json.assert_not_called()
 
     def test_activate_product(self):
         client = inventory_client.InventoryClient()
@@ -1108,6 +955,59 @@ class InventoryClientTestCase(TestCase):
         self.assertEqual(calls[3], call("http://localhost:9090/resourceInventory/resource/res-1", json={"resourceStatus": "reserved"}, verify=True))
         self.assertEqual(calls[4], call("http://localhost:7070/serviceInventory/service/svc-1", json={"state": "reserved"}, verify=True))
 
+    def test_pending_saved_before_plugin_cleanup_and_inventory_updates(self):
+        events = []
+        pending = inventory_client.PendingTermination.return_value
+        pending.save.side_effect = lambda: events.append("pending")
+        self.termination.side_effect = lambda *args: events.append("plugins")
+        inventory_client.requests.patch.side_effect = lambda *args, **kwargs: (
+            events.append("inventory") or MagicMock()
+        )
+        pending.delete.side_effect = lambda: events.append("done")
+        inventory_client.InventoryClient().terminate_product("1")
+        self.assertEqual(["pending", "plugins", "inventory", "done"], events)
+        self.get_order.assert_called_once_with("1")
+        order = self.get_order.return_value
+        order.get_product_contract.assert_called_once_with("1")
+        self.termination.assert_called_once_with(order, order.get_product_contract.return_value)
+
+    @override_settings(USE_TZ=False)
+    def test_pending_termination_persists_naive_utc_before_cleanup(self):
+        from wstore.ordering.models import PendingTermination
+
+        client = inventory_client.InventoryClient()
+        self.response.json.return_value = {}
+
+        def check_pending(product_id, resources, services):
+            pending = PendingTermination.objects.get(product_id=product_id)
+            self.assertIsNone(pending.created_at.tzinfo)
+            self.assertLess(abs((datetime.utcnow() - pending.created_at).total_seconds()), 10)
+
+        with patch.object(inventory_client, "PendingTermination", PendingTermination), \
+                patch.object(inventory_client, "datetime", datetime), \
+                patch.object(client, "_do_terminate", side_effect=check_pending) as terminate:
+            client.terminate_product("test-naive-utc")
+
+        terminate.assert_called_once_with("test-naive-utc", [], [])
+        self.assertFalse(PendingTermination.objects.filter(product_id="test-naive-utc").exists())
+
+    def test_plugin_notification_failure_does_not_block_inventory_updates(self):
+        self.termination.side_effect = RuntimeError("notification failed")
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
+            inventory_client.InventoryClient().terminate_product("1")
+        inventory_client.PendingTermination.return_value.save.assert_called_once()
+        inventory_client.PendingTermination.return_value.delete.assert_called_once()
+        inventory_client.requests.patch.assert_called_once()
+
+    def test_notification_context_failure_does_not_block_inventory_updates(self):
+        self.get_order.side_effect = RuntimeError("order unavailable")
+        with self.assertLogs("wstore.ordering.inventory_client", level="ERROR"):
+            inventory_client.InventoryClient().terminate_product("1")
+        inventory_client.PendingTermination.return_value.save.assert_called_once()
+        inventory_client.PendingTermination.return_value.delete.assert_called_once()
+        self.termination.assert_not_called()
+        inventory_client.requests.patch.assert_called_once()
+
     def test_get_product(self):
         client = inventory_client.InventoryClient()
         client.get_product("1")
@@ -1163,6 +1063,11 @@ class InventoryClientTestCase(TestCase):
         client.create_resource(spec_id, party + [operator_party])
 
         expected_calls_post = [call("http://localhost:9090/resourceInventory/resource", json={
+            "resourceSpecification": {
+                "id": spec_id,
+                "href": spec_id,
+                "name": spec_res["name"],
+            },
             "resourceCharacteristic": [self.build_char_return for _ in spec_res["resourceSpecCharacteristic"]],
             "relatedParty": [norm_party, operator_party],
             "resourceStatus": "reserved",
@@ -1208,6 +1113,11 @@ class InventoryClientTestCase(TestCase):
         client.create_service(spec_id, party + [operator_party])
 
         expected_calls_post = [call("http://localhost:7070/serviceInventory/service", json={
+            "serviceSpecification": {
+                "id": spec_id,
+                "href": spec_id,
+                "name": spec_serv["name"],
+            },
             "serviceCharacteristic": [self.build_char_return for _ in spec_serv["specCharacteristic"]],
             "relatedParty": [norm_party, operator_party],
             "state": "reserved",
@@ -1219,11 +1129,277 @@ class InventoryClientTestCase(TestCase):
         client.build_inventory_char.assert_called_once()
         inventory_client.requests.post.assert_has_calls(expected_calls_post, any_order=True)
 
+    def test_inventory_creation_includes_specification_references_without_version(self):
+        cases = (
+            ("resource", "resourceSpecCharacteristic", "resourceInventory", "9090"),
+            ("service", "specCharacteristic", "serviceInventory", "7070"),
+        )
+        for kind, characteristic_field, inventory_path, port in cases:
+            spec_id = kind + "-specification-1"
+            reference_field = kind + "Specification"
+
+            for metadata in (
+                {"name": kind + " specification", "href": "urn:ngsi-ld:" + reference_field + ":" + spec_id},
+                {},
+                {"href": ""},
+            ):
+                with self.subTest(kind=kind, metadata=metadata):
+                    specification = {
+                        "id": spec_id,
+                        "version": "2.0",
+                        characteristic_field: [],
+                        **metadata,
+                    }
+                    original = deepcopy(specification)
+                    client = inventory_client.InventoryClient()
+                    inventory_client.requests.post.reset_mock()
+                    self.response.json.return_value = {"id": kind + "-inventory-1"}
+
+                    with patch.object(client, "download_spec", return_value=specification) as download:
+                        result = getattr(client, "create_" + kind)(spec_id, [])
+
+                    download.assert_called_once_with(kind + "_catalog", "/" + reference_field, spec_id)
+                    inventory_client.requests.post.assert_called_once()
+                    args, kwargs = inventory_client.requests.post.call_args
+                    self.assertEqual((f"http://localhost:{port}/{inventory_path}/{kind}",), args)
+                    self.assertTrue(kwargs["verify"])
+                    reference = kwargs["json"][reference_field]
+                    expected = {"id": spec_id, "href": metadata.get("href") or spec_id}
+                    if "name" in metadata:
+                        expected["name"] = metadata["name"]
+                    self.assertEqual(expected, reference)
+                    self.assertNotIn("version", reference)
+                    self.assertEqual(kind + "-inventory-1", result)
+                    self.assertEqual(original, specification)
+
+    def test_single_primitive_value_is_copied_as_an_inventory_string(self):
+        client = inventory_client.InventoryClient()
+
+        for value, expected in (("file-id", "file-id"), (False, "False"), (12, "12"), (1.5, "1.5")):
+            with self.subTest(value=value):
+                specification = {
+                    "name": "example",
+                    "characteristicValueSpecification": [{"value": value}],
+                }
+                original = deepcopy(specification)
+
+                characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+                self.assertEqual(expected, characteristic["value"])
+                self.assertEqual("string", characteristic["valueType"])
+                self.assertEqual(original, specification)
+
+    def test_multiple_values_use_the_marked_default(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "name": "region",
+            "characteristicValueSpecification": [
+                {"value": "EU"},
+                {"value": "US", "isDefault": True},
+                {"value": "APAC", "isDefault": False},
+            ],
+        }
+
+        characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+        self.assertEqual("US", characteristic["value"])
+
+    def test_range_and_unit_conversion_is_preserved(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "name": "capacity",
+            "characteristicValueSpecification": [{"valueFrom": 1, "valueTo": 10, "unitOfMeasure": "GB"}],
+        }
+
+        characteristic = client.build_inventory_char(specification, "characteristicValueSpecification")
+
+        self.assertEqual("1 - 10 GB", characteristic["value"])
+
+    def test_service_creation_keeps_file_and_category_ids_as_strings(self):
+        client = inventory_client.InventoryClient()
+        specification = {
+            "specCharacteristic": [
+                {"name": "Service Type", "characteristicValueSpecification": [{"value": "category-1"}]},
+                {"name": "File", "characteristicValueSpecification": [{"value": "507f1f77bcf86cd799439011"}]},
+            ],
+        }
+        original = deepcopy(specification)
+        self.response.json.return_value = {"id": "service-1"}
+
+        with patch.object(client, "download_spec", return_value=specification):
+            self.assertEqual("service-1", client.create_service("specification-1", []))
+
+        service = inventory_client.requests.post.call_args.kwargs["json"]
+        values = {
+            characteristic["name"]: characteristic["value"] for characteristic in service["serviceCharacteristic"]
+        }
+        self.assertEqual({"Service Type": "category-1", "File": "507f1f77bcf86cd799439011"}, values)
+        self.assertTrue(
+            all(characteristic["valueType"] == "string" for characteristic in service["serviceCharacteristic"])
+        )
+        self.assertEqual(original, specification)
+
+
+    @parameterized.expand(
+        [
+            ("services", "iter_services", "http://localhost:7070/serviceInventory/service"),
+            ("resources", "iter_resources", "http://localhost:9090/resourceInventory/resource"),
+            ("products", "iter_products", "http://localhost:8080/product"),
+        ]
+    )
+    def test_inventory_search_passes_encoded_query_parameters(self, name, method, url):
+        self.response.json.return_value = [{"id": "match"}]
+        query = {"relatedParty.id": "urn:party:customer&name=other", "status": "active"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), method)(query=query))
+
+        self.assertEqual([{"id": "match"}], entries)
+        inventory_client.requests.get.assert_called_once_with(
+            url, params={**query, "offset": 0, "limit": 100}, verify=True, timeout=30
+        )
+        self.response.raise_for_status.assert_called_once_with()
+        self.assertNotIn("offset", query)
+
+
+    def test_inventory_search_continues_through_filtered_pages(self):
+        self.response.json.side_effect = [[{"id": str(i)} for i in range(100)], [{"id": "last-match"}]]
+        query = {"serviceCharacteristic.value": "file-id"}
+
+        entries = list(inventory_client.InventoryClient().iter_services(query=query))
+
+        self.assertEqual(101, len(entries))
+        self.assertEqual("last-match", entries[-1]["id"])
+        self.assertEqual([0, 100], [c.kwargs["params"]["offset"] for c in inventory_client.requests.get.call_args_list])
+        self.assertTrue(
+            all(
+                c.kwargs["params"]["serviceCharacteristic.value"] == "file-id"
+                for c in inventory_client.requests.get.call_args_list
+            )
+        )
+
+
+    def test_inventory_search_stops_fetching_when_the_caller_has_a_match(self):
+        self.response.json.return_value = [{"id": str(i)} for i in range(100)]
+        entries = inventory_client.InventoryClient().iter_products(query={"realizingService.id": "service-1"})
+
+        self.assertEqual({"id": "0"}, next(entries))
+        self.assertEqual(1, inventory_client.requests.get.call_count)
+
+    @parameterized.expand([
+        (kind, characteristic, status)
+        for kind, characteristic in (("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic"))
+        for status in (400, 500)
+    ])
+    def test_inventory_value_filter_falls_back_and_paginates(self, kind, characteristic, status):
+        from requests.exceptions import HTTPError
+
+        rejected = MagicMock(status_code=status)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        page = MagicMock()
+        page.json.return_value = [{"id": str(i)} for i in range(100)]
+        last_page = MagicMock()
+        last_page.json.return_value = [{"id": "last"}]
+        inventory_client.requests.get.side_effect = [rejected, page, last_page]
+        query = {characteristic + ".value": "file-id", characteristic + ".name": "File"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual(101, len(entries))
+        self.assertEqual("last", entries[-1]["id"])
+        params = [c.kwargs["params"] for c in inventory_client.requests.get.call_args_list]
+        self.assertEqual({**query, "offset": 0, "limit": 100}, params[0])
+        for actual, offset in zip(params[1:], (0, 100)):
+            self.assertEqual(
+                {characteristic + ".tmfValue": "file-id", characteristic + ".name": "File",
+                 "offset": offset, "limit": 100}, actual
+            )
+        self.assertEqual("file-id", query[characteristic + ".value"])
+        self.assertNotIn(characteristic + ".tmfValue", query)
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_success_does_not_use_fallback(self, kind, characteristic):
+        self.response.json.return_value = [{"id": "match"}]
+        query = {characteristic + ".value": "file-id"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual([{"id": "match"}], entries)
+        inventory_client.requests.get.assert_called_once()
+        self.assertEqual({**query, "offset": 0, "limit": 100},
+                         inventory_client.requests.get.call_args.kwargs["params"])
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_retries_the_failed_page_at_the_same_offset(self, kind, characteristic):
+        from requests.exceptions import HTTPError
+
+        page = MagicMock()
+        page.json.return_value = [{"id": str(i)} for i in range(100)]
+        rejected = MagicMock(status_code=500)
+        rejected.raise_for_status.side_effect = HTTPError("unsupported value filter")
+        last_page = MagicMock()
+        last_page.json.return_value = [{"id": "last"}]
+        inventory_client.requests.get.side_effect = [page, rejected, last_page]
+        query = {characteristic + ".value": "file-id"}
+
+        entries = list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(query=query))
+
+        self.assertEqual([str(i) for i in range(100)] + ["last"], [entry["id"] for entry in entries])
+        params = [c.kwargs["params"] for c in inventory_client.requests.get.call_args_list]
+        self.assertEqual([0, 100, 100], [p["offset"] for p in params])
+        self.assertEqual({characteristic + ".tmfValue": "file-id", "offset": 100, "limit": 100}, params[-1])
+
+    @parameterized.expand([("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic")])
+    def test_inventory_value_filter_does_not_retry_a_failed_fallback(self, kind, characteristic):
+        from requests.exceptions import HTTPError
+
+        self.response.status_code = 500
+        self.response.raise_for_status.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(
+                query={characteristic + ".value": "file-id"}
+            ))
+        self.assertEqual(2, inventory_client.requests.get.call_count)
+
+    @parameterized.expand([
+        (kind, characteristic, status)
+        for kind, characteristic in (("service", "serviceCharacteristic"), ("resource", "resourceCharacteristic"))
+        for status in (401, 403, 404, 429, 503)
+    ])
+    def test_inventory_value_filter_does_not_retry_other_http_errors(self, kind, characteristic, status):
+        from requests.exceptions import HTTPError
+
+        self.response.status_code = status
+        self.response.raise_for_status.side_effect = HTTPError("request failed")
+        with self.assertRaises(HTTPError):
+            list(getattr(inventory_client.InventoryClient(), "iter_" + kind + "s")(
+                query={characteristic + ".value": "file-id"}
+            ))
+        inventory_client.requests.get.assert_called_once()
+
+
+    def test_inventory_search_rejects_an_invalid_collection(self):
+        self.response.json.return_value = {"error": "not a collection"}
+
+        with self.assertRaises(InventoryError):
+            list(inventory_client.InventoryClient().iter_services())
+
+
+    def test_inventory_search_propagates_http_errors(self):
+        from requests.exceptions import HTTPError
+
+        self.response.raise_for_status.side_effect = HTTPError("offline")
+
+        with self.assertRaises(HTTPError):
+            list(inventory_client.InventoryClient().iter_products())
 
 class NotifyItemCompletedTestCase(TestCase):
     tags = ("ordering", "notify-item")
 
     def setUp(self):
+        patcher = patch.object(ordering_management, "on_product_activation")
+        self.on_product_activation = patcher.start()
+        self.addCleanup(patcher.stop)
+
         ordering_management.Order = MagicMock()
 
         # Mock order model
@@ -1561,3 +1737,690 @@ class NotifyItemCompletedTestCase(TestCase):
         # But product should still be activated
         ordering_manager.activate_product.assert_called_once()
 
+    @parameterized.expand(
+        [
+            (path + "_" + mode, path, mode)
+            for path in ("batch", "item")
+            for mode in ("automatic", "manual", "payment-automatic", "missing")
+        ]
+    )
+    def test_activation_dispatch_respects_procurement(self, name, path, mode):
+        manager, product = self._prepare_activation_completion(mode)
+        sequence = MagicMock()
+        sequence.attach_mock(manager.activate_product, "activate")
+        sequence.attach_mock(self.on_product_activation, "notify")
+        sequence.attach_mock(self._order_model.mark_contract_as_processed, "processed")
+
+        self._run_activation_completion(manager, path)
+
+        if mode == "automatic":
+            self.on_product_activation.assert_called_once_with(product, self._raw_order, self._contract)
+            self.assertEqual(["notify", "activate", "processed"], [entry[0] for entry in sequence.mock_calls])
+        else:
+            self.on_product_activation.assert_not_called()
+
+    def _prepare_activation_completion(self, mode="automatic"):
+        offering = self._offering_no_terms()
+        if mode != "missing":
+            offering["productOfferingTerm"] = [{"name": "procurement", "description": mode}]
+        self._response.json.return_value = offering
+        self._raw_order["productOrderItem"][0]["productOffering"]["href"] = "offering_1"
+        self._order_model.get_contracts.return_value = [self._contract]
+        product = {
+            "id": "product_123",
+            "productOffering": {"id": "offering_1"},
+            "realizingService": [{"id": "service-1"}],
+            "relatedParty": [
+                {"id": "buyer-party", "role": "Buyer"},
+                {"id": "operator-party", "role": "SellerOperator"},
+                {"id": "seller-party", "role": "sElLeR"},
+            ],
+        }
+        manager = ordering_management.OrderingManager()
+        manager.complete_inventory_product = MagicMock(return_value=product)
+        manager.activate_product = MagicMock()
+        return manager, product
+
+    def _run_activation_completion(self, manager, path):
+        if path == "batch":
+            manager.notify_completed(self._raw_order)
+        else:
+            manager.notify_item_completed(self._order_model, self._contract, self._raw_order)
+
+    def test_batch_passes_each_product_and_contract_to_dispatcher(self):
+        manager, first = self._prepare_activation_completion()
+        second_contract = MagicMock(item_id="item_2", customer_bill={"id": "cb_456"})
+        second = deepcopy(first)
+        second["id"] = "product_456"
+        second["relatedParty"] = [{"id": "other-seller", "role": "Seller"}]
+        second["realizingService"] = [{"id": "service-2"}]
+        self._raw_order["productOrderItem"].append(
+            {"id": "item_2", "productOffering": {"href": "offering_2"}, "state": "inProgress"}
+        )
+        self._order_model.get_contracts.return_value = [self._contract, second_contract]
+        manager.complete_inventory_product.side_effect = [first, second]
+
+        self._run_activation_completion(manager, "batch")
+
+        self.assertEqual(
+            [
+                call(first, self._raw_order, self._contract),
+                call(second, self._raw_order, second_contract),
+            ],
+            self.on_product_activation.call_args_list,
+        )
+        self.assertEqual(2, self._order_model.mark_contract_as_processed.call_count)
+
+    @parameterized.expand([("batch",), ("item",)])
+    def test_real_dispatcher_failure_prevents_product_activation_and_completion(self, path):
+        from wstore.asset_manager.resource_plugins import decorators
+
+        manager, product = self._prepare_activation_completion()
+        product["realizingService"].append({"id": "service-2"})
+        services = {
+            f"service-{n}": {
+                "id": f"service-{n}",
+                "serviceCharacteristic": [{"name": "Service Type", "value": f"category-{n}"}],
+            }
+            for n in (1, 2)
+        }
+        inventory = MagicMock()
+        inventory.get_service.side_effect = services.__getitem__
+        plugins = {"category-1": MagicMock(), "category-2": MagicMock()}
+        provider, buyer = object(), object()
+        organizations = {"seller-party": provider, "buyer-party": buyer}
+        plugins["category-1"].on_service_activation.side_effect = RuntimeError("provisioning failed")
+        with patch.object(
+            ordering_management, "on_product_activation", decorators.on_product_activation
+        ), patch.object(decorators, "InventoryClient", return_value=inventory), patch.object(
+            decorators, "_get_plugin_model", side_effect=lambda category_id, plugin_type: category_id
+        ), patch.object(
+            decorators, "_load_plugin_model", side_effect=plugins.get
+        ), patch.object(
+            decorators.Organization.objects, "get", side_effect=lambda actor_id: organizations[actor_id]
+        ), self.assertLogs(
+            "wstore.default_logger", level="ERROR"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "provisioning failed"):
+                self._run_activation_completion(manager, path)
+
+        plugins["category-1"].on_service_activation.assert_called_once_with(
+            provider, buyer, services["service-1"], product, self._raw_order, self._contract
+        )
+        plugins["category-2"].on_service_activation.assert_not_called()
+        manager.activate_product.assert_not_called()
+        self._order_model.mark_contract_as_processed.assert_not_called()
+        self._ordering_client_inst.update_items_state.assert_not_called()
+
+    @parameterized.expand([("batch",), ("item",)])
+    def test_real_resource_failure_prevents_product_activation_and_completion(self, path):
+        from wstore.asset_manager.resource_plugins import decorators
+
+        manager, product = self._prepare_activation_completion()
+        product.pop("realizingService")
+        product["realizingResource"] = [{"id": "resource-1"}]
+        resource = {
+            "id": "resource-1",
+            "resourceCharacteristic": [{"name": "Resource Type", "value": "resource-category"}],
+        }
+        inventory = MagicMock()
+        inventory.get_resource.return_value = resource
+        plugin = MagicMock()
+        plugin.on_resource_activation.side_effect = RuntimeError("provisioning failed")
+        provider, buyer = object(), object()
+        organizations = {"seller-party": provider, "buyer-party": buyer}
+        with patch.object(
+            ordering_management, "on_product_activation", decorators.on_product_activation
+        ), patch.object(decorators, "InventoryClient", return_value=inventory), patch.object(
+            decorators, "_get_plugin_model", return_value=object()
+        ), patch.object(
+            decorators, "_load_plugin_model", return_value=plugin
+        ), patch.object(
+            decorators.Organization.objects, "get", side_effect=lambda actor_id: organizations[actor_id]
+        ), self.assertLogs(
+            "wstore.default_logger", level="ERROR"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "provisioning failed"):
+                self._run_activation_completion(manager, path)
+        plugin.on_resource_activation.assert_called_once_with(
+            provider, buyer, resource, product, self._raw_order, self._contract
+        )
+        inventory.get_service.assert_not_called()
+        manager.activate_product.assert_not_called()
+        self._order_model.mark_contract_as_processed.assert_not_called()
+        self._ordering_client_inst.update_items_state.assert_not_called()
+
+
+def _purchase_notification_item(item_id="item-1", seller="seller-1", action="add"):
+    return {
+        "id": item_id,
+        "action": action,
+        "productOffering": {"id": "offering-" + item_id},
+        "product": {
+            "relatedParty": [
+                {"id": seller, "role": settings.PROVIDER_ROLE},
+                {"id": "buyer-1", "name": "Customer <One>", "role": settings.CUSTOMER_ROLE},
+                {"id": "operator-1", "role": settings.SELLER_OPERATOR_ROLE},
+            ]
+        },
+    }
+
+
+@override_settings(
+    SITE="https://market.example/",
+    PARTY="https://tmf.example/partyManagement/v4",
+    PROVIDER_ROLE="CustomVendor",
+    CUSTOMER_ROLE="CustomPurchaser",
+)
+class PurchaseNotificationsTestCase(SimpleTestCase):
+    def setUp(self):
+        self.order = {"id": "order-1", "productOrderItem": [_purchase_notification_item()]}
+        self.item = self.order["productOrderItem"][0]
+        self.order["relatedParty"] = deepcopy(self.item["product"]["relatedParty"])
+        self.offering = {"id": "offering-item-1", "name": "Offering item-1"}
+        self.offering_names = [self.offering["name"]]
+        self.product = {"id": "product-1", "relatedParty": deepcopy(self.item["product"]["relatedParty"])}
+        self.handler_class = notification_handler.NotificationsHandler
+        self.original_send_custom_email = self.handler_class.send_custom_email
+        for name in ("requests",):
+            patcher = patch.object(notification_handler, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.response = self.requests.get.return_value
+        self.response.json.return_value = {
+            "contactMedium": [
+                {"mediumType": "postalAddress", "characteristic": {}},
+                {"mediumType": "Email", "characteristic": {"emailAddress": " party@example.org "}},
+            ]
+        }
+        config_patch = patch.object(self.handler_class, "_set_config")
+        config_patch.start()
+        self.addCleanup(config_patch.stop)
+        mail_patch = patch.object(self.handler_class, "send_custom_email")
+        self.mail = mail_patch.start()
+        self.addCleanup(mail_patch.stop)
+
+    def test_one_provider_receives_one_email_with_all_order_items(self):
+        self.order["productOrderItem"].extend(
+            [_purchase_notification_item("item-2"), _purchase_notification_item("item-3")]
+        )
+        self.offering_names.extend(["Offering item-2", "Offering item-3"])
+        original_order = deepcopy(self.order)
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_called_once()
+        self.assertEqual(original_order, self.order)
+        body = self.mail.call_args.args[2]
+        self.assertIn("Offering item-1", body)
+        self.assertIn("Offering item-2", body)
+        self.assertIn("Offering item-3", body)
+        self.assertIn("Customer &lt;One&gt;", body)
+        self.assertIn("https://market.example/#/inventory/order", body)
+        self.requests.get.assert_called_once()
+        self.assertIn("/organization/seller-1", self.requests.get.call_args.args[0])
+
+    def test_configured_roles_match_without_accepting_default_role_names(self):
+        self.order["relatedParty"][0]["role"] = settings.PROVIDER_ROLE.swapcase()
+        self.order["relatedParty"].extend(
+            [
+                {"id": "wrong-provider", "role": "Seller"},
+                {"id": "wrong-customer", "role": "Buyer"},
+            ]
+        )
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_called_once()
+        self.assertIn("/organization/seller-1", self.requests.get.call_args.args[0])
+        self.assertIn("Customer &lt;One&gt;", self.mail.call_args.args[2])
+        self.assertNotIn("wrong-customer", self.mail.call_args.args[2])
+
+        self.mail.reset_mock()
+        self.requests.get.reset_mock()
+        self.product["relatedParty"].append({"id": "wrong-customer", "role": "Buyer"})
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.mail.assert_called_once()
+        self.requests.get.assert_called_once()
+        self.assertIn("/organization/buyer-1", self.requests.get.call_args.args[0])
+
+    def test_missing_middle_offering_name_keeps_later_names_aligned(self):
+        from xml.etree import ElementTree
+
+        self.order["productOrderItem"].extend(
+            [
+                _purchase_notification_item("item-2"),
+                _purchase_notification_item("item-3"),
+            ]
+        )
+        names = ["Cloud storage", "", "Managed backups"]
+        original_order = deepcopy(self.order)
+        self.handler_class.send_provider_notification(self.order, names)
+        self.mail.assert_called_once()
+        body = ElementTree.fromstring("<div>" + self.mail.call_args.args[2] + "</div>")
+        self.assertEqual(
+            ["Cloud storage", "Your product", "Managed backups"], [name.text for name in body.findall(".//li/strong")]
+        )
+        self.assertEqual(original_order, self.order)
+
+    def test_provider_and_customer_name_come_from_order_not_items(self):
+        self.item["product"].pop("relatedParty")
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_called_once()
+        self.requests.get.assert_called_once()
+        self.assertIn("/organization/seller-1", self.requests.get.call_args.args[0])
+        self.assertIn("Customer &lt;One&gt;", self.mail.call_args.args[2])
+
+    def test_customer_without_optional_name_uses_customer_id_in_provider_email(self):
+        self.order["relatedParty"][1].pop("name")
+        original_order = deepcopy(self.order)
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_called_once()
+        body = self.mail.call_args.args[2]
+        self.assertIn("Offering item-1", body)
+        self.assertIn("ordered by buyer-1", body)
+        self.assertNotIn("a customer", body)
+        self.assertEqual(original_order, self.order)
+
+    def test_missing_order_provider_does_not_fall_back_to_item(self):
+        self.order.pop("relatedParty")
+        with self.assertLogs("wstore.default_logger", level="WARNING"):
+            self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_not_called()
+        self.requests.get.assert_not_called()
+
+    def test_customer_uses_inventory_buyer_and_product_link(self):
+        self.product["relatedParty"] = [{"id": "inventory-buyer", "role": settings.CUSTOMER_ROLE.upper()}]
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.assertIn("/organization/inventory-buyer", self.requests.get.call_args.args[0])
+        recipient, subject, body = self.mail.call_args.args
+        self.assertEqual("party@example.org", recipient)
+        self.assertEqual("Your product is ready", subject)
+        self.assertIn("https://market.example/#/inventory/product/product-1", body)
+        self.assertIn("now active", body)
+        self.assertNotIn("payment", body)
+
+    def test_purchase_messages_show_names_and_next_steps_without_technical_ids(self):
+        from xml.etree import ElementTree
+
+        self.offering["name"] = "Managed cloud storage"
+        self.offering_names[0] = self.offering["name"]
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.assertEqual(2, self.mail.call_count)
+        provider, customer = self.mail.call_args_list
+        self.assertEqual("You have a new order", provider.args[1])
+        self.assertEqual("Your product is ready", customer.args[1])
+        for message in (provider.args[2], customer.args[2]):
+            visible_text = "".join(ElementTree.fromstring("<div>" + message + "</div>").itertext())
+            self.assertIn(self.offering["name"], visible_text)
+            for technical_id in (
+                self.order["id"],
+                self.item["id"],
+                self.product["id"],
+                self.item["productOffering"]["id"],
+                "buyer-1",
+                "seller-1",
+            ):
+                self.assertNotIn(technical_id, visible_text)
+        self.assertIn("Customer &lt;One&gt;", provider.args[2])
+        self.assertIn("Manage orders", provider.args[2])
+        self.assertIn("View your product", customer.args[2])
+
+    def test_missing_offering_name_uses_plain_language_instead_of_ids(self):
+        from xml.etree import ElementTree
+
+        self.offering.pop("name")
+        self.offering_names[0] = ""
+        self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.assertEqual(2, self.mail.call_count)
+        for call in self.mail.call_args_list:
+            visible_text = "".join(ElementTree.fromstring("<div>" + call.args[2] + "</div>").itertext())
+            self.assertIn("Your product", visible_text)
+            for technical_id in ("offering-item-1", "item-1", "order-1", "product-1", "buyer-1", "seller-1"):
+                self.assertNotIn(technical_id, visible_text)
+        self.assertIn("ordered by Customer &lt;One&gt;", self.mail.call_args_list[0].args[2])
+
+    def test_customer_requires_buyer_in_inventory_product(self):
+        for parties in (None, [], [{"id": "seller-1", "role": settings.PROVIDER_ROLE}]):
+            with self.subTest(parties=parties):
+                if parties is None:
+                    self.product.pop("relatedParty", None)
+                else:
+                    self.product["relatedParty"] = parties
+                with self.assertLogs("wstore.default_logger", level="WARNING"):
+                    self.handler_class.send_acquired_notification(self.product, self.offering)
+                self.mail.assert_not_called()
+                self.requests.get.assert_not_called()
+
+    def test_individual_party_and_escaped_reference(self):
+        self.product["relatedParty"] = [
+            {"id": "person/id", "role": settings.CUSTOMER_ROLE, "@referredType": "Individual"}
+        ]
+        self.offering["name"] = '<img src=x onerror="bad()">'
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.assertIn("/individual/person%2Fid", self.requests.get.call_args.args[0])
+        self.assertNotIn("<img", self.mail.call_args.args[2])
+        self.assertIn("&lt;img", self.mail.call_args.args[2])
+
+    def test_different_products_each_receive_a_customer_notification(self):
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.handler_class.send_acquired_notification(dict(self.product, id="product-2"), self.offering)
+        self.assertEqual(2, self.mail.call_count)
+
+    def test_later_activation_of_same_product_can_send_another_notification(self):
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.assertEqual(2, self.mail.call_count)
+
+    def test_provider_email_failure_is_logged_without_raising(self):
+        self.mail.side_effect = RuntimeError("SMTP unavailable")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_called_once()
+
+    def test_customer_email_failure_is_logged_without_raising(self):
+        self.mail.side_effect = RuntimeError("SMTP unavailable")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.mail.assert_called_once()
+
+    def test_missing_email_configuration_is_logged_without_raising(self):
+        self.handler_class._set_config.side_effect = ImproperlyConfigured("Missing email configuration")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.mail.assert_not_called()
+
+    def test_missing_email_or_party_service_failure_does_not_escape(self):
+        for email in (None, "", "   "):
+            self.response.json.return_value = {
+                "contactMedium": [
+                    {"mediumType": "email", "characteristic": {"emailAddress": email}},
+                ]
+            }
+            with self.assertLogs("wstore.default_logger", level="ERROR"):
+                self.handler_class.send_acquired_notification(self.product, self.offering)
+        self.response.raise_for_status.side_effect = RuntimeError("party service unavailable")
+        with self.assertLogs("wstore.default_logger", level="ERROR"):
+            self.handler_class.send_provider_notification(self.order, self.offering_names)
+        self.mail.assert_not_called()
+
+    def test_generated_email_uses_existing_html_layout(self):
+        with patch.object(self.handler_class, "send_custom_email", self.original_send_custom_email), patch.object(
+            self.handler_class, "_send_email"
+        ) as send, patch.object(self.handler_class, "_fromaddr", "market@example.org", create=True):
+            self.handler_class.send_acquired_notification(self.product, self.offering)
+        recipient, message = send.call_args.args
+        parsed = message_from_string(message.as_string())
+        self.assertEqual(["party@example.org"], recipient)
+        self.assertEqual("text/html", parsed.get_content_type())
+        self.assertIn("background-color:#2e58a7", parsed.get_payload(decode=True).decode("utf-8"))
+
+
+class PurchaseNotificationTriggersTestCase(SimpleTestCase):
+    def setUp(self):
+        self.item = _purchase_notification_item()
+        self.order = {"id": "order-1", "productOrderItem": [self.item]}
+        self.product = {"id": "product-1"}
+        self.offering = {"id": "offering-item-1", "name": "Cloud storage"}
+
+    def test_filter_returns_only_names_as_notification_context_without_mutating_items(self):
+        items = [self.item, _purchase_notification_item("item-2"), _purchase_notification_item("item-3")]
+        original_items = deepcopy(items)
+        contract = MagicMock()
+        second_offering = {"id": "offering-item-2"}
+        with patch.object(ordering_management, "OrderingClient"):
+            manager = ordering_management.OrderingManager()
+            manager._filter_item = MagicMock(
+                side_effect=[
+                    (contract, self.offering, "automatic"),
+                    (None, second_offering, "manual"),
+                    (None, {"id": "offering-item-3", "name": "Managed backups"}, "manual"),
+                ]
+            )
+            processed_items, names = manager._filter_add_items(items)
+        self.assertEqual(original_items, items)
+        self.assertEqual(["Cloud storage", "", "Managed backups"], names)
+        self.assertEqual(1, len(processed_items))
+        self.assertIs(self.item, processed_items[0]["item"])
+        self.assertIs(self.offering, processed_items[0]["offering_info"])
+        self.assertIs(contract, processed_items[0]["contract"])
+
+    def test_provider_uses_loaded_offering_after_processing_including_manual_and_redirect(self):
+        self.order["billingAccount"] = {"id": "account-1"}
+        for manual, redirect in ((True, None), (False, None), (False, "https://payments.example/")):
+            with self.subTest(manual=manual, redirect=redirect), patch.object(
+                ordering_management, "OrderingClient"
+            ), patch.object(ordering_management.NotificationsHandler, "send_provider_notification") as notify:
+                manager = ordering_management.OrderingManager()
+                manager._filter_item = MagicMock(
+                    return_value=(None if manual else MagicMock(), self.offering, "manual" if manual else "automatic")
+                )
+                manager._process_add_items = MagicMock(return_value=redirect)
+                sequence = MagicMock()
+                sequence.attach_mock(manager._filter_item, "load_offering")
+                sequence.attach_mock(manager._process_add_items, "process")
+                sequence.attach_mock(notify, "email")
+                original_order = deepcopy(self.order)
+                result = manager.process_order(MagicMock(), self.order)
+                self.assertEqual(original_order, self.order)
+                self.assertEqual(redirect, result)
+                manager._filter_item.assert_called_once_with(self.item)
+                notify.assert_called_once_with(self.order, [self.offering["name"]])
+                if manual:
+                    manager._process_add_items.assert_not_called()
+                else:
+                    processed_items = manager._process_add_items.call_args.args[0]
+                    self.assertIsInstance(processed_items, list)
+                    self.assertIs(self.offering, processed_items[0]["offering_info"])
+                self.assertEqual(
+                    ["load_offering", "email"] if manual else ["load_offering", "process", "email"],
+                    [c[0] for c in sequence.mock_calls],
+                )
+
+    def test_provider_receives_loaded_offerings_for_both_manual_and_automatic_items(self):
+        second_item = _purchase_notification_item("item-2")
+        second_offering = {"id": "offering-item-2", "name": "Managed backups"}
+        self.order["productOrderItem"].append(second_item)
+        self.order["billingAccount"] = {"id": "account-1"}
+        with patch.object(ordering_management, "OrderingClient"), patch.object(
+            ordering_management.NotificationsHandler, "send_provider_notification"
+        ) as notify:
+            manager = ordering_management.OrderingManager()
+            manager._filter_item = MagicMock(
+                side_effect=[(MagicMock(), self.offering, "automatic"), (None, second_offering, "manual")]
+            )
+            manager._process_add_items = MagicMock(return_value="https://payments.example/")
+            original_order = deepcopy(self.order)
+            manager.process_order(MagicMock(), self.order)
+            self.assertEqual(original_order, self.order)
+            self.assertEqual(2, manager._filter_item.call_count)
+            notify.assert_called_once_with(self.order, [self.offering["name"], second_offering["name"]])
+            processed_items = manager._process_add_items.call_args.args[0]
+            self.assertEqual(1, len(processed_items))
+            self.assertIs(self.offering, processed_items[0]["offering_info"])
+
+    def test_failed_order_processing_does_not_notify_provider(self):
+        self.order["billingAccount"] = {"id": "account-1"}
+        with patch.object(ordering_management, "OrderingClient"), patch.object(
+            ordering_management.NotificationsHandler, "send_provider_notification"
+        ) as notify:
+            manager = ordering_management.OrderingManager()
+            manager._filter_item = MagicMock(return_value=(MagicMock(), self.offering, "automatic"))
+            manager._process_add_items = MagicMock(side_effect=OrderingError("invalid order"))
+            with self.assertRaises(OrderingError):
+                manager.process_order(MagicMock(), self.order)
+            notify.assert_not_called()
+
+    def test_modification_does_not_enter_provider_new_order_notification_path(self):
+        self.item["action"] = "modify"
+        with patch.object(ordering_management, "OrderingClient"), patch.object(
+            ordering_management.NotificationsHandler, "send_provider_notification"
+        ) as notify:
+            manager = ordering_management.OrderingManager()
+            manager._process_modify_items = MagicMock(return_value="https://payments.example/")
+            redirect = manager.process_order(MagicMock(), self.order)
+            self.assertEqual("https://payments.example/", redirect)
+            manager._process_modify_items.assert_called_once_with([self.item], self.order)
+            notify.assert_not_called()
+
+    def test_activation_does_not_send_email_before_completion_updates(self):
+        with patch.object(ordering_management, "OrderingClient"), patch.object(
+            ordering_management.NotificationsHandler, "send_acquired_notification"
+        ) as notify:
+            manager = ordering_management.OrderingManager()
+            manager.activate_product = MagicMock(return_value=None)
+            manager._activate_order_product(self.order, self.product)
+            manager.activate_product.assert_called_once_with(self.order["id"], self.product)
+            notify.assert_not_called()
+            for failure in (RuntimeError("inventory unavailable"), None):
+                manager.activate_product.side_effect = failure
+                manager.activate_product.return_value = (404, "no contract")
+                with self.assertRaises((RuntimeError, OrderingError)):
+                    manager._activate_order_product(self.order, self.product)
+                notify.assert_not_called()
+
+    def test_fully_manual_completion_notifies_without_local_order(self):
+        with patch.object(ordering_management, "Order") as orders, patch.object(
+            ordering_management, "OrderingClient"
+        ), patch.object(ordering_management, "InventoryClient") as inventory, patch.object(
+            ordering_management.NotificationsHandler, "send_acquired_notification"
+        ) as notify:
+            orders.objects.filter.return_value = []
+            manager = ordering_management.OrderingManager()
+            manager.get_offer_info = MagicMock(return_value=self.offering)
+            manager.complete_inventory_product = MagicMock(return_value=self.product)
+            sequence = MagicMock()
+            sequence.attach_mock(inventory.return_value.activate_product, "activate")
+            sequence.attach_mock(notify, "email")
+            manager.process_order_completed(self.order)
+            self.assertEqual(["activate", "email"], [c[0] for c in sequence.mock_calls])
+            notify.assert_called_once_with(self.product, self.offering)
+            orders.objects.get.assert_not_called()
+
+    def test_manual_completion_failure_after_first_product_sends_no_email(self):
+        self.order["productOrderItem"].append(_purchase_notification_item("item-2"))
+        with patch.object(ordering_management, "Order") as orders, patch.object(
+            ordering_management, "OrderingClient"
+        ), patch.object(ordering_management, "InventoryClient") as inventory, patch.object(
+            ordering_management.NotificationsHandler, "send_acquired_notification"
+        ) as notify:
+            orders.objects.filter.return_value = []
+            inventory.return_value.activate_product.side_effect = [None, RuntimeError("activation failed")]
+            manager = ordering_management.OrderingManager()
+            manager.get_offer_info = MagicMock(return_value=self.offering)
+            manager.complete_inventory_product = MagicMock(side_effect=[self.product, {"id": "product-2"}])
+            with self.assertRaises(RuntimeError):
+                manager.process_order_completed(self.order)
+            self.assertEqual(2, inventory.return_value.activate_product.call_count)
+            notify.assert_not_called()
+
+    def test_automatic_completion_paths_notify_after_purchase_and_modification_activation(self):
+        scenarios = [
+            (action, path, failure)
+            for action in ("add", "modify")
+            for path in ("batch", "item")
+            for failure in (None, "processed", "update_items", "update_order")
+            if path == "batch" or failure != "update_order"
+        ]
+        for action, path, failure in scenarios:
+            self.item["action"] = action
+            with self.subTest(action=action, path=path, failure=failure), patch.object(
+                ordering_management, "Order"
+            ) as orders, patch.object(ordering_management, "OrderingClient"), patch.object(
+                ordering_management, "BillingClient"
+            ), patch.object(
+                ordering_management, "on_product_activation"
+            ), patch.object(
+                ordering_management.NotificationsHandler, "send_acquired_notification"
+            ) as notify:
+                contract = MagicMock(item_id=self.item["id"], customer_bill={"internal": True})
+                local_order = orders.objects.get.return_value
+                local_order.get_contracts.return_value = [contract]
+                local_order.sales_ids = []
+                self.item["state"] = "inProgress"
+                offering = dict(
+                    self.offering, productOfferingTerm=[{"name": "procurement", "description": "automatic"}]
+                )
+                manager = ordering_management.OrderingManager()
+                manager.get_offer_info = MagicMock(return_value=offering)
+                manager.get_offer_info_by_item_id = MagicMock(return_value=offering)
+                manager.complete_inventory_product = MagicMock(return_value=self.product)
+                manager.activate_product = MagicMock(return_value=None)
+                sequence = MagicMock()
+                sequence.attach_mock(manager.activate_product, "activate")
+                sequence.attach_mock(notify, "email")
+                sequence.attach_mock(local_order.mark_contract_as_processed, "processed")
+                sequence.attach_mock(manager.ordering_client.update_items_state, "update_items")
+                sequence.attach_mock(manager.ordering_client.update_state, "update_order")
+                updates = {
+                    "processed": local_order.mark_contract_as_processed,
+                    "update_items": manager.ordering_client.update_items_state,
+                    "update_order": manager.ordering_client.update_state,
+                }
+                if failure:
+                    updates[failure].side_effect = RuntimeError("completion update failed")
+                if failure:
+                    with self.assertRaises(RuntimeError):
+                        if path == "batch":
+                            manager.notify_completed(self.order)
+                        else:
+                            manager.notify_item_completed(local_order, contract, self.order)
+                    notify.assert_not_called()
+                    self.assertEqual(failure, sequence.mock_calls[-1][0])
+                else:
+                    if path == "batch":
+                        manager.notify_completed(self.order)
+                    else:
+                        manager.notify_item_completed(local_order, contract, self.order)
+                    expected = ["activate", "processed", "update_items"]
+                    if path == "batch":
+                        expected.append("update_order")
+                    self.assertEqual(expected + ["email"], [c[0] for c in sequence.mock_calls])
+                    notify.assert_called_once_with(self.product, offering)
+
+    def test_deletion_terminates_without_customer_activation_notification(self):
+        self.item["action"] = "delete"
+        self.item["product"]["id"] = self.product["id"]
+        with patch.object(ordering_management, "OrderingClient"), patch.object(
+            ordering_management, "InventoryClient"
+        ) as inventory, patch.object(ordering_management.NotificationsHandler, "send_acquired_notification") as notify:
+            manager = ordering_management.OrderingManager()
+            manager._get_existing_contract = MagicMock(return_value=(MagicMock(), MagicMock()))
+            manager.activate_product = MagicMock()
+            manager.process_order(MagicMock(), self.order)
+            inventory.return_value.terminate_product.assert_called_once_with(self.product["id"])
+            manager.activate_product.assert_not_called()
+            notify.assert_not_called()
+
+
+class PaymentFailureTimestampTestCase(SimpleTestCase):
+    def setUp(self):
+        self.record = PaymentRecord(
+            _id=ObjectId(), customerBill_id='bill-1', payment_type='stripe', payment_reference='pi-1'
+        )
+
+    def test_records_without_failure_history_start_without_a_recovery_anchor(self):
+        self.assertIsNone(self.record.first_failed_at)
+
+    def test_first_failure_is_persisted_without_overwriting_an_existing_timestamp(self):
+        first_failure = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager, patch.object(self.record, 'refresh_from_db') as refresh:
+            refresh.side_effect = lambda **kwargs: setattr(self.record, 'first_failed_at', first_failure)
+            self.record.mark_failed(first_failure)
+            manager.filter.assert_called_once_with(pk=self.record.pk, first_failed_at__isnull=True)
+            manager.filter.return_value.update.assert_called_once_with(first_failed_at=first_failure)
+            refresh.assert_called_once_with(fields=['first_failed_at'])
+        self.assertEqual(self.record.first_failed_at, first_failure)
+
+    def test_later_failures_preserve_persisted_anchor_without_another_write(self):
+        self.record.first_failed_at = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager:
+            self.record.mark_failed(datetime(2026, 6, 2))
+            manager.filter.assert_not_called()
+        self.assertEqual(self.record.first_failed_at, datetime(2026, 6, 1))
+
+    def test_concurrent_first_failure_uses_the_timestamp_already_stored(self):
+        earlier_failure = datetime(2026, 6, 1)
+        with patch.object(PaymentRecord, 'objects') as manager, patch.object(self.record, 'refresh_from_db') as refresh:
+            manager.filter.return_value.update.return_value = 0
+            refresh.side_effect = lambda **kwargs: setattr(self.record, 'first_failed_at', earlier_failure)
+            self.record.mark_failed(datetime(2026, 6, 2))
+        self.assertEqual(self.record.first_failed_at, earlier_failure)

@@ -19,12 +19,14 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import json
-from django.test import TestCase, RequestFactory
+from django.test import TestCase, SimpleTestCase, RequestFactory
 from mock import MagicMock, patch
 from bson import ObjectId
 
 from wstore.charging_engine.cb_webhook.views import CBListener
 from wstore.ordering.ordering_management import OrderingManager
+from wstore.ordering import ordering_management
+from wstore.ordering.errors import OrderingError
 
 
 class CBWebhookIntegrationTestCase(TestCase):
@@ -204,10 +206,103 @@ class CBWebhookIntegrationTestCase(TestCase):
         mock_order.get_contract_by_cb_id.side_effect = Exception("Test exception")
 
         om = OrderingManager()
-        result = om.complete_cb_webhook(customer_bill_id)
+        with self.assertRaisesRegex(Exception, "Test exception"):
+            om.complete_cb_webhook(customer_bill_id)
 
         calls = mock_db.wstore_order.find_one_and_update.call_args_list
         self.assertEqual(len(calls), 2)
 
         self.assertEqual(calls[1][0][0], {"_id": order_id})
         self.assertEqual(calls[1][0][1], {"$set": {"_lock": False}})
+
+
+class SettledBillRenewalTestCase(SimpleTestCase):
+    def setUp(self):
+        for name in ('get_database_connection', 'Order', 'BillingClient', 'OrderingClient', 'on_product_renewal'):
+            patcher = patch.object(ordering_management, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.db = self.get_database_connection.return_value
+        self.order = MagicMock(pk=ObjectId(), order_id='order-1')
+        self.contract = MagicMock(product_id='product-1', processed=True)
+        self.order.get_product_contract.return_value = self.contract
+        self.order.get_contract_by_cb_id.return_value = self.contract
+        self.Order.get_by_customer_bill_id.side_effect = OrderingError('Order not found.')
+        self.BillingClient.return_value.get_product_id_by_cb.return_value = 'product-1'
+        self.Order.get_by_product_id.return_value = self.order
+        self.db.wstore_order.find_one_and_update.return_value = {'_lock': False}
+        self.manager = OrderingManager()
+        self.manager.notify_item_completed = MagicMock()
+
+    def test_recurring_bill_resolves_purchase_through_product_and_notifies_renewal(self):
+        self.manager.complete_cb_webhook('renewal-bill')
+        self.BillingClient.return_value.get_product_id_by_cb.assert_called_once_with('renewal-bill')
+        self.Order.get_by_product_id.assert_called_once_with('product-1')
+        self.on_product_renewal.assert_called_once_with(self.order, self.contract, 'renewal-bill')
+        self.manager.notify_item_completed.assert_not_called()
+        self.order.get_contract_by_cb_id.assert_not_called()
+        self.db.wstore_order.find_one_and_update.assert_not_called()
+        self.order.save.assert_not_called()
+
+    def test_initial_bill_preserves_existing_completion_path(self):
+        self.Order.get_by_customer_bill_id.side_effect = None
+        self.Order.get_by_customer_bill_id.return_value = self.order
+        self.contract.processed = False
+        self.manager.complete_cb_webhook('initial-bill')
+        self.manager.notify_item_completed.assert_called_once_with(
+            self.order, self.contract, self.OrderingClient.return_value.get_order.return_value
+        )
+        self.on_product_renewal.assert_not_called()
+        self.BillingClient.assert_not_called()
+
+    def test_repeated_initial_settlement_does_not_become_renewal(self):
+        self.Order.get_by_customer_bill_id.side_effect = None
+        self.Order.get_by_customer_bill_id.return_value = self.order
+        self.manager.complete_cb_webhook('initial-bill')
+        self.manager.notify_item_completed.assert_not_called()
+        self.on_product_renewal.assert_not_called()
+
+    def test_initial_provisioning_failure_still_propagates_and_releases_order_lock(self):
+        self.Order.get_by_customer_bill_id.side_effect = None
+        self.Order.get_by_customer_bill_id.return_value = self.order
+        self.contract.processed = False
+        self.manager.notify_item_completed.side_effect = RuntimeError('activation unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'activation unavailable'):
+            self.manager.complete_cb_webhook('initial-bill')
+        self.on_product_renewal.assert_not_called()
+        self.assertEqual(self.db.wstore_order.find_one_and_update.call_args.args[1], {'$set': {'_lock': False}})
+
+    def test_plugin_notification_failure_does_not_interrupt_settled_bill_processing(self):
+        from wstore.asset_manager.resource_plugins import decorators
+        with patch.object(ordering_management, 'on_product_renewal', decorators.on_product_renewal), \
+                patch.object(decorators, 'InventoryClient'), patch.object(decorators, 'OrderingClient'), \
+                patch.object(decorators, '_notify_inventory_plugins', side_effect=RuntimeError('plugin unavailable')):
+            with self.assertLogs('wstore.default_logger', level='ERROR'):
+                self.manager.complete_cb_webhook('renewal-bill')
+        self.db.wstore_order.find_one_and_update.assert_not_called()
+        self.order.save.assert_not_called()
+
+    def test_renewal_dispatch_does_not_acquire_purchase_completion_lock(self):
+        self.db.wstore_order.find_one_and_update.return_value = {'_lock': True}
+        self.manager.complete_cb_webhook('renewal-bill')
+        self.on_product_renewal.assert_called_once_with(self.order, self.contract, 'renewal-bill')
+        self.db.wstore_order.find_one_and_update.assert_not_called()
+        self.manager.notify_item_completed.assert_not_called()
+
+    def test_lookup_failure_is_not_misclassified_as_an_external_bill(self):
+        self.Order.get_by_customer_bill_id.side_effect = RuntimeError('database unavailable')
+        with self.assertRaisesRegex(RuntimeError, 'database unavailable'):
+            self.manager.complete_cb_webhook('bill-1')
+        self.BillingClient.assert_not_called()
+
+    def test_bill_without_a_local_product_is_ignored(self):
+        self.BillingClient.return_value.get_product_id_by_cb.return_value = None
+        self.manager.complete_cb_webhook('other-bill')
+        self.on_product_renewal.assert_not_called()
+        self.db.wstore_order.find_one_and_update.assert_not_called()
+
+    def test_external_purchase_without_local_order_is_ignored(self):
+        self.Order.get_by_product_id.side_effect = OrderingError('No local purchase')
+        self.manager.complete_cb_webhook('external-bill')
+        self.on_product_renewal.assert_not_called()
+        self.db.wstore_order.find_one_and_update.assert_not_called()

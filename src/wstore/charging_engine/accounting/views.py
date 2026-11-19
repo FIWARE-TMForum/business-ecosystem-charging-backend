@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2017 CoNWeT Lab., Universidad Politécnica de Madrid
+# Copyright (c) 2026 Future Internet Consulting and Development Solutions S.L.
 
 # This file belongs to the business-charging-backend
 # of the Business API Ecosystem.
@@ -22,11 +23,12 @@
 import json
 
 from django.core.exceptions import PermissionDenied
+from requests.exceptions import HTTPError
 
 from wstore.asset_manager.resource_plugins.decorators import on_usage_refreshed
 from wstore.charging_engine.accounting.sdr_manager import SDRManager
 from wstore.charging_engine.accounting.usage_client import UsageClient
-from wstore.ordering.models import Order
+from wstore.ordering.inventory_client import InventoryClient
 from wstore.store_commons.resource import Resource
 from wstore.store_commons.utils.http import build_response, supported_request_mime_types
 
@@ -78,28 +80,23 @@ class SDRRefreshCollection(Resource):
     def create(self, request):
         try:
             data = json.loads(request.body)
-        except:
+        except (ValueError, UnicodeDecodeError):
             return build_response(request, 400, "The request does not contain a valid JSON object")
 
-        if "orderId" not in data or "productId" not in data:
-            return build_response(
-                request,
-                422,
-                "Missing required field, it must include orderId and productId",
-            )
+        if not isinstance(data, dict):
+            return build_response(request, 400, "The request does not contain a valid JSON object")
 
-        # Get order and product info
-        try:
-            order = Order.objects.get(order_id=data["orderId"])
-        except:
-            return build_response(request, 404, "The oid specified in the product name is not valid")
+        product_id = data.get("productId")
+        if not isinstance(product_id, str) or not product_id.strip():
+            return build_response(request, 422, "A non-empty productId is required")
 
         try:
-            contract = order.get_product_contract(data["productId"])
-        except:
-            return build_response(request, 404, "The specified product id is not valid")
+            product = InventoryClient().get_product(product_id)
+        except HTTPError as error:
+            if error.response is not None and error.response.status_code == 404:
+                return build_response(request, 404, "The specified product id is not valid")
+            raise
 
-        # Refresh accounting information
-        on_usage_refreshed(order, contract)
+        on_usage_refreshed(product)
 
         return build_response(request, 200, "Ok")

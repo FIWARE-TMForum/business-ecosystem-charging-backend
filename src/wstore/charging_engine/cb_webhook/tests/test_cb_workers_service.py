@@ -19,11 +19,12 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import queue
-from django.test import TestCase
-from mock import MagicMock, patch
+from django.test import SimpleTestCase, TestCase
+from mock import MagicMock, call, patch
 from bson import ObjectId
 
 from wstore.charging_engine.cb_webhook.cb_workers_service import CBWorkersService
+from wstore.charging_engine.cb_webhook import cb_workers_service
 
 
 class CBWorkersServiceTestCase(TestCase):
@@ -123,3 +124,51 @@ class CBWorkersServiceTestCase(TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["cb_id"], "cb-12345")
+
+
+class CBWorkerNotificationTestCase(SimpleTestCase):
+    def setUp(self):
+        for name in ('get_database_connection', 'OrderingManager'):
+            patcher = patch.object(cb_workers_service, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.service = CBWorkersService()
+        self.service.cb_queue = MagicMock()
+        self.task = {'_id': ObjectId(), 'cb_id': 'renewal-bill'}
+
+    def test_failed_notification_is_logged_and_worker_processes_next_task(self):
+        second = {'_id': ObjectId(), 'cb_id': 'next-bill'}
+        self.service.cb_queue.get.side_effect = [self.task, second, StopIteration]
+        self.service.om.complete_cb_webhook.side_effect = [RuntimeError('plugin unavailable'), None]
+        with self.assertLogs('wstore.charging_engine.cb_workers_service', level='ERROR'):
+            with self.assertRaises(StopIteration):
+                self.service._worker_loop()
+        self.service.db.wstore_cb_queue.update_one.assert_not_called()
+        self.assertEqual(self.service.db.wstore_cb_queue.delete_one.call_args_list, [
+            call({'_id': self.task['_id']}), call({'_id': second['_id']}),
+        ])
+
+    def test_successful_notification_is_deleted_after_processing(self):
+        self.service.cb_queue.get.side_effect = [self.task, StopIteration]
+        self.service.om.complete_cb_webhook.return_value = None
+        self.service.om.complete_cb_webhook.side_effect = lambda bill_id: self.service.db.wstore_cb_queue.delete_one.assert_not_called()
+        with self.assertRaises(StopIteration):
+            self.service._worker_loop()
+        self.service.db.wstore_cb_queue.delete_one.assert_called_once_with({'_id': self.task['_id']})
+
+    def test_locked_notification_keeps_existing_requeue_behavior(self):
+        self.service.cb_queue.get.side_effect = [self.task, StopIteration]
+        self.service.om.complete_cb_webhook.return_value = {'locked': True}
+        with self.assertRaises(StopIteration):
+            self.service._worker_loop()
+        self.service.cb_queue.put_nowait.assert_called_once_with(self.task)
+        self.service.db.wstore_cb_queue.delete_one.assert_not_called()
+
+    def test_carrier_uses_existing_queue_claim_without_retry_metadata(self):
+        self.service.db.wstore_cb_queue.find_one_and_update.return_value = self.task
+        self.service.cb_queue.put.side_effect = StopIteration
+        with self.assertRaises(StopIteration):
+            self.service._carrier_loop()
+        claim = self.service.db.wstore_cb_queue.find_one_and_update.call_args
+        self.assertEqual(claim.args[0], {'in_queue': {'$ne': True}})
+        self.assertEqual(claim.args[1], {'$set': {'in_queue': True}})

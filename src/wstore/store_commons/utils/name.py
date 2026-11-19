@@ -21,7 +21,8 @@
 import re
 
 ID_REGEX = re.compile(r"^[\w -]+$")
-FILE_REGEX = re.compile(r"^[\w .-]+\.[\w]+$")
+# Extensions are optional; exclude path separators, URL delimiters and controls.
+FILE_REGEX = re.compile(r"\A(?!\.{1,2}\Z)(?=.*\S)[^/\\#?%\x00-\x1f\x7f-\x9f]+\Z")
 
 
 def is_valid_id(id_):

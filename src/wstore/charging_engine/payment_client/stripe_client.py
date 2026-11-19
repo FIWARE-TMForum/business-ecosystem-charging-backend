@@ -33,7 +33,8 @@ from decimal import Decimal
 
 from wstore.charging_engine.payment_client.payment_client import PaymentClient, PaymentClientError
 from wstore.ordering.errors import PaymentError
-from wstore.ordering.models import Offering, PaymentRecord
+from wstore.ordering.models import PaymentRecord
+from wstore.store_commons.product_catalog import ProductCatalog, ProductCatalogError
 
 
 logger = getLogger("wstore.default_logger")
@@ -87,7 +88,15 @@ class StripeClient(PaymentClient):
         return_url = url + accept_param + f"&sig={success_sig}"
         cancel_url = url + cancel_param + f"&sig={cancel_sig}"
 
-        products = {contract.item_id: Offering.objects.get(off_id=contract.offering) for contract in self._order.contracts}
+        catalog = ProductCatalog()
+
+        try:
+            products = {
+                contract.item_id: catalog.get_offering(contract.offering)
+                for contract in self._order.contracts
+            }
+        except ProductCatalogError as exc:
+            raise PaymentClientError(self.NAME, "The offering information cannot be retrieved.") from exc
 
         # Build payment object
         has_recurring = False
@@ -102,8 +111,8 @@ class StripeClient(PaymentClient):
                     "currency": t["currency"],
                     "unit_amount": int(Decimal(t["price"]) * Decimal(100)),
                     "product_data": {
-                        "name": products[t["item"]].name,
-                        "description": products[t["item"]].description or "No description",
+                        "name": products[t["item"]]["name"],
+                        "description": products[t["item"]].get("description") or "No description",
                     },
                 },
             })

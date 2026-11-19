@@ -26,6 +26,7 @@ import threading
 from logging import getLogger
 from urllib.parse import urljoin
 
+from bson import ObjectId
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -50,7 +51,6 @@ class AssetManager:
         )
 
     def _save_resource_file(self, provider, file_, isPublic):
-        logger.debug(f"Saving resource file {file_['name']}")
         # Load file contents
         if isinstance(file_, dict):
             file_name = file_["name"]
@@ -59,6 +59,7 @@ class AssetManager:
             file_name = file_.name
             file_.seek(0)
             content = file_.read()
+        logger.debug(f"Saving resource file {file_name}")
         # Check file name
         if not is_valid_file(file_name):
             logger.debug(f"`{file_name}` is not a valid file name")
@@ -198,7 +199,7 @@ class AssetManager:
             raise ValueError(f"The content type {content_type} is not valid for the specified asset type")
 
         # Validate providing method
-        if provided_as not in asset_type.formats:
+        if not asset_type.requires_file or provided_as != "FILE":
             logger.error("Invalid format for given asset type")
             raise ValueError(
                 f"The format used for providing the digital asset ({provided_as}) "
@@ -413,7 +414,7 @@ class AssetManager:
 
     def get_asset_info(self, asset_id):
         try:
-            asset = Resource.objects.get(pk=asset_id)
+            asset = Resource.objects.get(pk=ObjectId(asset_id))
         except:
             raise ObjectDoesNotExist("The specified digital asset does not exist")
 

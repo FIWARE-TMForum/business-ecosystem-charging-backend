@@ -21,14 +21,16 @@
 
 import os
 
-from bson.objectid import ObjectId
 from django.conf import settings
 from django.http import HttpResponse
 from django.utils.encoding import smart_str
 from django.views.static import serve
+from requests.exceptions import RequestException
 
-from wstore.models import Organization, Resource
-from wstore.ordering.models import Offering, Order
+from wstore.models import Organization, Resource, ResourcePlugin
+from wstore.ordering.errors import InventoryError
+from wstore.ordering.inventory_client import InventoryClient
+from wstore.ordering.models import Order
 from wstore.store_commons.resource import Resource as API_Resource
 from wstore.store_commons.utils.http import build_response
 
@@ -62,59 +64,117 @@ class ServeMedia(API_Resource):
 
         return asset
 
-    def _validate_asset_permissions(self, user, path, name):
-        err_code, err_msg = None, None
+    def _is_file_item(self, item, file_id, kind):
+        characteristics = item.get(kind + "Characteristic", [])
 
-        # Retrieve the given digital asset
+        if not isinstance(characteristics, list):
+            return False
+
+        characteristics = [
+            characteristic
+            for characteristic in characteristics
+            if isinstance(characteristic, dict) and isinstance(characteristic.get("name"), str)
+        ]
+
+        if not any(
+            characteristic["name"].strip().lower() == "file" and characteristic.get("value") == file_id
+            for characteristic in characteristics
+        ):
+            return False
+
+        category_ids = [
+            characteristic.get("value")
+            for characteristic in characteristics
+            if characteristic["name"].strip().lower() == kind + " type"
+        ]
+
+        if len(category_ids) != 1 or not isinstance(category_ids[0], str) or not category_ids[0].strip():
+            return False
+
+        return ResourcePlugin.objects.filter(category_id=category_ids[0], type=kind, requires_file=True).exists()
+
+    def _has_file_purchase(self, organization, asset):
+        party_id = organization.actor_id
+
+        if not party_id:
+            return False
+
+        client = InventoryClient()
+        file_id = str(asset.pk)
+
+        for kind in ("service", "resource"):
+            if self._has_inventory_file_purchase(client, party_id, file_id, kind):
+                return True
+
+        return False
+
+    def _has_inventory_file_purchase(self, client, party_id, file_id, kind):
+        items = getattr(client, "iter_" + kind + "s")(query={kind + "Characteristic.value": file_id})
+        reference_field = "realizing" + kind.capitalize()
+
+        for item in items:
+            if not isinstance(item, dict) or not self._is_file_item(item, file_id, kind):
+                continue
+
+            item_id = item.get("id")
+
+            if not isinstance(item_id, str) or not item_id:
+                continue
+
+            products = client.iter_products(
+                query={
+                    reference_field + ".id": item_id,
+                    "relatedParty.id": party_id,
+                    "status": "active",
+                }
+            )
+
+            for product in products:
+                if not isinstance(product, dict) or product.get("status") != "active":
+                    continue
+
+                if not any(
+                    isinstance(reference, dict) and reference.get("id") == item_id
+                    for reference in product.get(reference_field, [])
+                ):
+                    continue
+
+                if any(
+                    isinstance(party, dict)
+                    and party.get("id") == party_id
+                    and isinstance(party.get("role"), str)
+                    and party["role"].lower() == settings.CUSTOMER_ROLE.lower()
+                    for party in product.get("relatedParty", [])
+                ):
+                    return True
+
+        return False
+
+    def _validate_asset_permissions(self, user, path, name):
         try:
             resource_path = os.path.join(settings.MEDIA_DIR, path, name)
             asset = self._get_asset(resource_path)
         except:
-            err_code, err_msg = 404, "The specified asset does not exists"
+            return 404, "The specified asset does not exists"
 
-        # Check if the user has permissions to download the asset
-        if err_code is None and not asset.is_public:
-            if user.is_anonymous:
-                err_code, err_msg = (
-                    401,
-                    "You must be authenticated to download the specified asset",
-                )
+        if asset.is_public:
+            return None, None
 
-            if err_code is None and user.userprofile.current_organization != asset.provider:
-                # Check if the user has acquired the asset
-                acquired_offerings = user.userprofile.current_organization.acquired_offerings
+        if user.is_anonymous:
+            return 401, "You must be authenticated to download the specified asset"
 
-                for offering in [Offering.objects.get(pk=ObjectId(off)) for off in acquired_offerings]:
-                    # Process the offering in order to extract all the offering assets
-                    offering_assets = []
-                    if len(offering.bundled_offerings) > 0:
-                        offering_assets = [
-                            Offering.objects.get(pk=ObjectId(off)).asset
-                            for off in offering.bundled_offerings
-                            if Offering.objects.get(pk=ObjectId(off)).is_digital
-                        ]
-                    elif offering.is_digital:
-                        offering_assets = [offering.asset]
+        organization = user.userprofile.current_organization
 
-                    # Process offering assets in order to expand product bundles
-                    assets = []
-                    for off_asset in offering_assets:
-                        if len(off_asset.bundled_assets) > 0:
-                            assets.extend(
-                                [Resource.objects.get(pk=bundled_pk) for bundled_pk in off_asset.bundled_assets]
-                            )
-                        else:
-                            assets.append(off_asset)
+        if organization == asset.provider:
+            return None, None
 
-                    if asset in assets:
-                        break
-                else:
-                    err_code, err_msg = (
-                        403,
-                        "You are not authorized to download the specified asset",
-                    )
+        try:
+            if self._has_file_purchase(organization, asset):
+                return None, None
+        except (RequestException, InventoryError, ValueError):
+            return 503, "Unable to verify download permissions"
 
-        return err_code, err_msg
+        return 403, "You are not authorized to download the specified asset"
 
     def _validate_invoice_permissions(self, user, name):
         err_code, err_msg = None, None

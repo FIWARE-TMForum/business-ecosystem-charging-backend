@@ -69,7 +69,7 @@ echo "Starting charging server"
 
 python3.9 manage.py migrate
 
-# Register and start the billing/payment scheduler cron jobs (settings.CRONJOBS),
+# Register and start the accounting/billing/payment scheduler cron jobs (settings.CRONJOBS),
 # only when this backend owns the billing engine
 if [ "${BAE_CB_BILLING_ENGINE}" = "local" ]; then
     python3.9 manage.py crontab remove

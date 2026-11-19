@@ -3,7 +3,7 @@ from importlib import reload
 
 from django.conf import settings
 from django.test import TestCase
-from mock import MagicMock
+from mock import MagicMock, patch
 from parameterized import parameterized
 import wstore.store_commons.utils.http as http_utils
 import wstore.rss.views as rss_views
@@ -278,8 +278,8 @@ class ModelManagerTestCase(TestCase):
             rss_models.RSSModel.validate_value_sum(x[0])
 
         rss_models.RSSModel.save = mock_save
-        http_utils.authentication_required = lambda x: x
-        reload(rss_views)
+        with patch.object(http_utils, "authentication_required", lambda x: x):
+            reload(rss_views)
         TestCase.setUp(self)
 
     @parameterized.expand([test.values() for test in CREATE_TESTS])

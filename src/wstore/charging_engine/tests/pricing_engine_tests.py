@@ -19,7 +19,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import datetime
-from django.test import TestCase
+from decimal import Decimal
+from django.test import SimpleTestCase, TestCase
 from django.test.utils import override_settings
 
 from parameterized import parameterized
@@ -784,3 +785,67 @@ class ChargingEngineTestCase(TestCase):
 
         result = engine._calculate_taxes(OFFPARTY, billing_account)
         self.assertEquals(result, expected_result)
+
+
+class UsageAggregationTestCase(SimpleTestCase):
+    def setUp(self):
+        self.engine = pricing_engine.PriceEngine()
+        self.engine._calculate_taxes = MagicMock(return_value=21)
+
+    def _usage(self, value, specification_id=USAGE_POP["usageSpecId"], metric="ram_gb"):
+        return {"usageSpecification": {"id": specification_id},
+                "usageCharacteristic": [{"name": metric, "value": value}]}
+
+    def test_all_daily_measurements_return_one_decimal_price(self):
+        usages = [self._usage("20") for _ in range(31)]
+        total = self.engine._process_usage_value(USAGE_POP, usages)
+        self.assertIsInstance(total, Decimal)
+        self.assertEqual(Decimal("310"), total)
+
+    def test_specification_and_metric_both_have_to_match(self):
+        usages = [self._usage("2"), self._usage("100", specification_id="other-spec"),
+                  self._usage("200", metric="requests"), self._usage("4")]
+        self.assertEqual(Decimal("3"), self.engine._process_usage_value(USAGE_POP, usages))
+
+    def test_numeric_strings_keep_decimal_precision(self):
+        component = {**USAGE_POP, "price": {"unit": "EUR", "value": "0.1"}}
+        usages = [self._usage("0.1234567890123456789"), self._usage("0.2")]
+        self.assertEqual(Decimal("0.03234567890123456789"), self.engine._process_usage_value(component, usages))
+
+    def test_empty_zero_and_single_measurement(self):
+        for usages, expected in [([], "0"), ([self._usage("0")], "0"), ([self._usage("20")], "10")]:
+            with self.subTest(usages=usages):
+                result = self.engine._process_usage_value(USAGE_POP, usages)
+                self.assertIsInstance(result, Decimal)
+                self.assertEqual(Decimal(expected), result)
+
+    def test_aggregate_is_used_by_preview_and_individual_component_pricing(self):
+        component = {**USAGE_POP, "id": "usage-price"}
+        usages = [self._usage("20") for _ in range(31)]
+        for preview in (True, False):
+            with self.subTest(preview=preview):
+                result = self.engine.calculate_prices(BASE_DATA, usage=usages, preview=preview, pop_components=[component])
+                self.assertEqual(1, len(result))
+                self.assertEqual("310.0", result[0]["price"]["dutyFreeAmount"]["value"])
+                self.assertEqual("375.10", result[0]["price"]["taxIncludedAmount"]["value"])
+                self.assertEqual("usage", result[0]["priceType"])
+                self.assertEqual("1 month", result[0]["recurringChargePeriod"])
+                self.assertEqual("usage-price" if not preview else None, result[0].get("priceId"))
+
+    def test_each_specification_with_the_same_metric_gets_its_own_total(self):
+        components = [{**USAGE_POP, "id": "price-1"}, {**USAGE_POP, "id": "price-2", "usageSpecId": "spec-2"}]
+        usages = [self._usage("20"), self._usage("30", specification_id="spec-2"),
+                  self._usage("10"), self._usage("50", specification_id="spec-2")]
+        result = self.engine.calculate_prices(BASE_DATA, usage=usages, preview=False, pop_components=components)
+        self.assertEqual(["price-1", "price-2"], [price["priceId"] for price in result])
+        self.assertEqual(["15.0", "40.0"], [price["price"]["dutyFreeAmount"]["value"] for price in result])
+
+    def test_tailored_multiplier_and_taxes_apply_to_aggregate(self):
+        usages = [self._usage("20"), self._usage("40")]
+        for preview in (True, False):
+            with self.subTest(preview=preview):
+                result = self.engine.calculate_prices(
+                    DATA_WITH_OPTIONS, usage=usages, preview=preview, pop_components=[USAGE_TAILORED_POP],
+                )
+                self.assertEqual("15.00", result[0]["price"]["dutyFreeAmount"]["value"])
+                self.assertEqual("18.15", result[0]["price"]["taxIncludedAmount"]["value"])

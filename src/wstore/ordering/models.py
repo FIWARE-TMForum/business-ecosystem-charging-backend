@@ -298,6 +298,7 @@ class PaymentRecord(models.Model):
     payment_type = models.CharField(max_length=50)
     payment_reference = models.CharField(max_length=255)
     retry_count = models.IntegerField(default=0)
+    first_failed_at = models.DateTimeField(null=True, blank=True, default=None)
 
     objects = models.DjongoManager()
 
@@ -320,6 +321,13 @@ class PaymentRecord(models.Model):
         record = cls.objects.get(customerBill_id=customerBill_id)
         record.retry_count += 1
         record.save()
+
+    def mark_failed(self, failed_at):
+        """Persist the first observed failure in UTC without resetting it on retries."""
+        if self.first_failed_at is None:
+            type(self).objects.filter(pk=self.pk, first_failed_at__isnull=True).update(first_failed_at=failed_at)
+            # Read the stored value in case another worker recorded the failure first.
+            self.refresh_from_db(fields=['first_failed_at'])
 
 class PendingTermination(models.Model):
     _id = models.ObjectIdField()

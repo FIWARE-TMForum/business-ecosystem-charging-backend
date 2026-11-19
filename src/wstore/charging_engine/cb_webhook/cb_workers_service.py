@@ -64,7 +64,11 @@ class CBWorkersService:
             task = self.cb_queue.get()
             logger.info(f"[{threading.current_thread().name}] Processing {task['cb_id']}")
 
-            result = self.om.complete_cb_webhook(task['cb_id'])
+            result = None
+            try:
+                result = self.om.complete_cb_webhook(task['cb_id'])
+            except Exception:
+                logger.exception("Customer bill %s notification processing failed", task['cb_id'])
 
             if result and result.get("locked", False):
                 try:
