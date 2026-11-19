@@ -149,6 +149,34 @@ class Command(BaseCommand):
 
         return created_acbrs, currency, tax_included_total, duty_free_total
 
+    def _get_usage_to_bill(self, usages, prices, components, pops_to_bill):
+        """Select every document contributing to a calculated usage charge."""
+        components_by_id = {component["id"]: component for component in components}
+        billed_usage = {}
+
+        for price in prices:
+            price_id = price.get("priceId")
+            if pops_to_bill.get(price_id, {}).get("type") != USAGE:
+                continue
+
+            component = components_by_id[price_id]
+            specification_id = component.get("usageSpecId")
+            metric = component.get("unitOfMeasure", {}).get("units")
+            if not specification_id or not metric:
+                continue
+
+            for usage in usages:
+                if usage.get("usageSpecification", {}).get("id") != specification_id:
+                    continue
+                if not any(char.get("name") == metric for char in usage.get("usageCharacteristic", [])):
+                    continue
+                usage_id = usage.get("id")
+                if not isinstance(usage_id, str) or not usage_id.strip():
+                    raise ValueError("Billed usage records must identify their usage document")
+                billed_usage[usage_id] = usage
+
+        return billed_usage.values()
+
     def _process_product(self, product, now):
         if not product.get("productPrice"):
             return
@@ -174,6 +202,7 @@ class Command(BaseCommand):
             }]
         }, usage=usages, preview=False, pop_components=pops_to_process)
 
+        usage_to_bill = self._get_usage_to_bill(usages, prices, pops_to_process, pops_to_bill)
         created_acbrs, currency, tax_included_total, duty_free_total = self._create_acbrs(product, prices, pops_to_bill)
 
         if not created_acbrs:
@@ -189,6 +218,8 @@ class Command(BaseCommand):
         }
 
         self._billing_client.create_customer_bill(created_acbrs, cb_model, cb_state="new")
+        for usage in usage_to_bill:
+            self._usage_client.update_usage_state(usage["id"], "billed")
         logger.info(f"CustomerBill created for product {product['id']}, {len(created_acbrs)} ACBRs")
 
     def add_arguments(self, parser):

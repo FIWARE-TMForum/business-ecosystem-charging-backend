@@ -26,8 +26,8 @@ from datetime import datetime
 from importlib import reload
 
 from django.core.exceptions import PermissionDenied
-from django.test import TestCase
-from mock import MagicMock
+from django.test import SimpleTestCase, TestCase
+from mock import MagicMock, patch
 from parameterized import parameterized
 
 from wstore.charging_engine.accounting import sdr_manager, usage_client, views
@@ -537,3 +537,23 @@ class SDRCollectionTestCase(TestCase):
             else:
                 views.UsageClient().update_usage_state.assert_called_once_with("1", "rejected")
                 self.assertEquals(0, self._manager_inst.update_usage.call_count)
+
+
+class UsageBillingTestCase(SimpleTestCase):
+    def setUp(self):
+        self.client = usage_client.UsageClient()
+        patcher = patch.object(usage_client, "requests")
+        self.http = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_billing_patches_only_top_level_status(self):
+        self.client.update_usage_state("usage-1", "billed")
+        self.http.patch.assert_called_once_with(
+            usage_client.get_service_url("usage", "usage/usage-1"), json={"status": "billed"},
+        )
+        self.http.patch.return_value.raise_for_status.assert_called_once_with()
+
+    def test_failed_billed_status_update_propagates(self):
+        self.http.patch.return_value.raise_for_status.side_effect = RuntimeError("usage API unavailable")
+        with self.assertRaises(RuntimeError):
+            self.client.update_usage_state("usage-1", "billed")

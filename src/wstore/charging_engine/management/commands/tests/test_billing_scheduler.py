@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import datetime
+from copy import deepcopy
 from decimal import Decimal
 from unittest.mock import ANY, MagicMock, patch, call
 
@@ -356,6 +357,7 @@ USAGE_POP_WITH_SPEC = {
 
 REAL_USAGES = [
     {
+        "id": "usage-1",
         "usageSpecification": {"id": "urn:ngsi-ld:usageSpecification:spec-1"},
         "usageCharacteristic": [{"name": "mins", "value": 20}],
     }
@@ -540,7 +542,7 @@ PRODUCT_USAGE_ONLY = {
 
 
 class BillingSchedulerSystemTestCase(TestCase):
-    """System tests: only handle() is called. HTTP clients are mocked,
+    """Billing flow tests with HTTP clients mocked and
     PriceEngine and LocalEngine run for real so usage matching is exercised."""
 
     def setUp(self):
@@ -602,3 +604,147 @@ class BillingSchedulerSystemTestCase(TestCase):
         kwargs = self._get_acbr_kwargs()
         self.assertEqual(kwargs["tax_excluded"], "0")
         self.assertEqual(kwargs["tax_included"], "0.00")
+
+
+    def test_usage_is_marked_billed_only_after_customer_bill_creation(self):
+        self.price_engine._calculate_taxes.return_value = 21
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+        sequence = MagicMock()
+        sequence.attach_mock(self.command._billing_client.create_customer_bill, "create_bill")
+        sequence.attach_mock(self.command._usage_client.update_usage_state, "update_status")
+
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+
+        self.assertEqual(["create_bill", "update_status"], [c[0] for c in sequence.mock_calls])
+        self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
+        kwargs = self._get_acbr_kwargs()
+        self.assertEqual("10.0", kwargs["tax_excluded"])
+        self.assertEqual("12.10", kwargs["tax_included"])
+        self.assertEqual("21", kwargs["tax_rate"])
+
+    def test_failed_customer_bill_creation_does_not_mark_usage_billed(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+        self.command._billing_client.create_customer_bill.side_effect = RuntimeError("bill creation failed")
+        with self.assertRaises(RuntimeError):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._usage_client.update_usage_state.assert_not_called()
+
+    def test_failed_rate_creation_does_not_mark_usage_billed(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+        self.command._billing_client.create_customer_rate.side_effect = RuntimeError("rate creation failed")
+        with self.assertRaises(RuntimeError):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._usage_client.update_usage_state.assert_not_called()
+
+    def test_all_matching_documents_are_billed_and_unrelated_documents_are_unchanged(self):
+        second_usage = {**REAL_USAGES[0], "id": "usage-2", "usageCharacteristic": [{"name": "mins", "value": 100}]}
+        self.command._usage_client.get_customer_usage_in_period.return_value = UNMATCHED_USAGES + REAL_USAGES + [second_usage]
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.assertEqual([call("usage-1", "billed"), call("usage-2", "billed")],
+                         self.command._usage_client.update_usage_state.call_args_list)
+        self.assertEqual("60.0", self._get_acbr_kwargs()["tax_excluded"])
+
+    def test_usage_with_no_matching_price_remains_unchanged(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = UNMATCHED_USAGES
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._usage_client.update_usage_state.assert_not_called()
+
+    def test_missing_usage_id_fails_before_creating_billing_records(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = [
+            {key: value for key, value in REAL_USAGES[0].items() if key != "id"},
+        ]
+        with self.assertRaises(ValueError):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._billing_client.create_customer_rate.assert_not_called()
+        self.command._billing_client.create_customer_bill.assert_not_called()
+        self.command._usage_client.update_usage_state.assert_not_called()
+
+    def test_multiple_billed_components_for_one_document_use_one_update(self):
+        other_price = {**USAGE_POP_WITH_SPEC, "id": "usage-price-2", "price": {"unit": "EUR", "value": 2}}
+        product = {**PRODUCT_USAGE_ONLY, "productPrice": [
+            {"productOfferingPrice": {"id": USAGE_POP_ID}}, {"productOfferingPrice": {"id": "usage-price-2"}},
+        ]}
+        self.command._inventory_client.get_price_component.side_effect = [USAGE_POP_WITH_SPEC, other_price]
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+        self.command._process_product(product, TODAY)
+        self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
+        prices = [c.kwargs for c in self.command._billing_client.create_customer_rate.call_args_list]
+        self.assertEqual([USAGE_POP_ID, "usage-price-2"], [price["priceId"] for price in prices])
+        self.assertEqual(["10.0", "40"], [price["tax_excluded"] for price in prices])
+
+    def test_usage_patch_failure_propagates_after_successful_bill_creation(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+        self.command._usage_client.update_usage_state.side_effect = RuntimeError("usage API unavailable")
+        with self.assertRaises(RuntimeError):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._billing_client.create_customer_bill.assert_called_once()
+
+    def test_monthly_charge_includes_every_daily_usage_document(self):
+        usages = [
+            {**REAL_USAGES[0], "id": f"usage-day-{day}",
+             "usageDate": f"2026-03-{day:02d}T12:00:00Z",
+             "usageCharacteristic": [{"name": "mins", "value": "20"}]}
+            for day in range(1, 32)
+        ]
+        self.command._usage_client.get_customer_usage_in_period.return_value = usages
+        self.command._billing_client.get_acbrs.return_value = []
+        self.price_engine._calculate_taxes.return_value = 21
+
+        with patch.object(self.price_engine, "calculate_prices", wraps=self.price_engine.calculate_prices) as calculate:
+            self.command._process_product(PRODUCT_USAGE_ONLY, datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc))
+
+        self.command._usage_client.get_customer_usage_in_period.assert_called_once_with(
+            PRODUCT_ID, "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z",
+        )
+        calculate.assert_called_once()
+        self.assertIs(usages, calculate.call_args.kwargs["usage"])
+        kwargs = self._get_acbr_kwargs()
+        self.assertEqual("310.0", kwargs["tax_excluded"])
+        self.assertEqual("375.10", kwargs["tax_included"])
+        self.command._billing_client.create_customer_bill.assert_called_once()
+        self.assertEqual([call(usage["id"], "billed") for usage in usages],
+                         self.command._usage_client.update_usage_state.call_args_list)
+
+    def test_real_usage_client_patches_only_status_without_changing_documents(self):
+        from wstore.charging_engine.accounting.usage_client import UsageClient
+
+        usages = [
+            {**deepcopy(REAL_USAGES[0]), "ratedProductUsage": [{"productRef": {"id": PRODUCT_ID}}]},
+            {**deepcopy(REAL_USAGES[0]), "id": "usage-2"},
+        ]
+        original = deepcopy(usages)
+        self.command._usage_client = UsageClient()
+        with patch.object(self.command._usage_client, "get_customer_usage_in_period", return_value=usages), \
+                patch.object(self.command._usage_client, "_patch_usage") as patch_usage:
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.assertEqual([call("usage-1", {"status": "billed"}), call("usage-2", {"status": "billed"})],
+                         patch_usage.call_args_list)
+        self.assertEqual(original, usages)
+
+    def test_documents_for_omitted_price_components_remain_unchanged(self):
+        excluded_price = {**USAGE_POP_WITH_SPEC, "id": "excluded-price", "usageSpecId": "excluded-spec",
+                          "prodSpecCharValueUse": [
+                              {"name": "plan", "productSpecCharacteristicValue": [{"value": "premium"}]}]}
+        product = {**PRODUCT_USAGE_ONLY, "productPrice": [
+            {"productOfferingPrice": {"id": USAGE_POP_ID}}, {"productOfferingPrice": {"id": "excluded-price"}},
+        ]}
+        excluded_usage = {**REAL_USAGES[0], "id": "excluded-usage", "usageSpecification": {"id": "excluded-spec"}}
+        other_metric = {**REAL_USAGES[0], "id": "other-metric",
+                        "usageCharacteristic": [{"name": "requests", "value": "100"}]}
+        self.command._inventory_client.get_price_component.side_effect = [USAGE_POP_WITH_SPEC, excluded_price]
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES + [excluded_usage, other_metric]
+
+        self.command._process_product(product, TODAY)
+
+        self.command._billing_client.create_customer_rate.assert_called_once()
+        self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
+
+    def test_missing_id_in_later_matching_document_fails_before_billing(self):
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES + [
+            {key: value for key, value in REAL_USAGES[0].items() if key != "id"},
+        ]
+        with self.assertRaises(ValueError):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._billing_client.create_customer_rate.assert_not_called()
+        self.command._billing_client.create_customer_bill.assert_not_called()
+        self.command._usage_client.update_usage_state.assert_not_called()

@@ -19,13 +19,17 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from copy import deepcopy
 from logging import getLogger
 
-from requests.exceptions import HTTPError
+import requests
+from django.conf import settings
 
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 from wstore.charging_engine.accounting.usage_client import UsageClient
+from wstore.charging_engine.utils import to_utc_z, utc_z_to_dt
+from wstore.ordering.inventory_client import InventoryClient
+from wstore.store_commons.utils.url import get_service_url
+from wstore.store_commons.utils.party import normalize_party_ref, get_operator_party_roles
 
 logger = getLogger("wstore.default_logger")
 
@@ -37,130 +41,143 @@ class Plugin:
         self._model = plugin_model
 
     def get_usage_specs(self):
+        """Declare supported metric templates for future provider tooling.
+
+        These definitions do not create, own or delete usage specifications.
+        Providers create their specifications and reference them from usage prices.
+        """
         return []
 
-    def _get_usage_characteristic(self, name, description, type_):
-        return {
-            "name": name,
-            "description": description,
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": type_, "default": False, "value": ""}],
-        }
+    def _get_usage_prices(self, product):
+        """Group billed metrics within each provider-selected usage specification."""
+        inventory = InventoryClient()
+        prices = {}
+        for price in product.get("productPrice", []):
+            component = inventory.get_price_component(price["productOfferingPrice"]["id"])
 
-    def configure_usage_spec(self):
-        logger.debug(f"Configuring usage specifications for {self._model}")
+            if component.get("isBundle", False) or component.get("priceType", "").lower() != "usage":
+                continue
 
-        # Build common usage spec
-        specification_template = {
-            "usageSpecCharacteristic": [
-                self._get_usage_characteristic("orderId", "Order identifier", "string"),
-                self._get_usage_characteristic("productId", "Product identifier", "string"),
-                self._get_usage_characteristic(
-                    "correlationNumber", "Accounting correlation number", "number"
-                ),
-                self._get_usage_characteristic("unit", "Accounting unit", "string"),
-                self._get_usage_characteristic("value", "Accounting value", "number"),
-            ]
-        }
+            metric = component.get("unitOfMeasure", {}).get("units")
+            specification_id = component.get("usageSpecId")
 
-        usage_specs = self.get_usage_specs()
+            if not isinstance(metric, str) or not metric.strip():
+                raise PluginError("Usage prices must identify a metric in unitOfMeasure.units")
+
+            if not isinstance(specification_id, str) or not specification_id.strip():
+                raise PluginError("Usage prices must identify a provider usage specification in usageSpecId")
+
+            prices.setdefault(specification_id, set()).add(metric)
+        return prices
+
+    def _get_usage_specification(self, specification_id):
+        url = get_service_url("usage", "usageSpecification/" + specification_id)
+        response = requests.get(url, verify=settings.VERIFY_REQUESTS, timeout=30)
+        response.raise_for_status()
+        specification = response.json()
+        if not isinstance(specification, dict) or specification.get("id") != specification_id:
+            raise PluginError("The usage API returned an invalid usage specification")
+        return specification
+
+    def _usage_characteristics(self, specification, record):
+        """Validate the metric's decimal value and emit it as a string."""
+        from decimal import Decimal, InvalidOperation
+
+        definitions = specification.get("specCharacteristic")
+        if not isinstance(definitions, list):
+            raise PluginError("The usage specification must declare its characteristics")
+
+        metric = record["unit"]
+        matching = [
+            definition for definition in definitions
+            if isinstance(definition, dict) and definition.get("name") == metric
+        ]
+        if len(matching) != 1:
+            raise PluginError("The usage specification must declare exactly one accounting metric: " + metric)
+        value = record["value"]
+        try:
+            numeric_value = Decimal(str(value))
+            if not numeric_value.is_finite() or numeric_value < 0:
+                raise ValueError
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise PluginError("Accounting values must be non-negative finite numbers or numeric strings") from exc
+
+        return [{"name": metric, "value": str(value)}]
+
+    def _build_usage_document(self, usage_date, specification, product, record):
         usage_client = UsageClient()
 
-        # Create usage specifications for supported units
-        for spec in usage_specs:
-            if "name" not in spec or "description" not in spec:
-                logger.error("`name` or `description` not in spec")
-                raise PluginError(
-                    "Invalid product specification configuration, must include name and description"
-                )
-
-            logger.debug(f"Creating usage specifications for {spec['name']}")
-
-            # Check if the usage spec is already registered
-            if "usage" not in self._model.options or spec["name"].lower() not in self._model.options["usage"]:
-                usage_spec = deepcopy(specification_template)
-                usage_spec["name"] = spec["name"]
-                usage_spec["description"] = spec["description"]
-                created_spec = usage_client.create_usage_spec(usage_spec)
-
-                if "usage" not in self._model.options:
-                    self._model.options["usage"] = {}
-
-                # Save the spec href to be used in usage documents
-                self._model.options["usage"][spec["name"].lower()] = created_spec["href"]
-                self._model.save()
-                logger.debug("Usage specifications created")
-
-    def remove_usage_specs(self):
-        logger.debug(f"Removing usage specifications for {self._model}")
-
-        if "usage" in self._model.options:
-            try:
-                usage_client = UsageClient()
-
-                for unit, href in self._model.options["usage"].items():
-                    spec_id = href.split("/")[-1]
-                    usage_client.delete_usage_spec(spec_id)
-            except HTTPError as e:
-                if e.response.status_code != 404:
-                    raise e
+        reference = {key: specification[key] for key in ("id", "href", "name") if key in specification}
+        purchase_roles = {settings.PROVIDER_ROLE.lower(), settings.CUSTOMER_ROLE.lower()}
+        related_parties = [
+            normalize_party_ref(party)
+            for party in product["relatedParty"]
+            if isinstance(party.get("role"), str) and party["role"].lower() in purchase_roles
+        ]
+        related_parties.extend(get_operator_party_roles())
+        usage = {
+            "usageType": "event",
+            "status": "received",
+            "usageDate": usage_date,
+            "usageSpecification": reference,
+            "usageCharacteristic": self._usage_characteristics(specification, record),
+            "ratedProductUsage": [{"productRef": {"id": product["id"]}}],
+            "relatedParty": related_parties,
+        }
+        usage_client.create_usage(usage)
 
     def _refresh_usage(self, instance, contract, order):
-        logger.debug(f"Running usage refresh hook for {self._model}")
+        """Publish date/unit/value accounting records against provider specifications.
 
+        The unit names the measured characteristic and must match the usage price's
+        unitOfMeasure.units. Specifications are read from that price's usageSpecId;
+        legacy plugin.options['usage'] mappings are not used.
+        """
+        logger.debug("Running usage refresh hook for %s", self._model)
         if not self._model.pull_accounting:
             return
 
-        pending_accounting, last_usage = self.get_pending_accounting(instance, contract, order)
-        usage_template = {
-            "type": "event",
-            "status": "Received",
-            "usageCharacteristic": [
-                {"name": "orderId", "value": order.order_id},
-                {"name": "productId", "value": contract.product_id},
-            ],
-            "relatedParty": [
-                {
-                    "role": "customer",
-                    "id": order.owner_organization.name,
-                    "href": order.owner_organization.get_party_url(),
-                }
-            ],
-        }
+        pending_accounting = self.get_pending_accounting(instance, contract, order)
+        prices = None
+        product = None
+        specifications = {}
 
-        usage_client = UsageClient()
-        for usage_record in pending_accounting:
-            if "date" not in usage_record or "unit" not in usage_record or "value" not in usage_record:
+        for record in pending_accounting:
+            if not isinstance(record, dict) or not all(key in record for key in ("date", "unit", "value")):
                 raise PluginError("Invalid usage record, it must include date, unit and value")
 
-            # Generate a TMForum usage document for each usage record
-            usage = deepcopy(usage_template)
+            metric = record["unit"]
+            if not isinstance(metric, str) or not metric.strip():
+                raise PluginError("Accounting units must be non-empty metric names")
 
-            usage["date"] = usage_record["date"]
+            try:
+                usage_date = to_utc_z(utc_z_to_dt(record["date"]))
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise PluginError("Accounting dates must be ISO 8601 strings") from exc
 
-            usage["usageSpecification"] = {
-                "href": self._model.options["usage"][usage_record["unit"]],
-                "name": usage_record["unit"],
-            }
+            if prices is None:
+                product = InventoryClient().get_product(contract.product_id)
+                prices = self._get_usage_prices(product)
 
-            usage["usageCharacteristic"].append({"name": "unit", "value": usage_record["unit"]})
+            matching = {specification_id for specification_id, metrics in prices.items() if metric in metrics}
+            if not matching:
+                raise PluginError("Accounting metric does not match a purchased usage specification: " + metric)
 
-            usage["usageCharacteristic"].append(
-                {"name": "correlationNumber", "value": contract.correlation_number}
-            )
+            if len(matching) == 1:
+                specification_id = next(iter(matching))
+            else:
+                specification_id = record.get("usageSpecId")
+                if not isinstance(specification_id, str) or specification_id not in matching:
+                    raise PluginError(
+                        "Accounting record must include a matching usageSpecId when multiple specifications "
+                        "declare metric: " + metric
+                    )
 
-            usage["usageCharacteristic"].append({"name": "value", "value": usage_record["value"]})
+            if specification_id not in specifications:
+                specifications[specification_id] = self._get_usage_specification(specification_id)
 
-            usage_doc = usage_client.create_usage(usage)
-            # All the  information is known so the document is directly created in Guided state
-            usage_client.update_usage_state(usage_doc["id"], "Guided")
-
-            contract.correlation_number += 1
-            order.save()
-
-        if last_usage is not None:
-            contract.last_usage = last_usage
-            order.save()
+            specification = specifications[specification_id]
+            self._build_usage_document(usage_date, specification, product, record)
 
 
 class ServicePlugin(Plugin):
@@ -239,6 +256,7 @@ class ServicePlugin(Plugin):
         pass
 
     def get_pending_accounting(self, service, contract, order):
+        """Return date/unit/value accounting records for this instance."""
         return []
 
     def on_usage_refresh(self, service, contract, order):
@@ -321,6 +339,7 @@ class ResourcePlugin(Plugin):
         pass
 
     def get_pending_accounting(self, resource, contract, order):
+        """Return date/unit/value accounting records for this instance."""
         return []
 
     def on_usage_refresh(self, resource, contract, order):

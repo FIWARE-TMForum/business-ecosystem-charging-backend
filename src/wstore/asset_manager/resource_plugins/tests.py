@@ -465,7 +465,7 @@ class PluginLoaderTestCase(TestCase):
             )
             plugin_mock.delete.assert_called_once_with()
 
-            self.assertEquals(pull, plugin_mock.usage_called)
+            self.assertFalse(plugin_mock.usage_called)
         else:
             self.assertIsInstance(error, err_type)
             self.assertEquals(str(error), err_msg)
@@ -658,267 +658,326 @@ class PluginValidatorTestCase(TestCase):
             self.assertEquals(validation_msg, error.split(".")[0])
 
 
-class PluginTestCase(TestCase):
+class PluginTestCase(SimpleTestCase):
     handler_class = ServicePlugin
     tags = ("plugin",)
 
-    _characteristics = [
-        {
-            "name": "orderId",
-            "description": "Order identifier",
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": "string", "default": False, "value": ""}],
-        },
-        {
-            "name": "productId",
-            "description": "Product identifier",
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": "string", "default": False, "value": ""}],
-        },
-        {
-            "name": "correlationNumber",
-            "description": "Accounting correlation number",
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": "number", "default": False, "value": ""}],
-        },
-        {
-            "name": "unit",
-            "description": "Accounting unit",
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": "string", "default": False, "value": ""}],
-        },
-        {
-            "name": "value",
-            "description": "Accounting value",
-            "configurable": False,
-            "usageSpecCharacteristicValue": [{"valueType": "number", "default": False, "value": ""}],
-        },
-    ]
-
-    _call_spec = {"name": "api call", "description": "api calls"}
-
-    _call_specification = {
-        "name": "api call",
-        "description": "api calls",
-        "usageSpecCharacteristic": deepcopy(_characteristics),
-    }
-
-    _second_spec = {"name": "second", "description": "seconds of usage"}
-
-    _second_specification = {
-        "name": "second",
-        "description": "seconds of usage",
-        "usageSpecCharacteristic": deepcopy(_characteristics),
-    }
-
-    _option = {
-        "usage": {
-            "api call": "http://uploadedspec.com/spec/1",
-        }
-    }
-
-    _order_id = "20"
-    _product_id = "10"
-    _org_name = "TestCustomer"
-    _org_url = "http://exampleserver/party1"
-    _date = "2017-06-06"
-
-    _usage_record = {
-        "type": "event",
-        "status": "Received",
-        "date": _date,
-        "usageSpecification": {
-            "href": "http://uploadedspec.com/spec/1",
-            "name": "api call",
-        },
-        "usageCharacteristic": [
-            {"name": "orderId", "value": _order_id},
-            {"name": "productId", "value": _product_id},
-            {"name": "unit", "value": "api call"},
-            {"name": "correlationNumber", "value": 0},
-            {"name": "value", "value": 130},
-        ],
-        "relatedParty": [{"role": "customer", "id": _org_name, "href": _org_url}],
-    }
-
     def setUp(self):
-        self._model = MagicMock()
-        self._model.options = {}
-
-        self._usage_client = MagicMock()
-        plugin.UsageClient = MagicMock(return_value=self._usage_client)
-
-    def _call_configured(self):
-        self._model.options = self._option
-
-    def _not_called(self):
-        self.assertEqual(0, self._usage_client.create_usage_spec.call_count)
-        self.assertEquals({}, self._model.options)
-
-    def _not_called_conf(self):
-        self.assertEqual(0, self._usage_client.create_usage_spec.call_count)
-        self.assertEquals(self._option, self._model.options)
-
-    def _specs_created(self):
-        self.assertEquals(
-            [call(self._call_specification), call(self._second_specification)],
-            self._usage_client.create_usage_spec.call_args_list,
+        self.model = Mock(pull_accounting=True, options={"usage": {"api call": "obsolete-spec"}})
+        self.handler = self.handler_class(self.model)
+        self.record = {"date": "2026-11-01T12:00:00Z", "unit": "api call", "value": 130}
+        self.handler.get_pending_accounting = Mock(return_value=[self.record])
+        self.instance = {"id": "instance-1"}
+        self.contract = Mock(spec=["product_id"], product_id="product-1")
+        self.order = Mock(order_id="order-1")
+        self.roles = override_settings(
+            PROVIDER_ROLE="Vendor", CUSTOMER_ROLE="Purchaser", OPERATOR_ID="operator-external-id",
+            SELLER_OPERATOR_ROLE="VendorOperator", BUYER_OPERATOR_ROLE="PurchaserOperator",
         )
-
-    @parameterized.expand(
-        [
-            ("empty_specs", [], _not_called),
-            ("already_config", [_call_spec], _not_called_conf, _call_configured),
-            ("spec_created", [_call_spec, _second_spec], _specs_created, None),
+        self.roles.enable()
+        self.addCleanup(self.roles.disable)
+        self.operator_id = "urn:ngsi-ld:organization:operator"
+        self.operator_lookup = patch(
+            "wstore.store_commons.utils.party.get_operator_party_id", return_value=self.operator_id,
+        ).start()
+        self.external_id_lookup = patch(
+            "wstore.store_commons.utils.party.PartyClient.get_party_ext_id", return_value="external-name",
+        ).start()
+        self.party_cache = patch("wstore.store_commons.utils.party.cache").start()
+        self.party_cache.get.return_value = None
+        self.parties = [
+            {"id": "urn:ngsi-ld:organization:provider", "href": "https://party/provider", "role": "Vendor"},
+            {"id": "urn:ngsi-ld:organization:buyer", "href": "https://party/buyer", "role": "Purchaser"},
         ]
-    )
-    def test_usage_spec_conf(self, name, specs, validator, side_effect=None):
-        if side_effect is not None:
-            side_effect(self)
-
-        plugin_handler = self.handler_class(self._model)
-        plugin_handler.get_usage_specs = MagicMock(return_value=specs)
-
-        plugin_handler.configure_usage_spec()
-
-        plugin.UsageClient.assert_called_once_with()
-        validator(self)
-
-    def test_usage_spec_error(self):
-        plugin_handler = self.handler_class(self._model)
-        plugin_handler.get_usage_specs = MagicMock(return_value=[{}])
-
-        try:
-            plugin_handler.configure_usage_spec()
-        except PluginError as e:
-            self.assertEquals(
-                "Plugin Error: Invalid product specification configuration, must include name and description",
-                str(e),
-            )
-
-    def _not_found_spec(self):
-        error = HTTPError()
-        error.response = MagicMock(status_code=404)
-        self._usage_client.delete_usage_spec.side_effect = error
-
-    def _delete_not_called(self):
-        self.assertEquals(0, plugin.UsageClient.call_count)
-        self.assertEquals(0, self._usage_client.delete_usage_spec.call_count)
-
-    def _delete_called(self):
-        plugin.UsageClient.assert_called_once_with()
-        self.assertEquals([call("1"), call("2")], self._usage_client.delete_usage_spec.call_args_list)
-
-    def _already_deleted(self):
-        plugin.UsageClient.assert_called_once_with()
-        self._usage_client.delete_usage_spec.assert_called_once_with("1")
-
-    @parameterized.expand(
-        [
-            ("not_usage", {}, _delete_not_called),
-            (
-                "multiple_units",
-                {
-                    "usage": {
-                        "api call": "http://uploadedspec.com/spec/1",
-                        "second": "http://uploadedspec.com/spec/2",
-                    }
-                },
-                _delete_called,
-            ),
-            ("already_deleted", _option, _already_deleted, _not_found_spec),
+        self.expected_parties = [
+            {**party, "@referredType": "Organization", "name": "external-name"} for party in self.parties
+        ] + [
+            {"id": self.operator_id, "href": self.operator_id, "name": "operator-external-id",
+             "role": role, "@referredType": "Organization"}
+            for role in ("VendorOperator", "PurchaserOperator")
         ]
-    )
-    def test_remove_usage_specs(self, name, options, validator, side_effect=None):
-        self._model.options = options
+        self.inventory = patch.object(plugin, "InventoryClient").start().return_value
+        self.inventory.get_product.return_value = {
+            "id": "product-1",
+            "relatedParty": self.parties,
+            "productPrice": [{"productOfferingPrice": {"id": "price-1"}}],
+        }
+        self.price = {
+            "id": "price-1", "priceType": "usage", "usageSpecId": "provider-spec",
+            "unitOfMeasure": {"units": "api call"}, "price": {"value": "0.5"},
+        }
+        self.inventory.get_price_component.return_value = self.price
+        self.specification = {
+            "id": "provider-spec", "href": "https://usage/usageSpecification/provider-spec",
+            "name": "Provider API calls", "relatedParty": [{"role": "owner", "id": "provider-id"}],
+            "specCharacteristic": [{
+                "name": "api call", "description": "API calls", "valueType": "number",
+            }],
+        }
+        self.http = patch.object(plugin.requests, "get").start()
+        self.http.return_value.json.return_value = self.specification
+        self.client = patch.object(plugin, "UsageClient").start().return_value
+        self.client.create_usage.return_value = {"id": "usage-1"}
+        self.addCleanup(patch.stopall)
 
-        if side_effect:
-            side_effect(self)
+    def refresh(self):
+        self.handler.on_usage_refresh(self.instance, self.contract, self.order)
 
-        plugin_handler = self.handler_class(self._model)
+    def test_provider_owned_usage_matches_unchanged_filter_and_pricing(self):
+        from decimal import Decimal
+        from wstore.charging_engine.pricing_engine import PriceEngine
+        from wstore.charging_engine.accounting.usage_client import UsageClient
 
-        plugin_handler.remove_usage_specs()
+        self.refresh()
+        document = self.client.create_usage.call_args.args[0]
+        self.assertEqual({
+            "usageType": "event", "status": "received", "usageDate": self.record["date"],
+            "usageSpecification": {
+                "id": "provider-spec", "href": self.specification["href"], "name": "Provider API calls",
+            },
+            "usageCharacteristic": [{"name": "api call", "value": "130"}],
+            "ratedProductUsage": [{"productRef": {"id": "product-1"}}],
+            "relatedParty": self.expected_parties,
+        }, document)
+        self.http.return_value.json.side_effect = [[document], []]
+        usages = UsageClient().get_customer_usage_in_period("product-1", "2026-11-01", "2026-12-01", page_size=1)
+        self.assertEqual([document], usages)
+        self.assertEqual(Decimal("65"), PriceEngine()._process_usage_value(self.price, usages))
+        self.client.update_usage_state.assert_not_called()
+        self.order.save.assert_not_called()
+        self.client.create_usage_spec.assert_not_called()
+        self.client.delete_usage_spec.assert_not_called()
+        self.model.save.assert_not_called()
 
-        validator(self)
+    def test_usage_preserves_purchase_parties_and_rebuilds_operator_roles(self):
+        self.parties.extend(self.expected_parties[-2:])
+        self.refresh()
+        document = self.client.create_usage.call_args.args[0]
+        self.assertEqual(self.expected_parties, document["relatedParty"])
+        self.assertEqual(4, len(document["relatedParty"]))
+        self.operator_lookup.assert_called_once_with()
+        self.assertEqual(2, self.external_id_lookup.call_count)
 
-    def test_remove_usage_spec_error(self):
-        self._model.options = self._option
-
-        error = HTTPError()
-        error.response = MagicMock(status_code=500)
-        self._usage_client.delete_usage_spec.side_effect = error
-
-        plugin_handler = self.handler_class(self._model)
-
-        try:
-            plugin_handler.remove_usage_specs()
-        except HTTPError as e:
-            self.assertEquals(500, e.response.status_code)
-
-    def _mock_order(self):
-        asset = MagicMock()
-        contract = MagicMock(product_id=self._product_id, correlation_number=0)
-
-        order = MagicMock(order_id=self._order_id)
-        order.owner_organization.name = self._org_name
-        order.owner_organization.get_party_url.return_value = self._org_url
-
-        return asset, contract, order
-
-    @parameterized.expand(
-        [
-            ("empty_uses", ([], None)),
-            (
-                "pending_usage",
-                ([{"date": _date, "unit": "api call", "value": 130}], "2017-06-06"),
-            ),
+    def test_current_system_operator_replaces_historical_product_operators(self):
+        historical = [
+            {"id": "old-operator", "role": "OldSellerOperator"},
+            {"id": "old-operator", "role": "OldBuyerOperator"},
+            {"id": "other-party", "role": "OtherRole"},
         ]
-    )
-    def test_usage_refresh(self, name, usages):
-        self._model.options = self._option
-        self._model.pull_accounting = True
+        self.parties.extend(historical)
+        self.refresh()
+        self.assertEqual(self.expected_parties, self.client.create_usage.call_args.args[0]["relatedParty"])
+        self.assertEqual(historical, self.parties[-3:])
+        self.assertEqual(2, self.external_id_lookup.call_count)
 
-        self._usage_client.create_usage.return_value = {"id": "1"}
+    def test_purchase_role_matching_is_configurable_and_case_insensitive(self):
+        self.parties[0]["role"] = "vEnDoR"
+        self.parties[1]["role"] = "pUrChAsEr"
+        self.refresh()
+        roles = [party["role"] for party in self.client.create_usage.call_args.args[0]["relatedParty"]]
+        self.assertEqual(["vEnDoR", "pUrChAsEr", "VendorOperator", "PurchaserOperator"], roles)
 
-        plugin_handler = self.handler_class(self._model)
-        plugin_handler.get_pending_accounting = MagicMock(return_value=usages)
+    def test_no_configured_operator_removes_historical_product_operators(self):
+        self.parties.extend(self.expected_parties[-2:])
+        self.operator_lookup.return_value = None
+        self.refresh()
+        self.assertEqual(self.expected_parties[:2], self.client.create_usage.call_args.args[0]["relatedParty"])
 
-        asset, contract, order = self._mock_order()
+    def test_party_normalization_failure_prevents_publication_without_order_writes(self):
+        self.external_id_lookup.side_effect = HTTPError("party lookup failed")
+        with self.assertRaises(HTTPError):
+            self.refresh()
+        self.client.create_usage.assert_not_called()
+        self.order.save.assert_not_called()
 
-        plugin_handler.on_usage_refresh(asset, contract, order)
+    def test_shared_specification_is_used_for_different_purchased_products(self):
+        self.refresh()
+        self.contract.product_id = "product-2"
+        self.inventory.get_product.return_value = {**self.inventory.get_product.return_value, "id": "product-2"}
+        self.refresh()
+        self.assertEqual([call("product-1"), call("product-2")], self.inventory.get_product.call_args_list)
+        documents = [c.args[0] for c in self.client.create_usage.call_args_list]
+        self.assertEqual(["provider-spec"] * 2, [d["usageSpecification"]["id"] for d in documents])
+        self.assertEqual(["product-1", "product-2"], [d["ratedProductUsage"][0]["productRef"]["id"] for d in documents])
 
-        plugin_handler.get_pending_accounting.assert_called_once_with(asset, contract, order)
-        plugin.UsageClient.assert_called_once_with()
+    def test_usage_contains_only_measured_metric_even_if_metadata_is_declared(self):
+        self.specification["specCharacteristic"].extend(
+            {"name": name, "valueType": "string"}
+            for name in ("orderId", "productId", "correlationNumber", "unit", "value")
+        )
+        self.refresh()
+        self.assertEqual([{"name": "api call", "value": "130"}],
+                         self.client.create_usage.call_args.args[0]["usageCharacteristic"])
 
-        if len(usages[0]):
-            # Check calls
-            self._usage_client.create_usage.assert_called_once_with(self._usage_record)
-            self._usage_client.update_usage_state.assert_called_once_with("1", "Guided")
+    def test_numeric_accounting_values_are_validated_and_published_as_strings(self):
+        from decimal import Decimal
 
-            self.assertEquals(1, contract.correlation_number)
-            self.assertEquals(usages[1], contract.last_usage)
-            self.assertEquals([call(), call()], order.save.call_args_list)
+        for value in (0, 2.5, "0", "2.5", "0.1234567890123456789", "9007199254740993",
+                      "1e-400", "1e400", Decimal("0.1234567890123456789")):
+            with self.subTest(value=value):
+                self.handler.get_pending_accounting.return_value = [{**self.record, "value": value}]
+                self.client.create_usage.reset_mock()
+                self.refresh()
+                self.client.create_usage.assert_called_once()
+                emitted = self.client.create_usage.call_args.args[0]["usageCharacteristic"][0]["value"]
+                self.assertIs(type(emitted), str)
+                self.assertEqual(str(value), emitted)
+                self.assertEqual(Decimal(str(value)), Decimal(emitted))
+        self.order.save.assert_not_called()
 
-    def test_usage_refresh_error(self):
-        plugin_handler = self.handler_class(self._model)
-        plugin_handler.get_pending_accounting = MagicMock(return_value=([{}], None))
+    def test_invalid_or_unknown_accounting_does_not_publish(self):
+        records = [
+            {}, {**self.record, "unit": "unknown"}, {**self.record, "unit": []},
+            {**self.record, "date": "invalid"}, {**self.record, "date": None},
+        ] + [
+            {**self.record, "value": value}
+            for value in (True, False, None, -1, -0.5, "-1", "-1e-400", "abc", "",
+                          float("nan"), float("inf"), "NaN", "sNaN", "Infinity", "-Infinity")
+        ]
+        for record in records:
+            with self.subTest(record=record):
+                self.handler.get_pending_accounting.return_value = [record]
+                with self.assertRaises(PluginError):
+                    self.refresh()
+        self.client.create_usage.assert_not_called()
+        self.order.save.assert_not_called()
 
-        asset, contract, order = self._mock_order()
-        try:
-            plugin_handler.on_usage_refresh(asset, contract, order)
-        except PluginError as e:
-            self.assertEquals(
-                "Plugin Error: Invalid usage record, it must include date, unit and value",
-                str(e),
-            )
+    def test_ambiguous_metric_requires_a_matching_record_specification_id(self):
+        other_price = {**self.price, "usageSpecId": "other-spec"}
+        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.inventory.get_price_component.side_effect = lambda price_id: self.price if price_id == "price-1" else other_price
+        for specification_id in (None, "", "not-in-model", [], 0):
+            with self.subTest(specification_id=specification_id):
+                self.handler.get_pending_accounting.return_value = [{**self.record, "usageSpecId": specification_id}]
+                with self.assertRaisesMessage(PluginError, "matching usageSpecId"):
+                    self.refresh()
+        self.client.create_usage.assert_not_called()
+        self.http.assert_not_called()
 
-    def test_usage_refresh_not_pull(self):
-        self._model.pull_accounting = False
-        plugin_handler = self.handler_class(self._model)
-        plugin_handler.get_pending_accounting = MagicMock(return_value=([], None))
+    def test_same_metric_in_two_specifications_uses_each_records_specification_id(self):
+        from decimal import Decimal
+        from wstore.charging_engine.pricing_engine import PriceEngine
 
-        plugin_handler.on_usage_refresh(None, None, None)
-        self.assertEquals(0, plugin_handler.get_pending_accounting.call_count)
+        other_price = {**self.price, "usageSpecId": "other-spec"}
+        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.inventory.get_price_component.side_effect = [self.price, other_price]
+        self.http.return_value.json.side_effect = [
+            self.specification, {**self.specification, "id": "other-spec", "href": "https://usage/other-spec"},
+        ]
+        self.handler.get_pending_accounting.return_value = [
+            {**self.record, "usageSpecId": "provider-spec"},
+            {**self.record, "usageSpecId": "other-spec", "value": "20.1"},
+        ]
+        self.refresh()
+        documents = [c.args[0] for c in self.client.create_usage.call_args_list]
+        self.assertEqual(["provider-spec", "other-spec"], [d["usageSpecification"]["id"] for d in documents])
+        self.assertEqual(Decimal("65"), PriceEngine()._process_usage_value(self.price, documents))
+        self.assertEqual(Decimal("10.05"), PriceEngine()._process_usage_value(other_price, documents))
+
+    def test_single_matching_specification_needs_no_record_id_validation(self):
+        self.record["usageSpecId"] = "not-used-for-a-single-match"
+        self.refresh()
+        self.assertEqual("provider-spec", self.client.create_usage.call_args.args[0]["usageSpecification"]["id"])
+
+    def test_same_specification_on_multiple_prices_is_not_ambiguous(self):
+        self.inventory.get_product.return_value["productPrice"] *= 2
+        self.refresh()
+        self.client.create_usage.assert_called_once()
+
+    def test_missing_price_specification_does_not_use_legacy_plugin_mapping(self):
+        self.price.pop("usageSpecId")
+        with self.assertRaisesMessage(PluginError, "usageSpecId"):
+            self.refresh()
+        self.client.create_usage.assert_not_called()
+
+    def test_specification_must_declare_exactly_one_matching_metric(self):
+        for definitions in (None, [], [{"name": "other-metric"}], [{"name": "api call"}] * 2):
+            with self.subTest(definitions=definitions):
+                self.specification["specCharacteristic"] = definitions
+                with self.assertRaises(PluginError):
+                    self.refresh()
+        self.client.create_usage.assert_not_called()
+        self.order.save.assert_not_called()
+
+    def test_declared_value_type_does_not_restrict_numeric_measurements(self):
+        for definition in ({"name": "api call"}, {"name": "api call", "valueType": "string"}):
+            with self.subTest(definition=definition):
+                self.specification["specCharacteristic"] = [definition]
+                self.client.create_usage.reset_mock()
+                self.refresh()
+                self.assertEqual([{"name": "api call", "value": "130"}],
+                                 self.client.create_usage.call_args.args[0]["usageCharacteristic"])
+
+    def test_invalid_specification_identity_does_not_publish(self):
+        self.specification["id"] = "wrong-spec"
+        with self.assertRaises(PluginError):
+            self.refresh()
+        self.client.create_usage.assert_not_called()
+
+    def test_specification_lookup_failure_does_not_publish(self):
+        self.http.return_value.raise_for_status.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            self.refresh()
+        self.client.create_usage.assert_not_called()
+        self.order.save.assert_not_called()
+
+    def test_publication_failure_propagates_without_status_or_order_writes(self):
+        self.client.create_usage.side_effect = HTTPError("offline")
+        with self.assertRaises(HTTPError):
+            self.refresh()
+        self.client.update_usage_state.assert_not_called()
+        self.order.save.assert_not_called()
+
+    def test_partial_publication_propagates_failure_without_order_writes(self):
+        self.handler.get_pending_accounting.return_value = [self.record, self.record]
+        self.client.create_usage.side_effect = [{"id": "usage-1"}, HTTPError("second publication failed")]
+        with self.assertRaises(HTTPError):
+            self.refresh()
+        self.order.save.assert_not_called()
+
+    def test_one_specification_can_declare_multiple_metrics(self):
+        second_price = {**self.price, "unitOfMeasure": {"units": "second"}}
+        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.inventory.get_price_component.side_effect = [self.price, second_price]
+        self.specification["specCharacteristic"].append({
+            "name": "second", "valueType": "number",
+        })
+        self.handler.get_pending_accounting.return_value = [self.record, {**self.record, "unit": "second"}]
+        self.refresh()
+        documents = [c.args[0] for c in self.client.create_usage.call_args_list]
+        self.assertEqual([[{"name": "api call", "value": "130"}], [{"name": "second", "value": "130"}]],
+                         [d["usageCharacteristic"] for d in documents])
+        self.http.assert_called_once()
+
+    def test_specification_and_prices_are_cached_for_one_refresh(self):
+        self.handler.get_pending_accounting.return_value = [self.record, self.record]
+        self.refresh()
+        self.inventory.get_product.assert_called_once_with("product-1")
+        self.http.assert_called_once()
+        self.assertEqual(2, self.client.create_usage.call_count)
+
+    def test_no_records_needs_no_catalog_reads(self):
+        self.handler.get_pending_accounting.return_value = []
+        self.refresh()
+        self.inventory.get_product.assert_not_called()
+        self.http.assert_not_called()
+        self.client.create_usage.assert_not_called()
+
+    def test_not_pull_accounting_does_nothing(self):
+        self.model.pull_accounting = False
+        self.refresh()
+        self.handler.get_pending_accounting.assert_not_called()
+        self.inventory.get_product.assert_not_called()
+
+    def test_spec_metrics_hook_is_declarative_and_management_is_removed(self):
+        self.assertEqual([], self.handler.get_usage_specs())
+        self.assertFalse(hasattr(self.handler, "configure_usage_spec"))
+        self.assertFalse(hasattr(self.handler, "remove_usage_specs"))
+        self.client.create_usage_spec.assert_not_called()
+        self.client.delete_usage_spec.assert_not_called()
+
+    def test_inherited_accounting_returns_empty_records(self):
+        self.assertEqual([], self.handler_class(self.model).get_pending_accounting(None, None, None))
 
 
 class ResourcePluginAccountingTests(PluginTestCase):
@@ -1434,6 +1493,39 @@ class PackageManagementTests(SimpleTestCase):
                 ),
             )
         return path
+
+    def test_accounting_package_lifecycle_never_manages_usage_specifications(self):
+        metrics = Mock(return_value=[{"name": "api call", "description": "Calls"}])
+        create = Mock(side_effect=AssertionError("Installation must not create usage specifications"))
+        delete = Mock(side_effect=AssertionError("Removal must not delete provider specifications"))
+        handler = type("AccountingPlugin", (self.handler_class,), {
+            "get_usage_specs": metrics,
+            "get_pending_accounting": lambda self, *args: [],
+            "configure_usage_spec": create,
+            "remove_usage_specs": delete,
+        })
+        self.loader._get_plugin_module.return_value = handler
+        self.model.options = {"usage": {"api call": "legacy-reference"}}
+        for version in ("1.0", "2.0"):
+            path = self.package(version)
+            with ZipFile(path) as archive:
+                manifest = json.loads(archive.read("package.json"))
+            manifest["pull_accounting"] = True
+            with ZipFile(path, "w") as archive:
+                archive.writestr("package.json", json.dumps(manifest))
+            if version == "1.0":
+                self.lookup.side_effect = ObjectDoesNotExist
+                self.loader.install_plugin(path)
+                self.lookup.side_effect = None
+            else:
+                self.model.pull_accounting = True
+                self.loader.install_plugin(path)
+        self.loader.downgrade_plugin("test")
+        self.loader.uninstall_plugin("test")
+        create.assert_not_called()
+        delete.assert_not_called()
+        metrics.assert_not_called()
+        self.assertEqual({"usage": {"api call": "legacy-reference"}}, self.model.options)
 
     def test_install_creates_category_and_retains_local_asset_type(self):
         self.lookup.side_effect = ObjectDoesNotExist

@@ -323,10 +323,6 @@ class PluginLoader:
         self._update_model_data_from_json(plugin_model, module, json_info)
         logger.debug("Plugin model saved to database")
 
-        # Configure usage specifications if needed
-        if plugin_model.pull_accounting:
-            module_class(plugin_model).configure_usage_spec()
-
         logger.info("Plugin %s version %s installed", plugin_id, json_info["version"])
 
         return plugin_id
@@ -347,19 +343,9 @@ class PluginLoader:
             dg_json_info = json.load(dg_json_file)
             dg_module = self._plugins_module + dg_plugin_dir + "." + dg_json_info["module"]
 
-        # Remove usage specifications if needed
-        if plugin_model.pull_accounting:
-            cur_module_class = self._get_plugin_module(plugin_model.module)
-            cur_module_class(plugin_model).remove_usage_specs()
-
         self._synchronize_category(plugin_model, dg_json_info, rb_log)
         self._update_model_data_from_json(plugin_model, dg_module, dg_json_info)
         logger.debug("Plugin model updated")
-
-        # Configure usage specifications if needed
-        if plugin_model.pull_accounting:
-            dg_module_class = self._get_plugin_module(plugin_model.module)
-            dg_module_class(plugin_model).configure_usage_spec()
 
         rmtree(cur_plugin_path)
         logger.info(f"Version {cur_version} of plugin {plugin_id} removed successfully")
@@ -408,11 +394,6 @@ class PluginLoader:
             raise PermissionDenied(
                 "The plugin " + plugin_id + " is being used by specifications or inventory instances"
             )
-
-        # Do not downgrade through old versions merely to remove a package.
-        if plugin_model.pull_accounting:
-            module_class = self._get_plugin_module(plugin_model.module)
-            module_class(plugin_model).remove_usage_specs()
 
         # Keep the package and registry if the catalog refuses deletion.
         catalog.delete_category(plugin_model.category_id)

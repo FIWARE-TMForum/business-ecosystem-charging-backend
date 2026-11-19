@@ -43,6 +43,7 @@ class PriceEngine:
         return pricing
 
     def _process_usage_value(self, component, usage):
+        total = Decimal("0")
         for usage_item in usage:
             if (
                 "usageSpecification" in usage_item
@@ -52,9 +53,9 @@ class PriceEngine:
             ):
                 for usage_char in usage_item["usageCharacteristic"]:
                     if usage_char["name"] == component["unitOfMeasure"]["units"]:
-                        return Decimal(str(usage_char["value"])) * Decimal(str(component["price"]["value"]))
+                        total += Decimal(str(usage_char["value"])) * Decimal(str(component["price"]["value"]))
 
-        return Decimal("0")
+        return total
 
     def _process_price_component(self, component, prd_selected_chars, aggregated, usage):
         # Check if the component needs to be applied
