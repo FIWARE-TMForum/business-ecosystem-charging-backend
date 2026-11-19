@@ -30,9 +30,17 @@ from wstore.asset_manager.resource_plugins.resolver import CatalogResolver
 from wstore.models import Organization, ResourcePlugin
 from wstore.ordering.inventory_client import InventoryClient
 from wstore.ordering.ordering_client import OrderingClient
+from wstore.ordering.models import Order
 from wstore.asset_manager.resource_plugins.plugin_error import PluginError
 
 logger = getLogger("wstore.default_logger")
+
+
+def has_pull_accounting_plugins():
+    """Check the installed registry without loading any plugin handlers."""
+
+    # Djongo requires an explicit comparison rather than a bare boolean predicate.
+    return ResourcePlugin.objects.filter(pull_accounting__in=[True]).exists()
 
 
 def _get_plugin_model(category_id, plugin_type="service"):
@@ -244,14 +252,16 @@ def _get_product_organization(product, role):
     return Organization.objects.get(actor_id=party_ids.pop())
 
 
-def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False, **context):
-    """Dispatch to realizing instances, propagating failures when the operation requires it."""
+def _dispatch_inventory_plugins(product, dispatch, event, *, raise_on_error=False, order_id=None):
+    """Resolve realizing instances and their parties before invoking a dispatcher."""
+
     inventory = InventoryClient()
     organizations = None
 
     for plugin_type, field in (("service", "realizingService"), ("resource", "realizingResource")):
         error = ResourceError if plugin_type == "resource" else ServiceError
         references = product.get(field, [])
+
         if not isinstance(references, list):
             logger.error("Cannot notify %s for product %s: %s must be a list", event, product.get("id"), field)
             if raise_on_error:
@@ -268,30 +278,48 @@ def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error
                     raise error("Each " + field + " reference must contain a " + plugin_type + " id")
 
                 instance = getattr(inventory, "get_" + plugin_type)(reference["id"])
+
                 if not isinstance(instance, dict) or instance.get("id") != reference["id"]:
                     raise error("Invalid inventory " + plugin_type + " reference: " + reference["id"])
 
                 plugin = load_inventory_plugin_module(instance, plugin_type)
+
                 if plugin is not None:
                     if organizations is None:
                         organizations = (
                             _get_product_organization(product, settings.PROVIDER_ROLE),
                             _get_product_organization(product, settings.CUSTOMER_ROLE),
                         )
+
                     provider, buyer = organizations
-                    getattr(plugin, "on_" + plugin_type + "_" + event)(provider, buyer, instance, product, order, contract, **context)
+
+                    dispatch(plugin_type, plugin, provider, buyer, instance)
             except Exception:
                 logger.exception(
                     "%s %s notification failed for order %s, product %s, %s %s",
                     plugin_type.title(),
                     event,
-                    order.get("id"),
+                    order_id,
                     product.get("id"),
                     plugin_type,
                     reference.get("id") if isinstance(reference, dict) else None,
                 )
                 if raise_on_error:
                     raise
+
+
+def _notify_inventory_plugins(product, order, contract, event, *, raise_on_error=False, **context):
+    """Invoke typed lifecycle hooks with their shared product-level context."""
+
+    def notify(plugin_type, plugin, provider, buyer, instance):
+        getattr(plugin, "on_" + plugin_type + "_" + event)(
+            provider, buyer, instance, product, order, contract, **context
+        )
+
+    _dispatch_inventory_plugins(
+        product, notify, event, raise_on_error=raise_on_error,
+        order_id=order.get("id") if isinstance(order, dict) else getattr(order, "order_id", None),
+    )
 
 
 def on_product_activation(product, order, contract=None):
@@ -323,13 +351,23 @@ def on_product_termination(order, contract):
         logger.exception("Termination notification failed for order %s, product %s", order.order_id, contract.product_id)
 
 
-def process_product_notification(order, contract, type_):
-    # Usage dispatch remains deferred.
-    pass
+def on_usage_refreshed(product, order=None, contract=None):
+    """Collect accounting from a product's plugins before querying its usage."""
 
+    def refresh(plugin_type, plugin, provider, buyer, instance):
+        nonlocal order, contract
 
-def on_usage_refreshed(order, contract):
-    process_product_notification(order, contract, "usage")
+        if order is None:
+            order = Order.get_by_product_id(product["id"])
+
+        if contract is None:
+            contract = order.get_product_contract(product["id"])
+
+        plugin.on_usage_refresh(provider, buyer, instance, product, order, contract)
+
+    _dispatch_inventory_plugins(
+        product, refresh, "usage_refresh", raise_on_error=True, order_id=getattr(order, "order_id", None),
+    )
 
 
 def _on_pre_specification_write(func, plugin_type, loader, operation):

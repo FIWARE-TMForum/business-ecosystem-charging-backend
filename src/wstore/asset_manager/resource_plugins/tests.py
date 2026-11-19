@@ -62,6 +62,31 @@ class TestPlugin:
         self._plugin_model.usage_called = True
 
 
+class PullAccountingAvailabilityTests(TestCase):
+    @parameterized.expand([("service",), ("resource",)])
+    def test_registry_changes_are_visible_without_loading_handlers(self, plugin_type):
+        with patch.object(decorators, "_load_plugin_model") as load:
+            self.assertFalse(decorators.has_pull_accounting_plugins())
+
+            model = ResourcePlugin.objects.create(
+                plugin_id="accounting-test", type=plugin_type, name="Accounting test", version="1.0",
+                module="unused.Plugin", requires_file=False, pull_accounting=False,
+            )
+
+            self.assertFalse(decorators.has_pull_accounting_plugins())
+
+            model.pull_accounting = True
+            model.save()
+
+            self.assertTrue(decorators.has_pull_accounting_plugins())
+
+            model.delete()
+
+            self.assertFalse(decorators.has_pull_accounting_plugins())
+
+        load.assert_not_called()
+
+
 class PluginLoaderTestCase(TestCase):
     tags = ("plugin",)
 
@@ -695,7 +720,7 @@ class PluginTestCase(SimpleTestCase):
             for role in ("VendorOperator", "PurchaserOperator")
         ]
         self.inventory = patch.object(plugin, "InventoryClient").start().return_value
-        self.inventory.get_product.return_value = {
+        self.product = {
             "id": "product-1",
             "relatedParty": self.parties,
             "productPrice": [{"productOfferingPrice": {"id": "price-1"}}],
@@ -719,7 +744,19 @@ class PluginTestCase(SimpleTestCase):
         self.addCleanup(patch.stopall)
 
     def refresh(self):
-        self.handler.on_usage_refresh(self.instance, self.contract, self.order)
+        self.handler.on_usage_refresh(
+            self.parties[0], self.parties[1], self.instance, self.product, self.order, self.contract
+        )
+
+    def test_supplied_product_can_be_used_without_a_contract_or_inventory_refetch(self):
+        self.handler.on_usage_refresh(self.parties[0], self.parties[1], self.instance, self.product, self.order)
+
+        self.handler.get_pending_accounting.assert_called_once_with(self.instance, None, self.order)
+        self.inventory.get_product.assert_not_called()
+        self.assertEqual(
+            self.product["id"],
+            self.client.create_usage.call_args.args[0]["ratedProductUsage"][0]["productRef"]["id"],
+        )
 
     def test_provider_owned_usage_matches_unchanged_filter_and_pricing(self):
         from decimal import Decimal
@@ -791,9 +828,9 @@ class PluginTestCase(SimpleTestCase):
     def test_shared_specification_is_used_for_different_purchased_products(self):
         self.refresh()
         self.contract.product_id = "product-2"
-        self.inventory.get_product.return_value = {**self.inventory.get_product.return_value, "id": "product-2"}
+        self.product = {**self.product, "id": "product-2"}
         self.refresh()
-        self.assertEqual([call("product-1"), call("product-2")], self.inventory.get_product.call_args_list)
+        self.inventory.get_product.assert_not_called()
         documents = [c.args[0] for c in self.client.create_usage.call_args_list]
         self.assertEqual(["provider-spec"] * 2, [d["usageSpecification"]["id"] for d in documents])
         self.assertEqual(["product-1", "product-2"], [d["ratedProductUsage"][0]["productRef"]["id"] for d in documents])
@@ -842,7 +879,7 @@ class PluginTestCase(SimpleTestCase):
 
     def test_ambiguous_metric_requires_a_matching_record_specification_id(self):
         other_price = {**self.price, "usageSpecId": "other-spec"}
-        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.product["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
         self.inventory.get_price_component.side_effect = lambda price_id: self.price if price_id == "price-1" else other_price
         for specification_id in (None, "", "not-in-model", [], 0):
             with self.subTest(specification_id=specification_id):
@@ -857,7 +894,7 @@ class PluginTestCase(SimpleTestCase):
         from wstore.charging_engine.pricing_engine import PriceEngine
 
         other_price = {**self.price, "usageSpecId": "other-spec"}
-        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.product["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
         self.inventory.get_price_component.side_effect = [self.price, other_price]
         self.http.return_value.json.side_effect = [
             self.specification, {**self.specification, "id": "other-spec", "href": "https://usage/other-spec"},
@@ -878,7 +915,7 @@ class PluginTestCase(SimpleTestCase):
         self.assertEqual("provider-spec", self.client.create_usage.call_args.args[0]["usageSpecification"]["id"])
 
     def test_same_specification_on_multiple_prices_is_not_ambiguous(self):
-        self.inventory.get_product.return_value["productPrice"] *= 2
+        self.product["productPrice"] *= 2
         self.refresh()
         self.client.create_usage.assert_called_once()
 
@@ -935,7 +972,7 @@ class PluginTestCase(SimpleTestCase):
 
     def test_one_specification_can_declare_multiple_metrics(self):
         second_price = {**self.price, "unitOfMeasure": {"units": "second"}}
-        self.inventory.get_product.return_value["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
+        self.product["productPrice"].append({"productOfferingPrice": {"id": "price-2"}})
         self.inventory.get_price_component.side_effect = [self.price, second_price]
         self.specification["specCharacteristic"].append({
             "name": "second", "valueType": "number",
@@ -950,7 +987,8 @@ class PluginTestCase(SimpleTestCase):
     def test_specification_and_prices_are_cached_for_one_refresh(self):
         self.handler.get_pending_accounting.return_value = [self.record, self.record]
         self.refresh()
-        self.inventory.get_product.assert_called_once_with("product-1")
+        self.inventory.get_product.assert_not_called()
+        self.inventory.get_price_component.assert_called_once_with("price-1")
         self.http.assert_called_once()
         self.assertEqual(2, self.client.create_usage.call_count)
 
@@ -2356,10 +2394,70 @@ class TerminationDispatchTests(SimpleTestCase):
             self.catalog_reads.append(patcher.start())
             self.addCleanup(patcher.stop)
 
-    def test_usage_remains_disconnected(self):
-        decorators.on_usage_refreshed(self.local_order, self.contract)
-        self.InventoryClient.assert_not_called()
+    def test_usage_dispatch_passes_product_context_without_catalog_or_order_api_reads(self):
+        decorators.on_usage_refreshed(self.product, self.local_order, self.contract)
+        for kind, plugin in self.plugins.items():
+            plugin.on_usage_refresh.assert_called_once_with(
+                self.provider, self.buyer, self.instances[kind], self.product, self.local_order, self.contract
+            )
+
+        self.inventory.get_product.assert_not_called()
         self.OrderingClient.assert_not_called()
+        self.assertEqual([call(actor_id="seller"), call(actor_id="buyer")],
+                         self.Organization.objects.get.call_args_list)
+
+        for read in self.catalog_reads:
+            read.assert_not_called()
+
+    def test_usage_dispatch_resolves_local_context_once_for_all_instances(self):
+        order = Mock(order_id="order-1")
+        order.get_product_contract.return_value = self.contract
+
+        with patch.object(decorators, "Order") as orders:
+            orders.get_by_product_id.return_value = order
+
+            decorators.on_usage_refreshed(self.product)
+
+            orders.get_by_product_id.assert_called_once_with("p1")
+
+        order.get_product_contract.assert_called_once_with("p1")
+
+        for kind, plugin in self.plugins.items():
+            plugin.on_usage_refresh.assert_called_once_with(
+                self.provider, self.buyer, self.instances[kind], self.product, order, self.contract
+            )
+
+    def test_usage_dispatch_skips_ordinary_and_uninstalled_instances_without_local_order_lookup(self):
+        self.instances["service"]["serviceCharacteristic"] = []
+        self._get_plugin_model.side_effect = None
+        self._get_plugin_model.return_value = None
+
+        with patch.object(decorators, "Order") as orders:
+            decorators.on_usage_refreshed(self.product)
+
+            orders.get_by_product_id.assert_not_called()
+        for plugin in self.plugins.values():
+            plugin.on_usage_refresh.assert_not_called()
+
+    def test_accounting_failure_propagates_to_prevent_billing_incomplete_usage(self):
+        self.plugins["service"].on_usage_refresh.side_effect = PluginError("accounting unavailable")
+
+        with self.assertRaisesRegex(PluginError, "accounting unavailable"):
+            decorators.on_usage_refreshed(self.product, self.local_order, self.contract)
+
+        self.plugins["resource"].on_usage_refresh.assert_not_called()
+
+    def test_usage_inventory_lookup_failure_propagates(self):
+        self.inventory.get_service.side_effect = RuntimeError("inventory unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "inventory unavailable"):
+            decorators.on_usage_refreshed(self.product, self.local_order, self.contract)
+
+    def test_usage_without_realizing_instances_needs_no_local_context(self):
+        with patch.object(decorators, "Order") as orders:
+            decorators.on_usage_refreshed({"id": "p1"})
+
+            orders.get_by_product_id.assert_not_called()
 
     def dispatch(self):
         decorators.on_product_termination(self.local_order, self.contract)

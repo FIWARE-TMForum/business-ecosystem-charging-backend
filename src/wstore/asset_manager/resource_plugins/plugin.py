@@ -126,7 +126,7 @@ class Plugin:
         }
         usage_client.create_usage(usage)
 
-    def _refresh_usage(self, instance, contract, order):
+    def _refresh_usage(self, instance, product, contract, order):
         """Publish date/unit/value accounting records against provider specifications.
 
         The unit names the measured characteristic and must match the usage price's
@@ -139,7 +139,6 @@ class Plugin:
 
         pending_accounting = self.get_pending_accounting(instance, contract, order)
         prices = None
-        product = None
         specifications = {}
 
         for record in pending_accounting:
@@ -156,7 +155,6 @@ class Plugin:
                 raise PluginError("Accounting dates must be ISO 8601 strings") from exc
 
             if prices is None:
-                product = InventoryClient().get_product(contract.product_id)
                 prices = self._get_usage_prices(product)
 
             matching = {specification_id for specification_id, metrics in prices.items() if metric in metrics}
@@ -259,8 +257,10 @@ class ServicePlugin(Plugin):
         """Return date/unit/value accounting records for this instance."""
         return []
 
-    def on_usage_refresh(self, service, contract, order):
-        self._refresh_usage(service, contract, order)
+    def on_usage_refresh(self, provider, buyer, service, product, order, contract=None):
+        """Publish accounting using the supplied purchased-product context."""
+
+        self._refresh_usage(service, product, contract, order)
 
 
 class ResourcePlugin(Plugin):
@@ -342,5 +342,7 @@ class ResourcePlugin(Plugin):
         """Return date/unit/value accounting records for this instance."""
         return []
 
-    def on_usage_refresh(self, resource, contract, order):
-        self._refresh_usage(resource, contract, order)
+    def on_usage_refresh(self, provider, buyer, resource, product, order, contract=None):
+        """Publish accounting using the supplied purchased-product context."""
+
+        self._refresh_usage(resource, product, contract, order)

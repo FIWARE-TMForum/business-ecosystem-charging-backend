@@ -202,8 +202,9 @@ AUTHENTICATION_BACKENDS = ("django.contrib.auth.backends.ModelBackend",)
 
 TEST_RUNNER = "django_nose.NoseTestSuiteRunner"
 
-# Daily job that checks pending pay-per-use charges
+# Accounting collection and billing/payment schedules for the local billing engine.
 CRONJOBS = [
+    ("0 0 * * *", "django.core.management.call_command", ["accounting_scheduler"]),
     # ("0 6 * * *", "django.core.management.call_command", ["resend_cdrs"]),
     # ("0 4 * * *", "django.core.management.call_command", ["resend_upgrade"]),
     # Recurring billing: creates new CustomerBills for expired billing periods (off-peak hours)

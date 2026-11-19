@@ -26,9 +26,6 @@ from bson.objectid import ObjectId
 from django.http import HttpResponse
 from logging import getLogger
 
-from wstore.asset_manager.resource_plugins.decorators import (
-    on_usage_refreshed,
-)
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.charging_engine.charging_engine import ChargingEngine
 from wstore.ordering.errors import OrderingError
@@ -237,9 +234,6 @@ def validate_product_job(self, request):
 
 
 def process_product_payment(self, request, task, order, contract):
-    # Refresh accounting information
-    on_usage_refreshed(order, contract)
-
     # Build charging engine
     charging_engine = ChargingEngine(order)
 

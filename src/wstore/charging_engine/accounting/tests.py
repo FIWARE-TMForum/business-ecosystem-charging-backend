@@ -25,9 +25,10 @@ from copy import deepcopy
 from datetime import datetime
 
 from django.core.exceptions import PermissionDenied
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from mock import MagicMock, patch
 from parameterized import parameterized
+from requests.exceptions import HTTPError
 
 from wstore.charging_engine.accounting import sdr_manager, usage_client, views
 from wstore.charging_engine.accounting.errors import UsageError
@@ -556,3 +557,76 @@ class UsageBillingTestCase(SimpleTestCase):
         self.http.patch.return_value.raise_for_status.side_effect = RuntimeError("usage API unavailable")
         with self.assertRaises(RuntimeError):
             self.client.update_usage_state("usage-1", "billed")
+
+
+class UsageRefreshEndpointTests(SimpleTestCase):
+    def setUp(self):
+        inventory_patcher = patch.object(views, "InventoryClient")
+        self.inventory = inventory_patcher.start().return_value
+        self.addCleanup(inventory_patcher.stop)
+
+        refresh_patcher = patch.object(views, "on_usage_refreshed")
+        self.refresh = refresh_patcher.start()
+        self.addCleanup(refresh_patcher.stop)
+
+        self.collection = views.SDRRefreshCollection(permitted_methods=("POST",))
+
+    def _post(self, body):
+        request = RequestFactory().post(
+            "/charging/api/orderManagement/accounting/refresh/", body, content_type="application/json",
+        )
+
+        return self.collection(request)
+
+    def test_explicit_refresh_needs_only_inventory_product_id(self):
+        product = {"id": "product-1", "realizingService": [{"id": "service-1"}]}
+        self.inventory.get_product.return_value = product
+
+        response = self._post(json.dumps({"productId": "product-1"}))
+
+        self.assertEqual(200, response.status_code)
+        self.inventory.get_product.assert_called_once_with("product-1")
+        self.refresh.assert_called_once_with(product)
+
+    @parameterized.expand([
+        ("malformed", "{", 400),
+        ("list", "[]", 400),
+        ("null", "null", 400),
+        ("string", '"product-1"', 400),
+        ("missing_id", "{}", 422),
+        ("order_id_only", '{"orderId": "order-1"}', 422),
+        ("empty_id", '{"productId": ""}', 422),
+        ("blank_id", '{"productId": " "}', 422),
+        ("null_id", '{"productId": null}', 422),
+        ("numeric_id", '{"productId": 1}', 422),
+    ])
+    def test_invalid_request_does_not_fetch_or_refresh(self, name, body, expected_status):
+        response = self._post(body)
+
+        self.assertEqual(expected_status, response.status_code)
+        self.inventory.get_product.assert_not_called()
+        self.refresh.assert_not_called()
+
+    def test_missing_inventory_product_returns_not_found(self):
+        self.inventory.get_product.side_effect = HTTPError(response=MagicMock(status_code=404))
+
+        response = self._post(json.dumps({"productId": "missing-product"}))
+
+        self.assertEqual(404, response.status_code)
+        self.refresh.assert_not_called()
+
+    def test_inventory_failure_is_not_reported_as_missing_product(self):
+        error = HTTPError(response=MagicMock(status_code=503))
+        self.inventory.get_product.side_effect = error
+
+        with self.assertRaises(HTTPError) as raised:
+            self._post(json.dumps({"productId": "product-1"}))
+
+        self.assertIs(error, raised.exception)
+        self.refresh.assert_not_called()
+
+    def test_refresh_failure_is_not_reported_as_success(self):
+        self.refresh.side_effect = RuntimeError("Accounting collection failed")
+
+        with self.assertRaises(RuntimeError):
+            self._post(json.dumps({"productId": "product-1"}))

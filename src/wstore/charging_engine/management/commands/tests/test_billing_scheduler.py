@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import datetime
+from contextlib import ExitStack
 from copy import deepcopy
 from decimal import Decimal
 from unittest.mock import ANY, MagicMock, patch, call
@@ -264,6 +265,10 @@ class BillingSchedulerGetPopsToBillTestCase(TestCase):
 class BillingSchedulerProcessProductTestCase(TestCase):
 
     def setUp(self):
+        refresh_patch = patch("wstore.charging_engine.management.commands.billing_scheduler.on_usage_refreshed")
+        self.refresh_accounting = refresh_patch.start()
+        self.addCleanup(refresh_patch.stop)
+
         self.command = Command.__new__(Command)
         self.command._inventory_client = MagicMock()
         self.command._billing_client = MagicMock()
@@ -281,19 +286,19 @@ class BillingSchedulerProcessProductTestCase(TestCase):
     def test_skips_product_with_no_product_price(self):
         product = {**PRODUCT, "productPrice": []}
 
-        self.command._process_product(product, TODAY)
+        self.command._process_product(product, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_bill.assert_not_called()
 
     def test_skips_product_when_no_pops_to_bill(self):
         self.command._billing_client.get_acbrs.return_value = [ACBR_NOT_EXPIRED]
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_bill.assert_not_called()
 
     def test_creates_acbr_and_customer_bill(self):
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_rate.assert_called_once()
         self.command._billing_client.create_customer_bill.assert_called_once()
@@ -301,14 +306,14 @@ class BillingSchedulerProcessProductTestCase(TestCase):
         self.assertEqual(kwargs.get("cb_state") or self.command._billing_client.create_customer_bill.call_args[0][2], "new")
 
     def test_customer_bill_created_with_state_new(self):
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         args, kwargs = self.command._billing_client.create_customer_bill.call_args
         cb_state = kwargs.get("cb_state", args[2] if len(args) > 2 else None)
         self.assertEqual(cb_state, "new")
 
     def test_renewal_bill_uses_existing_bill_date_without_extra_due_date(self):
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
         bill = self.command._billing_client.create_customer_bill.call_args[0][1]
         self.assertIn('billDate', bill)
         self.assertNotIn('paymentDueDate', bill)
@@ -319,7 +324,7 @@ class BillingSchedulerProcessProductTestCase(TestCase):
         self.command._price_engine.calculate_prices.return_value = [usage_price]
         self.command._usage_client.get_customer_usage_in_period.return_value = [{"id": "usage-1"}]
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._usage_client.get_customer_usage_in_period.assert_called_once_with(
             PRODUCT_ID,
@@ -331,13 +336,13 @@ class BillingSchedulerProcessProductTestCase(TestCase):
         other_price = {**PRICE, "priceId": "other-pop-id"}
         self.command._price_engine.calculate_prices.return_value = [other_price]
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_rate.assert_not_called()
         self.command._billing_client.create_customer_bill.assert_not_called()
 
     def test_passes_pop_components_to_calculate_prices(self):
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         _, kwargs = self.command._price_engine.calculate_prices.call_args
         self.assertIn("pop_components", kwargs)
@@ -376,6 +381,10 @@ class BillingSchedulerFullFlowTestCase(TestCase):
     Only external dependencies (HTTP clients) are mocked."""
 
     def setUp(self):
+        refresh_patch = patch("wstore.charging_engine.management.commands.billing_scheduler.on_usage_refreshed")
+        self.refresh_accounting = refresh_patch.start()
+        self.addCleanup(refresh_patch.stop)
+
         self.command = Command.__new__(Command)
         self.command._inventory_client = MagicMock()
         self.command._billing_client = MagicMock()
@@ -401,7 +410,7 @@ class BillingSchedulerFullFlowTestCase(TestCase):
             prices=[PRICE]
         )
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_rate.assert_called_once()
         call_kwargs = self.command._billing_client.create_customer_rate.call_args[1]
@@ -421,7 +430,7 @@ class BillingSchedulerFullFlowTestCase(TestCase):
             prices=[PRICE],
         )
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_rate.assert_not_called()
         self.command._billing_client.create_customer_bill.assert_not_called()
@@ -448,7 +457,7 @@ class BillingSchedulerFullFlowTestCase(TestCase):
         self.command._billing_client.create_customer_rate.return_value = {"id": "new-acbr-1"}
         self.command._billing_client.create_customer_bill.return_value = {"id": "new-cb-1"}
 
-        self.command._process_product(product_with_two_pops, TODAY)
+        self.command._process_product(product_with_two_pops, TODAY, refresh_accounting=True)
 
         self.assertEqual(self.command._billing_client.create_customer_rate.call_count, 1)
         call_kwargs = self.command._billing_client.create_customer_rate.call_args[1]
@@ -458,7 +467,7 @@ class BillingSchedulerFullFlowTestCase(TestCase):
         self.command._inventory_client.get_price_component.side_effect = [BUNDLE_POP, ONETIME_POP]
         self.command._billing_client.get_acbrs.return_value = [ACBR_EXPIRED]
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         self.command._billing_client.get_acbrs.assert_not_called()
         self.command._billing_client.create_customer_rate.assert_not_called()
@@ -470,7 +479,7 @@ class BillingSchedulerFullFlowTestCase(TestCase):
             prices=[PRICE],
         )
 
-        self.command._process_product(PRODUCT, TODAY)
+        self.command._process_product(PRODUCT, TODAY, refresh_accounting=True)
 
         call_kwargs = self.command._billing_client.create_customer_rate.call_args[1]
         period = call_kwargs["coverage_period"]
@@ -484,6 +493,11 @@ class BillingSchedulerFullFlowTestCase(TestCase):
 class BillingSchedulerHandleTestCase(TestCase):
 
     def setUp(self):
+        enabled_patch = patch("wstore.charging_engine.management.commands.billing_scheduler.has_pull_accounting_plugins",
+                              return_value=True)
+        self.accounting_enabled = enabled_patch.start()
+        self.addCleanup(enabled_patch.stop)
+
         self.command = Command.__new__(Command)
         self.command._inventory_client = MagicMock()
         self.command._billing_client = MagicMock()
@@ -502,6 +516,31 @@ class BillingSchedulerHandleTestCase(TestCase):
         self.assertEqual(self.command._inventory_client.get_products.call_count, 2)
         self.command._inventory_client.get_products.assert_any_call({"status": "active", "limit": 100, "offset": 0})
         self.command._inventory_client.get_products.assert_any_call({"status": "active", "limit": 100, "offset": 100})
+        self.accounting_enabled.assert_called_once_with()
+
+    def test_no_pull_plugins_still_processes_products_without_accounting_refresh(self):
+        self.accounting_enabled.return_value = False
+        other = {**PRODUCT, "id": "product-2"}
+        self.command._inventory_client.get_products.return_value = [PRODUCT, other]
+
+        self.command.handle()
+
+        self.assertEqual(2, self.command._process_product.call_count)
+        self.command._process_product.assert_any_call(PRODUCT, ANY, refresh_accounting=False)
+        self.command._process_product.assert_any_call(other, ANY, refresh_accounting=False)
+        self.accounting_enabled.assert_called_once_with()
+
+    def test_new_run_rechecks_plugin_availability(self):
+        self.accounting_enabled.side_effect = [False, True]
+        self.command._inventory_client.get_products.return_value = [PRODUCT]
+
+        self.command.handle()
+        self.command.handle()
+
+        self.assertEqual(2, self.accounting_enabled.call_count)
+        self.assertEqual([False, True], [
+            c.kwargs["refresh_accounting"] for c in self.command._process_product.call_args_list
+        ])
 
     def test_stops_on_empty_page(self):
         self.command._inventory_client.get_products.return_value = []
@@ -546,6 +585,15 @@ class BillingSchedulerSystemTestCase(TestCase):
     PriceEngine and LocalEngine run for real so usage matching is exercised."""
 
     def setUp(self):
+        enabled_patch = patch("wstore.charging_engine.management.commands.billing_scheduler.has_pull_accounting_plugins",
+                              return_value=True)
+        self.accounting_enabled = enabled_patch.start()
+        self.addCleanup(enabled_patch.stop)
+
+        refresh_patch = patch("wstore.charging_engine.management.commands.billing_scheduler.on_usage_refreshed")
+        self.refresh_accounting = refresh_patch.start()
+        self.addCleanup(refresh_patch.stop)
+
         from wstore.charging_engine.pricing_engine import PriceEngine
         from wstore.charging_engine.engines.local_engine import LocalEngine
 
@@ -613,7 +661,7 @@ class BillingSchedulerSystemTestCase(TestCase):
         sequence.attach_mock(self.command._billing_client.create_customer_bill, "create_bill")
         sequence.attach_mock(self.command._usage_client.update_usage_state, "update_status")
 
-        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
 
         self.assertEqual(["create_bill", "update_status"], [c[0] for c in sequence.mock_calls])
         self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
@@ -626,27 +674,27 @@ class BillingSchedulerSystemTestCase(TestCase):
         self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
         self.command._billing_client.create_customer_bill.side_effect = RuntimeError("bill creation failed")
         with self.assertRaises(RuntimeError):
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._usage_client.update_usage_state.assert_not_called()
 
     def test_failed_rate_creation_does_not_mark_usage_billed(self):
         self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
         self.command._billing_client.create_customer_rate.side_effect = RuntimeError("rate creation failed")
         with self.assertRaises(RuntimeError):
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._usage_client.update_usage_state.assert_not_called()
 
     def test_all_matching_documents_are_billed_and_unrelated_documents_are_unchanged(self):
         second_usage = {**REAL_USAGES[0], "id": "usage-2", "usageCharacteristic": [{"name": "mins", "value": 100}]}
         self.command._usage_client.get_customer_usage_in_period.return_value = UNMATCHED_USAGES + REAL_USAGES + [second_usage]
-        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.assertEqual([call("usage-1", "billed"), call("usage-2", "billed")],
                          self.command._usage_client.update_usage_state.call_args_list)
         self.assertEqual("60.0", self._get_acbr_kwargs()["tax_excluded"])
 
     def test_usage_with_no_matching_price_remains_unchanged(self):
         self.command._usage_client.get_customer_usage_in_period.return_value = UNMATCHED_USAGES
-        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._usage_client.update_usage_state.assert_not_called()
 
     def test_missing_usage_id_fails_before_creating_billing_records(self):
@@ -654,7 +702,7 @@ class BillingSchedulerSystemTestCase(TestCase):
             {key: value for key, value in REAL_USAGES[0].items() if key != "id"},
         ]
         with self.assertRaises(ValueError):
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._billing_client.create_customer_rate.assert_not_called()
         self.command._billing_client.create_customer_bill.assert_not_called()
         self.command._usage_client.update_usage_state.assert_not_called()
@@ -666,7 +714,7 @@ class BillingSchedulerSystemTestCase(TestCase):
         ]}
         self.command._inventory_client.get_price_component.side_effect = [USAGE_POP_WITH_SPEC, other_price]
         self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
-        self.command._process_product(product, TODAY)
+        self.command._process_product(product, TODAY, refresh_accounting=True)
         self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
         prices = [c.kwargs for c in self.command._billing_client.create_customer_rate.call_args_list]
         self.assertEqual([USAGE_POP_ID, "usage-price-2"], [price["priceId"] for price in prices])
@@ -676,8 +724,138 @@ class BillingSchedulerSystemTestCase(TestCase):
         self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
         self.command._usage_client.update_usage_state.side_effect = RuntimeError("usage API unavailable")
         with self.assertRaises(RuntimeError):
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._billing_client.create_customer_bill.assert_called_once()
+
+    def test_accounting_is_refreshed_before_querying_usage(self):
+        sequence = MagicMock()
+
+        sequence.attach_mock(self.refresh_accounting, "refresh")
+        sequence.attach_mock(self.command._usage_client.get_customer_usage_in_period, "query")
+
+        self.command._usage_client.get_customer_usage_in_period.return_value = []
+        self.refresh_accounting.side_effect = lambda product: setattr(
+            self.command._usage_client.get_customer_usage_in_period, "return_value", REAL_USAGES,
+        )
+
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
+
+        self.assertEqual(["refresh", "query"], [c[0] for c in sequence.mock_calls])
+        self.refresh_accounting.assert_called_once_with(PRODUCT_USAGE_ONLY)
+        self.assertEqual("10.0", self._get_acbr_kwargs()["tax_excluded"])
+
+    def test_accounting_failure_prevents_usage_query_and_billing(self):
+        self.refresh_accounting.side_effect = RuntimeError("accounting unavailable")
+
+        with self.assertRaisesRegex(RuntimeError, "accounting unavailable"):
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
+
+        self.command._usage_client.get_customer_usage_in_period.assert_not_called()
+        self.command._billing_client.create_customer_rate.assert_not_called()
+        self.command._billing_client.create_customer_bill.assert_not_called()
+
+    def test_no_accounting_refresh_when_usage_period_is_not_due(self):
+        self.command._billing_client.get_acbrs.return_value = [ACBR_NOT_EXPIRED]
+
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
+
+        self.refresh_accounting.assert_not_called()
+
+    def test_product_processing_uses_the_flag_without_querying_the_registry(self):
+        self.accounting_enabled.side_effect = AssertionError("Registry checks belong in handle()")
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+
+        self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
+
+        self.accounting_enabled.assert_not_called()
+        self.refresh_accounting.assert_called_once_with(PRODUCT_USAGE_ONLY)
+        self.command._billing_client.create_customer_bill.assert_called_once()
+
+    def test_no_pull_plugins_still_bills_existing_usage_without_refresh(self):
+        self.accounting_enabled.return_value = False
+        self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES
+
+        self.command.handle()
+
+        self.accounting_enabled.assert_called_once_with()
+        self.refresh_accounting.assert_not_called()
+        self.command._usage_client.get_customer_usage_in_period.assert_called_once()
+        self.assertEqual("10.0", self._get_acbr_kwargs()["tax_excluded"])
+        self.command._billing_client.create_customer_bill.assert_called_once()
+        self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
+
+    def test_daily_collection_and_billing_refresh_publish_and_bill_pending_records(self):
+        from django.conf import settings
+        from wstore.asset_manager.resource_plugins import decorators, plugin
+        from wstore.charging_engine.management.commands import accounting_scheduler
+
+        product = {
+            **PRODUCT_USAGE_ONLY,
+            "relatedParty": [
+                {"id": "seller", "role": settings.PROVIDER_ROLE},
+                {"id": "buyer", "role": settings.CUSTOMER_ROLE},
+            ],
+            "realizingService": [{"id": "service-1"}],
+        }
+        handler = plugin.ServicePlugin(MagicMock(pull_accounting=True))
+        handler.get_pending_accounting = MagicMock(side_effect=[
+            [{"date": "2026-03-01T12:00:00Z", "unit": "mins", "value": "20"}],
+            [{"date": "2026-03-31T12:00:00Z", "unit": "mins", "value": "10"}],
+        ])
+        specification_id = USAGE_POP_WITH_SPEC["usageSpecId"]
+        handler._get_usage_prices = MagicMock(return_value={specification_id: {"mins"}})
+        handler._get_usage_specification = MagicMock(return_value={
+            "id": specification_id, "specCharacteristic": [{"name": "mins"}],
+        })
+        documents = []
+
+        with ExitStack() as stack:
+            inventory = stack.enter_context(patch.object(decorators, "InventoryClient")).return_value
+            inventory.get_service.return_value = {"id": "service-1"}
+
+            stack.enter_context(patch.object(decorators, "load_inventory_plugin_module", return_value=handler))
+            stack.enter_context(patch.object(decorators, "Organization"))
+
+            orders = stack.enter_context(patch.object(decorators, "Order"))
+            order = orders.get_by_product_id.return_value
+            order.get_product_contract.return_value.product_id = PRODUCT_ID
+
+            plugin_inventory = stack.enter_context(patch.object(plugin, "InventoryClient")).return_value
+            plugin_inventory.get_product.side_effect = AssertionError("The product is already supplied")
+
+            stack.enter_context(patch.object(plugin, "get_operator_party_roles", return_value=[]))
+            stack.enter_context(patch.object(plugin, "normalize_party_ref", side_effect=dict))
+
+            usage_api = stack.enter_context(patch.object(plugin, "UsageClient")).return_value
+            usage_api.create_usage.side_effect = lambda document: documents.append(
+                {**document, "id": f"usage-{len(documents) + 1}"},
+            )
+
+            collector = accounting_scheduler.Command()
+            collector._catalog = MagicMock()
+            collector._catalog.get_price.return_value = USAGE_POP_WITH_SPEC
+
+            collector._process_product(product)
+
+            self.assertEqual(1, len(documents))
+            self.command._billing_client.create_customer_bill.assert_not_called()
+
+            self.refresh_accounting.side_effect = decorators.on_usage_refreshed
+            self.command._billing_client.get_acbrs.return_value = []
+            self.command._usage_client.get_customer_usage_in_period.side_effect = lambda *args: list(documents)
+
+            self.command._process_product(
+                product,
+                datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc),
+                refresh_accounting=True,
+            )
+
+        self.assertEqual(2, len(documents))
+        self.assertEqual(2, handler.get_pending_accounting.call_count)
+        self.assertEqual("15.0", self._get_acbr_kwargs()["tax_excluded"])
+        self.command._billing_client.create_customer_bill.assert_called_once()
+        self.assertEqual([call("usage-1", "billed"), call("usage-2", "billed")],
+                         self.command._usage_client.update_usage_state.call_args_list)
 
     def test_monthly_charge_includes_every_daily_usage_document(self):
         usages = [
@@ -691,7 +869,11 @@ class BillingSchedulerSystemTestCase(TestCase):
         self.price_engine._calculate_taxes.return_value = 21
 
         with patch.object(self.price_engine, "calculate_prices", wraps=self.price_engine.calculate_prices) as calculate:
-            self.command._process_product(PRODUCT_USAGE_ONLY, datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc))
+            self.command._process_product(
+                PRODUCT_USAGE_ONLY,
+                datetime.datetime(2026, 4, 1, tzinfo=datetime.timezone.utc),
+                refresh_accounting=True,
+            )
 
         self.command._usage_client.get_customer_usage_in_period.assert_called_once_with(
             PRODUCT_ID, "2026-03-01T00:00:00Z", "2026-04-01T00:00:00Z",
@@ -716,7 +898,7 @@ class BillingSchedulerSystemTestCase(TestCase):
         self.command._usage_client = UsageClient()
         with patch.object(self.command._usage_client, "get_customer_usage_in_period", return_value=usages), \
                 patch.object(self.command._usage_client, "_patch_usage") as patch_usage:
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.assertEqual([call("usage-1", {"status": "billed"}), call("usage-2", {"status": "billed"})],
                          patch_usage.call_args_list)
         self.assertEqual(original, usages)
@@ -734,7 +916,7 @@ class BillingSchedulerSystemTestCase(TestCase):
         self.command._inventory_client.get_price_component.side_effect = [USAGE_POP_WITH_SPEC, excluded_price]
         self.command._usage_client.get_customer_usage_in_period.return_value = REAL_USAGES + [excluded_usage, other_metric]
 
-        self.command._process_product(product, TODAY)
+        self.command._process_product(product, TODAY, refresh_accounting=True)
 
         self.command._billing_client.create_customer_rate.assert_called_once()
         self.command._usage_client.update_usage_state.assert_called_once_with("usage-1", "billed")
@@ -744,7 +926,7 @@ class BillingSchedulerSystemTestCase(TestCase):
             {key: value for key, value in REAL_USAGES[0].items() if key != "id"},
         ]
         with self.assertRaises(ValueError):
-            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY)
+            self.command._process_product(PRODUCT_USAGE_ONLY, TODAY, refresh_accounting=True)
         self.command._billing_client.create_customer_rate.assert_not_called()
         self.command._billing_client.create_customer_bill.assert_not_called()
         self.command._usage_client.update_usage_state.assert_not_called()

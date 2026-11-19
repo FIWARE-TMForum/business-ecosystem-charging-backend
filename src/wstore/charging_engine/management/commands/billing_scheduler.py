@@ -24,6 +24,7 @@ from logging import getLogger
 
 from django.core.management.base import BaseCommand
 
+from wstore.asset_manager.resource_plugins.decorators import has_pull_accounting_plugins, on_usage_refreshed
 from wstore.charging_engine.accounting.usage_client import UsageClient
 from wstore.charging_engine.charging.billing_client import BillingClient
 from wstore.charging_engine.engines.local_engine import LocalEngine
@@ -177,7 +178,7 @@ class Command(BaseCommand):
 
         return billed_usage.values()
 
-    def _process_product(self, product, now):
+    def _process_product(self, product, now, *, refresh_accounting):
         if not product.get("productPrice"):
             return
 
@@ -189,6 +190,9 @@ class Command(BaseCommand):
 
         usages = []
         if usage_period:
+            if refresh_accounting:
+                on_usage_refreshed(product)
+
             usages = self._usage_client.get_customer_usage_in_period(
                 product["id"],
                 usage_period["startDateTime"],
@@ -233,6 +237,8 @@ class Command(BaseCommand):
             now = datetime.datetime.now(datetime.timezone.utc)
         logger.info(f"Running billing scheduler for {now}")
 
+        refresh_accounting = has_pull_accounting_plugins()
+
         offset = 0
         limit = 100
 
@@ -243,7 +249,7 @@ class Command(BaseCommand):
 
             for product in products:
                 try:
-                    self._process_product(product, now)
+                    self._process_product(product, now, refresh_accounting=refresh_accounting)
                 except Exception as e:
                     logger.error(f"Error processing product {product.get('id')}: {e}")
 
