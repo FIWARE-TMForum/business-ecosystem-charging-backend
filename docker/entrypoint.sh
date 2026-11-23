@@ -40,6 +40,12 @@ fi
 
 cd /opt/business-ecosystem-charging-backend/src
 
+# The settings module and the application's directory, for whatever loads the Django settings
+# before the application sets them, such as an auto-instrumentation agent injected into the
+# container. The PYTHONPATH of the container (e.g. the agent's) is kept.
+export DJANGO_SETTINGS_MODULE=settings
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$(pwd)"
+
 # Ensure mongodb is running
 # Get MongoDB host and port from settings
 
